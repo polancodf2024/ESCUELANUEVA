@@ -3,6 +3,7 @@ escuela20.py - Sistema de Gestión Escuela de Enfermería
 VERSIÓN CONEXIÓN DIRECTA A SERVIDOR REMOTO VIA SSH
 Base de datos SQLite remota - VERSIÓN COMPLETA Y CORREGIDA
 CON MODO LOCAL COMO FALLBACK Y CREACIÓN AUTOMÁTICA DE TABLAS
+CON ESTADO PERSISTENTE DE INICIALIZACIÓN
 """
 
 import streamlit as st
@@ -46,6 +47,88 @@ st.set_page_config(
 )
 
 # =============================================================================
+# ARCHIVO DE ESTADO PERSISTENTE
+# =============================================================================
+
+class EstadoPersistente:
+    """Maneja el estado persistente entre sesiones usando un archivo JSON"""
+    
+    def __init__(self, archivo_estado="estado_app.json"):
+        self.archivo_estado = archivo_estado
+        self.estado = self._cargar_estado()
+    
+    def _cargar_estado(self):
+        """Cargar estado desde archivo JSON"""
+        try:
+            if os.path.exists(self.archivo_estado):
+                with open(self.archivo_estado, 'r') as f:
+                    return json.load(f)
+            else:
+                # Estado por defecto
+                return {
+                    'db_inicializada': False,
+                    'fecha_inicializacion': None,
+                    'ultima_sincronizacion': None,
+                    'modo_operacion': 'local',
+                    'usuario_admin_creado': False
+                }
+        except Exception as e:
+            logger.warning(f"⚠️ Error cargando estado: {e}")
+            return self._estado_por_defecto()
+    
+    def _estado_por_defecto(self):
+        """Estado por defecto"""
+        return {
+            'db_inicializada': False,
+            'fecha_inicializacion': None,
+            'ultima_sincronizacion': None,
+            'modo_operacion': 'local',
+            'usuario_admin_creado': False
+        }
+    
+    def guardar_estado(self):
+        """Guardar estado a archivo JSON"""
+        try:
+            with open(self.archivo_estado, 'w') as f:
+                json.dump(self.estado, f, indent=2, default=str)
+            logger.info(f"✅ Estado guardado en {self.archivo_estado}")
+        except Exception as e:
+            logger.error(f"❌ Error guardando estado: {e}")
+    
+    def marcar_db_inicializada(self):
+        """Marcar la base de datos como inicializada"""
+        self.estado['db_inicializada'] = True
+        self.estado['fecha_inicializacion'] = datetime.now().isoformat()
+        self.guardar_estado()
+    
+    def marcar_sincronizacion(self):
+        """Marcar última sincronización"""
+        self.estado['ultima_sincronizacion'] = datetime.now().isoformat()
+        self.guardar_estado()
+    
+    def set_modo_operacion(self, modo):
+        """Establecer modo de operación"""
+        self.estado['modo_operacion'] = modo
+        self.guardar_estado()
+    
+    def esta_inicializada(self):
+        """Verificar si la BD está inicializada"""
+        return self.estado.get('db_inicializada', False)
+    
+    def obtener_fecha_inicializacion(self):
+        """Obtener fecha de inicialización"""
+        fecha_str = self.estado.get('fecha_inicializacion')
+        if fecha_str:
+            try:
+                return datetime.fromisoformat(fecha_str)
+            except:
+                return None
+        return None
+
+# Instancia global del estado persistente
+estado_persistente = EstadoPersistente()
+
+# =============================================================================
 # CONFIGURACIÓN SSH Y SISTEMA DE CONEXIÓN REMOTA - MEJORADA CON FALLBACK
 # =============================================================================
 
@@ -62,11 +145,13 @@ class GestorConexionRemota:
         if self.config and all(key in self.config for key in ['remote_host', 'remote_user', 'remote_password']):
             self.modo_remoto = True
             self.db_path_remoto = "/home/POLANCO6/ESCUELA/datos/escuela.db"
+            estado_persistente.set_modo_operacion('remoto')
             logger.info("🔗 Modo remoto SSH activado")
         else:
             self.modo_remoto = False
             # Usar base de datos local si no hay SSH
             self.db_local_path = "/mount/src/escuelanueva/datos/escuela.db"
+            estado_persistente.set_modo_operacion('local')
             logger.info("💻 Modo local activado (sin SSH)")
         
         self.temp_db_path = None
@@ -238,7 +323,7 @@ class GestorConexionRemota:
             
             # Último intento: usar un archivo en directorio actual
             try:
-                self.temp_db_path = "datos/escuela_temp.db"
+                self.temp_db_path = "datos/escuela.db"
                 os.makedirs("datos", exist_ok=True)
                 self._inicializar_db(self.temp_db_path)
                 return self.temp_db_path
@@ -448,6 +533,9 @@ class GestorConexionRemota:
             conn.close()
             logger.info(f"✅ Estructura de base de datos inicializada en {db_path}")
             
+            # Marcar como inicializada en el estado persistente
+            estado_persistente.marcar_db_inicializada()
+            
         except Exception as e:
             logger.error(f"❌ Error inicializando base de datos en {db_path}: {e}")
             raise
@@ -536,7 +624,6 @@ class SistemaBaseDatosRemota:
         self.db_local_temp = None
         self.conexion_actual = None
         self.ultima_sincronizacion = None
-        self.estructura_inicializada = False
         
     def sincronizar_desde_remoto(self):
         """Sincronizar base de datos desde el servidor remoto o crear local"""
@@ -574,6 +661,10 @@ class SistemaBaseDatosRemota:
             
             self.ultima_sincronizacion = datetime.now()
             logger.info(f"✅ Sincronización exitosa: {self.db_local_temp}")
+            
+            # Actualizar estado de sincronización
+            estado_persistente.marcar_sincronizacion()
+            
             return True
             
         except Exception as e:
@@ -786,26 +877,12 @@ class SistemaBaseDatosRemota:
             conn.close()
             logger.info("✅ Estructura de base de datos inicializada")
             
+            # Marcar como inicializada en el estado persistente
+            estado_persistente.marcar_db_inicializada()
+            
         except Exception as e:
             logger.error(f"❌ Error inicializando estructura: {e}")
-            # Intentar crear una base de datos completamente nueva
-            self._crear_nueva_db()
-    
-    def _crear_nueva_db(self):
-        """Crear una nueva base de datos si no existe"""
-        try:
-            # Obtener nueva ruta del gestor
-            self.db_local_temp = self.gestor._crear_nueva_db_local()
-            
-            if self.db_local_temp:
-                logger.info(f"✅ Nueva base de datos creada: {self.db_local_temp}")
-                return True
-            else:
-                logger.error("❌ No se pudo crear nueva base de datos")
-                return False
-        except Exception as e:
-            logger.error(f"❌ Error creando nueva base de datos: {e}")
-            return False
+            raise
     
     def sincronizar_hacia_remoto(self):
         """Sincronizar base de datos local hacia el servidor remoto"""
@@ -821,6 +898,10 @@ class SistemaBaseDatosRemota:
                 if exito:
                     self.ultima_sincronizacion = datetime.now()
                     logger.info("✅ Cambios subidos exitosamente al servidor")
+                    
+                    # Actualizar estado
+                    estado_persistente.marcar_sincronizacion()
+                    
                     return True
                 else:
                     return False
@@ -828,6 +909,10 @@ class SistemaBaseDatosRemota:
                 # En modo local, solo actualizamos la marca de tiempo
                 self.ultima_sincronizacion = datetime.now()
                 logger.info("💻 Modo local: cambios guardados localmente")
+                
+                # Actualizar estado
+                estado_persistente.marcar_sincronizacion()
+                
                 return True
                 
         except Exception as e:
@@ -842,7 +927,13 @@ class SistemaBaseDatosRemota:
         try:
             # Asegurar que tenemos la base de datos más reciente
             if not self.db_local_temp or not os.path.exists(self.db_local_temp):
-                self.sincronizar_desde_remoto()
+                # Si ya está inicializada, solo sincronizar
+                if estado_persistente.esta_inicializada():
+                    self.sincronizar_desde_remoto()
+                else:
+                    # Si no está inicializada, inicializar
+                    if not self.sincronizar_desde_remoto():
+                        raise Exception("No se pudo inicializar la base de datos")
             
             conn = sqlite3.connect(self.db_local_temp)
             conn.row_factory = sqlite3.Row  # Para acceso por nombre de columna
@@ -1350,16 +1441,6 @@ class SistemaBaseDatosRemota:
 # Crear instancia global
 db_remota = SistemaBaseDatosRemota()
 
-# Intentar sincronizar inicialmente
-try:
-    sincronizado = db_remota.sincronizar_desde_remoto()
-    if sincronizado:
-        logger.info("✅ Base de datos inicializada correctamente")
-    else:
-        logger.warning("⚠️ No se pudo sincronizar inicialmente")
-except Exception as e:
-    logger.error(f"❌ Error inicializando base de datos: {e}")
-
 # =============================================================================
 # SISTEMA DE AUTENTICACIÓN
 # =============================================================================
@@ -1430,254 +1511,7 @@ class SistemaAutenticacion:
 auth = SistemaAutenticacion()
 
 # =============================================================================
-# SISTEMA DE EMAIL - COMPLETO (COPIADO DE ESCUELA10.PY)
-# =============================================================================
-
-class SistemaEmail:
-    def __init__(self):
-        self.config = self.obtener_configuracion_email()
-        
-    def obtener_configuracion_email(self):
-        """Obtiene la configuración de email desde secrets.toml"""
-        try:
-            if not hasattr(st, 'secrets'):
-                logger.warning("st.secrets no disponible para email")
-                return {}
-                
-            return {
-                'smtp_server': st.secrets.get("smtp_server", "smtp.gmail.com"),
-                'smtp_port': st.secrets.get("smtp_port", 587),
-                'email_user': st.secrets.get("email_user", ""),
-                'email_password': st.secrets.get("email_password", ""),
-                'notification_email': st.secrets.get("notification_email", "")
-            }
-        except Exception as e:
-            logger.error(f"Error al cargar configuración de email: {e}")
-            return {}
-    
-    def verificar_configuracion_email(self):
-        """Verificar que la configuración de email esté completa"""
-        try:
-            config = self.obtener_configuracion_email()
-            email_user = config.get('email_user', '')
-            email_password = config.get('email_password', '')
-            notification_email = config.get('notification_email', '')
-            
-            if not email_user:
-                logger.error("❌ No se encontró 'email_user' en los secrets")
-                return False
-                
-            if not email_password:
-                logger.error("❌ No se encontró 'email_password' en los secrets")
-                return False
-                
-            if not notification_email:
-                logger.warning("⚠️ No se encontró 'notification_email' en los secrets")
-                # No es crítico, solo advertencia
-                config['notification_email'] = email_user  # Usar email_user como fallback
-                
-            logger.info("✅ Configuración de email verificada")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error verificando configuración: {e}")
-            return False
-    
-    def test_conexion_smtp(self):
-        """Probar conexión SMTP para diagnóstico"""
-        try:
-            config = self.obtener_configuracion_email()
-            email_user = config.get('email_user', '')
-            email_password = config.get('email_password', '')
-            
-            if not email_user or not email_password:
-                return False, "Credenciales no configuradas"
-                
-            server = smtplib.SMTP(config['smtp_server'], config['smtp_port'])
-            server.starttls()
-            server.login(email_user, email_password)
-            server.quit()
-            
-            return True, "✅ Conexión SMTP exitosa"
-            
-        except Exception as e:
-            return False, f"❌ Error SMTP: {e}"
-    
-    def obtener_email_usuario(self, usuario):
-        """Obtener email del usuario desde la base de datos"""
-        try:
-            usuario_data = db_remota.obtener_usuario(usuario)
-            if usuario_data and usuario_data.get('email'):
-                return usuario_data['email']
-            return None
-        except Exception as e:
-            logger.error(f"Error obteniendo email del usuario: {e}")
-            return None
-
-    def enviar_notificacion_email(self, datos_inscripcion, documentos_guardados, es_completado=False):
-        """Envía notificación por email cuando se completa una inscripción"""
-        try:
-            config = self.obtener_configuracion_email()
-            
-            if not config.get('email_user') or not config.get('email_password'):
-                st.warning("⚠️ Configuración de email no disponible")
-                return False
-            
-            # Obtener email del usuario destino desde la base de datos
-            usuario_destino = datos_inscripcion.get('usuario', '')
-            email_destino = self.obtener_email_usuario(usuario_destino)
-            
-            if not email_destino:
-                st.warning(f"⚠️ No se pudo obtener email para el usuario: {usuario_destino}")
-                # Usar el email del formulario como respaldo
-                email_destino = datos_inscripcion.get('email', '')
-                if not email_destino:
-                    st.error("❌ No se pudo determinar el email destino")
-                    return False
-            
-            # Configurar servidor SMTP
-            server = smtplib.SMTP(config['smtp_server'], config['smtp_port'])
-            server.starttls()
-            server.login(config['email_user'], config['email_password'])
-            
-            # Crear mensaje
-            msg = MIMEMultipart()
-            msg['From'] = config['email_user']
-            msg['To'] = email_destino
-            msg['Cc'] = config.get('notification_email', config['email_user'])  # AGREGAR COPIA
-            msg['Subject'] = f"✅ Confirmación de Proceso - Instituto Nacional de Cardiología"
-            
-            # Determinar tipo de proceso
-            if es_completado:
-                tipo_proceso = "COMPLETADO"
-                titulo = "✅ PROCESO COMPLETADO EXITOSAMENTE"
-                mensaje_estado = "ha sido completado exitosamente"
-            else:
-                tipo_proceso = "PROGRESO GUARDADO"
-                titulo = "💾 PROGRESO GUARDADO CORRECTAMENTE"
-                mensaje_estado = "se ha guardado correctamente"
-            
-            # Cuerpo del email con formato HTML mejorado
-            cuerpo_html = f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                    <div style="text-align: center; background: linear-gradient(135deg, #003366 0%, #00509e 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0;">
-                        <h2 style="margin: 0; font-size: 24px;">Instituto Nacional de Cardiología </h2>
-                        <h3 style="margin: 10px 0 0 0; font-size: 18px; font-weight: normal;">Escuela de Enfermería</h3>
-                    </div>
-                    
-                    <div style="padding: 20px;">
-                        <h3 style="color: #27ae60; margin-top: 0;">{titulo}</h3>
-                        
-                        <p>Estimado(a) <strong>{datos_inscripcion.get('nombre_completo', 'Usuario')}</strong>,</p>
-                        
-                        <p>Le informamos que su proceso {mensaje_estado} en nuestro sistema académico.</p>
-                        
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0;">
-                            <p style="font-weight: bold; margin-bottom: 10px;">📋 Detalles del proceso:</p>
-                            <table style="width: 100%; border-collapse: collapse;">
-                                <tr>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;"><strong>Usuario:</strong></td>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;">{usuario_destino}</td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;"><strong>Matrícula:</strong></td>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;">{datos_inscripcion.get('matricula', 'N/A')}</td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;"><strong>Tipo de proceso:</strong></td>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;">{tipo_proceso}</td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;"><strong>Fecha y hora:</strong></td>
-                                    <td style="padding: 5px; border-bottom: 1px solid #eee;">{datetime.now().strftime('%d/%m/%Y %H:%M')}</td>
-                                </tr>
-                            </table>
-                        </div>
-                        
-                        <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 15px 0;">
-                            <p style="font-weight: bold; margin-bottom: 10px;">📄 Documentos procesados:</p>
-                            <p>Total de documentos: <strong>{len(documentos_guardados)}</strong></p>
-                            <ul style="margin: 10px 0; padding-left: 20px;">
-                                {''.join([f'<li>{doc.get("nombre_original", "Documento")}</li>' for doc in documentos_guardados])}
-                            </ul>
-                        </div>
-                        
-                        <p>El estado actual de su solicitud es: <strong style="color: #27ae60;">{tipo_proceso}</strong></p>
-                        
-                        <p>Si usted no realizó esta acción o tiene alguna duda, por favor contacte al administrador del sistema inmediatamente.</p>
-                        
-                        <div style="margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 5px;">
-                            <p style="margin: 0; font-size: 12px; color: #856404;">
-                                <strong>⚠️ Información importante:</strong><br>
-                                • Este es un mensaje automático, por favor no responda a este email.<br>
-                                • Sistema Académico - Instituto Nacional de Cardiología<br>
-                                • Copia enviada a: {config.get('notification_email', 'No especificado')}
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-            
-            msg.attach(MIMEText(cuerpo_html, 'html'))
-            
-            # Enviar email con timeout - INCLUYENDO EL EMAIL DE NOTIFICACIÓN EN LOS DESTINATARIOS
-            destinatarios = [email_destino]
-            if config.get('notification_email'):
-                destinatarios.append(config['notification_email'])
-            
-            server.sendmail(config['email_user'], destinatarios, msg.as_string())
-            server.quit()
-            
-            st.success(f"✅ Email de confirmación enviado exitosamente a: {email_destino}")
-            if config.get('notification_email'):
-                st.success(f"✅ Copia enviada a: {config['notification_email']}")
-            return True
-            
-        except smtplib.SMTPAuthenticationError:
-            st.error("❌ Error de autenticación SMTP. Verifica:")
-            st.error("1. Tu email y contraseña de aplicación")
-            st.error("2. Que hayas habilitado la verificación en 2 pasos")
-            st.error("3. Que hayas creado una contraseña de aplicación")
-            return False
-            
-        except smtplib.SMTPConnectError:
-            st.error("❌ Error de conexión SMTP. Verifica:")
-            st.error("1. Tu conexión a internet")
-            st.error("2. Que el puerto 587 no esté bloqueado")
-            return False
-            
-        except Exception as e:
-            st.error(f"❌ Error inesperado al enviar email: {e}")
-            return False
-
-    def enviar_email_confirmacion(self, usuario_destino, nombre_usuario, tipo_documento, nombre_archivo, tipo_accion="subida"):
-        """Enviar email de confirmación al usuario con copia a notification_email"""
-        # Crear estructura de datos compatible
-        datos_inscripcion = {
-            'usuario': usuario_destino,
-            'nombre_completo': nombre_usuario,
-            'matricula': 'Sistema',
-            'email': self.obtener_email_usuario(usuario_destino) or ''
-        }
-        
-        documentos_guardados = [{
-            'nombre_original': f"{tipo_documento} - {nombre_archivo}",
-            'tipo': tipo_documento
-        }]
-        
-        es_completado = (tipo_accion == "completado")
-        
-        return self.enviar_notificacion_email(datos_inscripcion, documentos_guardados, es_completado)
-
-# Instancia del sistema de email
-sistema_email = SistemaEmail()
-
-# =============================================================================
-# FUNCIÓN PRINCIPAL MEJORADA CON VERIFICACIÓN DE BASE DE DATOS
+# INTERFAZ PRINCIPAL MEJORADA
 # =============================================================================
 
 def main():
@@ -1690,55 +1524,60 @@ def main():
         st.session_state.usuario_actual = None
     if 'rol_usuario' not in st.session_state:
         st.session_state.rol_usuario = None
-    if 'db_inicializada' not in st.session_state:
-        st.session_state.db_inicializada = False
     
     # Sidebar con estado del sistema
     with st.sidebar:
         st.subheader("🔧 Estado del Sistema")
         
-        # Modo de operación
-        if gestor_remoto.modo_remoto:
-            st.success("🔗 Modo remoto SSH")
-            if gestor_remoto.config.get('remote_host'):
-                st.caption(f"Servidor: {gestor_remoto.config['remote_host']}")
+        # Estado de inicialización
+        if estado_persistente.esta_inicializada():
+            st.success("✅ Base de datos inicializada")
+            fecha_inicializacion = estado_persistente.obtener_fecha_inicializacion()
+            if fecha_inicializacion:
+                st.caption(f"📅 Inicializada: {fecha_inicializacion.strftime('%Y-%m-%d %H:%M')}")
         else:
-            st.info("💻 Modo local activado")
-            st.caption("(Sin configuración SSH)")
+            st.warning("⚠️ Base de datos NO inicializada")
         
-        # Estado de la base de datos
-        if not st.session_state.db_inicializada:
-            st.warning("⚠️ Base de datos no inicializada")
-            if st.button("🔄 Inicializar Base de Datos", use_container_width=True):
-                with st.spinner("Inicializando base de datos..."):
+        # Modo de operación
+        modo = estado_persistente.estado.get('modo_operacion', 'local')
+        if modo == 'remoto':
+            st.success("🔗 Modo remoto SSH")
+        else:
+            st.info("💻 Modo local")
+        
+        # Botón para inicializar/reinicializar
+        if not estado_persistente.esta_inicializada():
+            if st.button("🔄 Inicializar Base de Datos", use_container_width=True, type="primary"):
+                with st.spinner("Creando base de datos y tablas..."):
                     if db_remota.sincronizar_desde_remoto():
-                        st.session_state.db_inicializada = True
                         st.success("✅ Base de datos inicializada")
                         st.rerun()
                     else:
-                        st.error("❌ Error inicializando base de datos")
+                        st.error("❌ Error inicializando")
         else:
-            st.success("✅ Base de datos OK")
-            if db_remota.ultima_sincronizacion:
-                st.caption(f"🔄 Última sinc: {db_remota.ultima_sincronizacion.strftime('%H:%M:%S')}")
-        
-        # Botón para verificar tablas
-        if st.button("📊 Verificar Tablas", use_container_width=True):
-            try:
-                with db_remota.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                    tablas = cursor.fetchall()
-                    
-                    if tablas:
-                        st.success(f"✅ {len(tablas)} tablas encontradas:")
-                        for tabla in tablas:
-                            st.write(f"- {tabla[0]}")
+            if st.button("🔄 Sincronizar Ahora", use_container_width=True):
+                with st.spinner("Sincronizando..."):
+                    if db_remota.sincronizar_desde_remoto():
+                        st.success("✅ Sincronización exitosa")
+                        st.rerun()
                     else:
-                        st.error("❌ No hay tablas en la base de datos")
-                        st.info("Intenta inicializar la base de datos primero")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
+                        st.error("❌ Error sincronizando")
+            
+            if st.button("📊 Verificar Tablas", use_container_width=True):
+                try:
+                    with db_remota.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                        tablas = cursor.fetchall()
+                        
+                        if tablas:
+                            st.success(f"✅ {len(tablas)} tablas encontradas:")
+                            for tabla in tablas:
+                                st.write(f"- {tabla[0]}")
+                        else:
+                            st.error("❌ No hay tablas")
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
     
     # Mostrar interfaz según estado de login
     if not st.session_state.login_exitoso:
@@ -1747,71 +1586,45 @@ def main():
         mostrar_interfaz_principal()
 
 def mostrar_login():
-    """Interfaz de login mejorada"""
+    """Interfaz de login"""
     st.title("🔐 Sistema Escuela Enfermería - Modo Supervisión Remota")
     st.markdown("---")
     
-    # Verificar si la base de datos está inicializada
-    if not st.session_state.db_inicializada:
-        st.warning("⚠️ La base de datos no está inicializada")
+    # Información del estado
+    if not estado_persistente.esta_inicializada():
+        st.warning("""
+        ⚠️ **Primer uso del sistema**
         
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Inicializar Base de Datos", use_container_width=True):
-                with st.spinner("Creando base de datos y tablas..."):
-                    if db_remota.sincronizar_desde_remoto():
-                        st.session_state.db_inicializada = True
-                        st.success("✅ Base de datos inicializada correctamente")
-                        st.rerun()
-                    else:
-                        st.error("❌ Error inicializando base de datos")
+        Para comenzar, necesitas inicializar la base de datos:
         
-        with col2:
-            if st.button("📊 Verificar Estado", use_container_width=True):
-                try:
-                    if db_remota.db_local_temp and os.path.exists(db_remota.db_local_temp):
-                        file_size = os.path.getsize(db_remota.db_local_temp)
-                        st.info(f"📁 Base de datos: {db_remota.db_local_temp}")
-                        st.info(f"📏 Tamaño: {file_size} bytes")
-                        
-                        conn = sqlite3.connect(db_remota.db_local_temp)
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                        tablas = cursor.fetchall()
-                        conn.close()
-                        
-                        if tablas:
-                            st.success(f"✅ {len(tablas)} tablas encontradas")
-                            for tabla in tablas:
-                                st.write(f"- {tabla[0]}")
-                        else:
-                            st.error("❌ No hay tablas")
-                    else:
-                        st.error("❌ No hay base de datos creada")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
+        1. Haz clic en **"Inicializar Base de Datos"** en el sidebar
+        2. Se crearán todas las tablas necesarias
+        3. Se creará automáticamente el usuario administrador
+        4. Podrás iniciar sesión con las credenciales por defecto
+        """)
         
-        st.markdown("---")
+        st.info("""
+        **Credenciales por defecto (se crearán automáticamente):**
+        - 👤 Usuario: **admin**
+        - 🔒 Contraseña: **Admin123!**
+        """)
+        
+        return
     
-    # Formulario de login
+    # Si ya está inicializada, mostrar formulario de login
+    st.success("✅ Base de datos lista. Puedes iniciar sesión.")
+    
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         with st.form("login_form"):
             st.subheader("Iniciar Sesión")
             
-            # Verificar si podemos hacer login
-            if not st.session_state.db_inicializada:
-                st.warning("⚠️ Primero inicializa la base de datos")
-                login_disabled = True
-            else:
-                login_disabled = False
+            usuario = st.text_input("👤 Usuario", placeholder="admin", key="login_usuario")
+            password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!", key="login_password")
             
-            usuario = st.text_input("👤 Usuario", placeholder="admin", key="login_usuario", disabled=login_disabled)
-            password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!", key="login_password", disabled=login_disabled)
-            
-            login_button = st.form_submit_button("🚀 Ingresar al Sistema", use_container_width=True, disabled=login_disabled)
+            login_button = st.form_submit_button("🚀 Ingresar al Sistema", use_container_width=True)
 
-            if login_button and not login_disabled:
+            if login_button:
                 if usuario and password:
                     with st.spinner("Verificando credenciales..."):
                         if auth.verificar_login(usuario, password):
@@ -1821,19 +1634,11 @@ def mostrar_login():
                 else:
                     st.warning("⚠️ Complete todos los campos")
             
-            # Información de acceso por defecto
-            with st.expander("ℹ️ Información de acceso", expanded=not st.session_state.db_inicializada):
-                st.info("**Credenciales por defecto (se crean automáticamente):**")
+            # Información de acceso
+            with st.expander("ℹ️ Información de acceso"):
+                st.info("**Credenciales por defecto:**")
                 st.info("👤 Usuario: admin")
                 st.info("🔒 Contraseña: Admin123!")
-                
-                st.info("""
-                **Notas importantes:**
-                1. Si es la primera vez, haz clic en "Inicializar Base de Datos"
-                2. Se crearán automáticamente todas las tablas necesarias
-                3. Se creará el usuario administrador con las credenciales anteriores
-                4. También se crearán programas de ejemplo
-                """)
 
 def mostrar_interfaz_principal():
     """Interfaz principal después del login"""
@@ -1849,10 +1654,6 @@ def mostrar_interfaz_principal():
     with col2:
         rol_usuario = usuario_actual.get('rol', 'usuario').title()
         st.write(f"**🎭 Rol:** {rol_usuario}")
-        
-        # Estado de sincronización
-        if db_remota.ultima_sincronizacion:
-            st.caption(f"🔄 {db_remota.ultima_sincronizacion.strftime('%H:%M:%S')}")
     
     with col3:
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
@@ -1861,176 +1662,122 @@ def mostrar_interfaz_principal():
     
     st.markdown("---")
     
-    # Mostrar interfaz según rol
+    # Mostrar interfaz según rol (versión simplificada)
     rol_actual = usuario_actual.get('rol', '').lower()
     
     if rol_actual == 'administrador':
         mostrar_interfaz_administrador()
-    elif rol_actual == 'inscrito':
-        mostrar_interfaz_inscrito()
-    elif rol_actual == 'estudiante':
-        mostrar_interfaz_estudiante()
-    elif rol_actual == 'egresado':
-        mostrar_interfaz_egresado()
-    elif rol_actual == 'contratado':
-        mostrar_interfaz_contratado()
     else:
-        st.error(f"❌ Rol no reconocido: {rol_actual}")
-        st.info("Roles disponibles: administrador, inscrito, estudiante, egresado, contratado")
-
-# =============================================================================
-# INTERFACES POR ROL (versiones simplificadas para prueba)
-# =============================================================================
+        st.info(f"Bienvenido al portal de {rol_actual}. Esta funcionalidad está en desarrollo.")
 
 def mostrar_interfaz_administrador():
     """Interfaz para administradores"""
-    st.title("⚙️ Panel de Administración")
+    st.subheader("📊 Dashboard de Administración")
     
-    # Dashboard rápido
+    # Métricas rápidas
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         try:
             inscritos = db_remota.obtener_inscritos()
-            total_inscritos = len(inscritos) if not inscritos.empty else 0
-            st.metric("Total Inscritos", total_inscritos)
+            total = len(inscritos) if not inscritos.empty else 0
+            st.metric("Total Inscritos", total)
         except:
             st.metric("Total Inscritos", 0)
     
     with col2:
         try:
             estudiantes = db_remota.obtener_estudiantes()
-            total_estudiantes = len(estudiantes) if not estudiantes.empty else 0
-            st.metric("Total Estudiantes", total_estudiantes)
+            total = len(estudiantes) if not estudiantes.empty else 0
+            st.metric("Total Estudiantes", total)
         except:
             st.metric("Total Estudiantes", 0)
     
     with col3:
         try:
             usuarios = db_remota.obtener_usuarios()
-            total_usuarios = len(usuarios) if not usuarios.empty else 0
-            st.metric("Total Usuarios", total_usuarios)
+            total = len(usuarios) if not usuarios.empty else 0
+            st.metric("Total Usuarios", total)
         except:
             st.metric("Total Usuarios", 0)
     
     with col4:
         try:
             programas = db_remota.obtener_programas()
-            total_programas = len(programas) if not programas.empty else 0
-            st.metric("Total Programas", total_programas)
+            total = len(programas) if not programas.empty else 0
+            st.metric("Total Programas", total)
         except:
             st.metric("Total Programas", 0)
     
-    # Opciones de administración
-    st.subheader("📋 Acciones Rápidas")
+    # Acciones rápidas
+    st.subheader("⚡ Acciones Rápidas")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("👥 Ver Usuarios", use_container_width=True):
+        if st.button("👥 Ver Todos los Usuarios", use_container_width=True):
             try:
                 usuarios = db_remota.obtener_usuarios()
                 if not usuarios.empty:
-                    st.dataframe(usuarios[['usuario', 'nombre_completo', 'rol', 'email']], use_container_width=True)
+                    st.dataframe(usuarios[['usuario', 'nombre_completo', 'rol', 'email', 'matricula']])
                 else:
                     st.info("No hay usuarios registrados")
             except Exception as e:
                 st.error(f"Error: {e}")
     
     with col2:
-        if st.button("📝 Ver Inscritos", use_container_width=True):
+        if st.button("📝 Ver Todos los Inscritos", use_container_width=True):
             try:
                 inscritos = db_remota.obtener_inscritos()
                 if not inscritos.empty:
-                    st.dataframe(inscritos[['matricula', 'nombre_completo', 'email', 'programa_interes']], use_container_width=True)
+                    st.dataframe(inscritos[['matricula', 'nombre_completo', 'email', 'programa_interes', 'fecha_registro']])
                 else:
                     st.info("No hay inscritos registrados")
             except Exception as e:
                 st.error(f"Error: {e}")
     
     with col3:
-        if st.button("🎓 Ver Programas", use_container_width=True):
+        if st.button("🎓 Ver Todos los Programas", use_container_width=True):
             try:
                 programas = db_remota.obtener_programas()
                 if not programas.empty:
-                    st.dataframe(programas[['codigo', 'nombre', 'modalidad', 'costo']], use_container_width=True)
+                    st.dataframe(programas[['codigo', 'nombre', 'modalidad', 'costo', 'duracion_meses']])
                 else:
                     st.info("No hay programas registrados")
             except Exception as e:
                 st.error(f"Error: {e}")
     
-    # Herramientas del sistema
-    st.subheader("🔧 Herramientas del Sistema")
+    # Información del sistema
+    st.subheader("🔧 Información del Sistema")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🔄 Sincronizar Ahora", use_container_width=True):
-            with st.spinner("Sincronizando..."):
-                if db_remota.sincronizar_desde_remoto():
-                    st.success("✅ Sincronización exitosa")
-                    st.rerun()
-                else:
-                    st.error("❌ Error en sincronización")
+        st.info("**Estado de la Base de Datos:**")
+        if db_remota.db_local_temp:
+            st.write(f"- 📁 Ruta: `{db_remota.db_local_temp}`")
+            if os.path.exists(db_remota.db_local_temp):
+                size = os.path.getsize(db_remota.db_local_temp)
+                st.write(f"- 📏 Tamaño: {size:,} bytes")
+        
+        if estado_persistente.esta_inicializada():
+            st.write("- ✅ Inicializada: Sí")
+            fecha = estado_persistente.obtener_fecha_inicializacion()
+            if fecha:
+                st.write(f"- 📅 Fecha: {fecha.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            st.write("- ❌ Inicializada: No")
     
     with col2:
-        if st.button("📊 Verificar Tablas", use_container_width=True):
-            try:
-                with db_remota.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                    tablas = cursor.fetchall()
-                    
-                    st.success(f"✅ Base de datos OK - {len(tablas)} tablas:")
-                    for tabla in tablas:
-                        # Contar registros en cada tabla
-                        try:
-                            cursor.execute(f"SELECT COUNT(*) FROM {tabla[0]}")
-                            count = cursor.fetchone()[0]
-                            st.write(f"- {tabla[0]}: {count} registros")
-                        except:
-                            st.write(f"- {tabla[0]}")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
-
-def mostrar_interfaz_inscrito():
-    """Interfaz simplificada para inscritos"""
-    st.title("🎓 Portal del Inscrito")
-    
-    usuario_actual = st.session_state.usuario_actual
-    matricula = usuario_actual.get('matricula', usuario_actual.get('usuario', ''))
-    
-    st.success(f"✅ Bienvenido, {usuario_actual.get('nombre_completo', 'Inscrito')}")
-    st.info(f"📋 Tu matrícula: {matricula}")
-    
-    # Aquí puedes agregar más funcionalidades específicas para inscritos
-
-def mostrar_interfaz_estudiante():
-    """Interfaz simplificada para estudiantes"""
-    st.title("🎓 Portal del Estudiante")
-    
-    usuario_actual = st.session_state.usuario_actual
-    
-    st.success(f"✅ Bienvenido, {usuario_actual.get('nombre_completo', 'Estudiante')}")
-    st.info("Aquí puedes ver tu información académica y gestionar tus documentos.")
-
-def mostrar_interfaz_egresado():
-    """Interfaz simplificada para egresados"""
-    st.title("🎓 Portal del Egresado")
-    
-    usuario_actual = st.session_state.usuario_actual
-    
-    st.success(f"✅ Bienvenido, {usuario_actual.get('nombre_completo', 'Egresado')}")
-    st.info("Aquí puedes actualizar tu información profesional y ver oportunidades.")
-
-def mostrar_interfaz_contratado():
-    """Interfaz simplificada para contratados"""
-    st.title("💼 Portal del Personal Contratado")
-    
-    usuario_actual = st.session_state.usuario_actual
-    
-    st.success(f"✅ Bienvenido, {usuario_actual.get('nombre_completo', 'Contratado')}")
-    st.info("Aquí puedes ver tu información laboral y documentos relacionados.")
+        st.info("**Modo de Operación:**")
+        modo = estado_persistente.estado.get('modo_operacion', 'local')
+        if modo == 'remoto':
+            st.write("- 🔗 Modo: Remoto SSH")
+            if gestor_remoto.config.get('remote_host'):
+                st.write(f"- 🌐 Servidor: {gestor_remoto.config['remote_host']}")
+        else:
+            st.write("- 💻 Modo: Local")
+            st.write("- 📍 Sin conexión SSH")
 
 # =============================================================================
 # EJECUCIÓN PRINCIPAL
@@ -2045,39 +1792,35 @@ if __name__ == "__main__":
         
         # Información de diagnóstico
         with st.expander("🔧 Información de diagnóstico"):
-            st.write("**Versiones:**")
+            st.write("**Estado persistente:**")
+            st.json(estado_persistente.estado)
+            
+            st.write("**Archivos en directorio actual:**")
             try:
-                st.write(f"- Python: {sys.version}")
-                st.write(f"- Streamlit: {st.__version__}")
-                st.write(f"- Pandas: {pd.__version__}")
-                st.write(f"- SQLite: {sqlite3.sqlite_version}")
+                archivos = os.listdir('.')
+                for archivo in archivos:
+                    st.write(f"- {archivo}")
             except:
-                pass
-            
-            st.write("**Variables de entorno:**")
-            st.write(f"- Directorio actual: {os.getcwd()}")
-            
-            # Verificar si hay base de datos
-            if db_remota.db_local_temp:
-                st.write(f"- Ruta BD: {db_remota.db_local_temp}")
-                if os.path.exists(db_remota.db_local_temp):
-                    st.write(f"- BD existe: Sí ({os.path.getsize(db_remota.db_local_temp)} bytes)")
-                else:
-                    st.write("- BD existe: No")
+                st.write("No se pudo listar archivos")
         
         # Botones de recuperación
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🔄 Reintentar Conexión"):
+            if st.button("🔄 Reinicializar Sistema", use_container_width=True):
                 try:
-                    if db_remota.sincronizar_desde_remoto():
-                        st.success("✅ Conexión reestablecida")
-                        st.rerun()
-                    else:
-                        st.error("No se pudo recuperar la conexión")
-                except:
-                    st.error("Error en recuperación")
+                    # Eliminar archivo de estado
+                    if os.path.exists(estado_persistente.archivo_estado):
+                        os.remove(estado_persistente.archivo_estado)
+                    
+                    # Crear nuevo estado
+                    estado_persistente.estado = estado_persistente._estado_por_defecto()
+                    estado_persistente.guardar_estado()
+                    
+                    st.success("✅ Sistema reinicializado")
+                    st.rerun()
+                except Exception as e2:
+                    st.error(f"❌ Error: {e2}")
         
         with col2:
-            if st.button("🔄 Recargar Página"):
+            if st.button("🔄 Recargar Página", use_container_width=True):
                 st.rerun()
