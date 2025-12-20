@@ -1,0 +1,84 @@
+# =============================================
+# ARCHIVOS DE CONFIGURACIÓN SENSIBLES - NO SUBIR
+# =============================================
+
+# secrets.toml en raíz (local) - NO SUBIR
+secrets.toml
+
+# Archivos TOML con información sensible
+*.toml
+
+# =============================================
+# BASE DE DATOS - NO SUBIR
+# =============================================
+
+# Archivos de base de datos SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Carpeta de datos con bases de datos
+datos/*.db
+datos/*.sqlite
+datos/*.sqlite3
+
+# Backups de base de datos
+backup_*.db
+*.backup
+
+# =============================================
+# ARCHIVOS SUBIDOS POR USUARIOS - NO SUBIR
+# =============================================
+
+# Carpeta de uploads completa (contenido de usuarios)
+uploads/*
+!uploads/.gitkeep  # Excepto este archivo placeholder
+
+# =============================================
+# ARCHIVOS DEL SISTEMA Y DESARROLLO
+# =============================================
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# IDE y editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporal
+*.tmp
+*.temp
+
+# =============================================
+# STREAMLIT - CONFIGURACIONES ESPECÍFICAS
+# =============================================
+
+# NOTA: .streamlit/secrets.toml SÍ se sube, 
+# pero debe contener solo config pública para Streamlit Cloud
+# La config sensible va en la interfaz web de Streamlit Cloud
+
+# Cache de Streamlit
+.streamlit/cache/
