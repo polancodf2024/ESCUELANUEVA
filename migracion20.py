@@ -89,61 +89,19 @@ def cargar_configuracion_secrets():
         
         if not ruta_encontrada:
             logger.error("❌ ERROR CRÍTICO: No se encontró secrets.toml en ninguna ubicación")
-            st.error("""
-            ❌ ERROR CRÍTICO: No se encontró el archivo secrets.toml
-            
-            Para corregir esto:
-            1. Asegúrate de tener un archivo secrets.toml en tu proyecto
-            2. En Streamlit Cloud, ve a "Settings" → "Secrets" y pega tu configuración
-            3. Localmente, crea el archivo en: .streamlit/secrets.toml
-            
-            El archivo debe contener la configuración SSH completa.
-            """)
-            st.stop()
+            return {}
         
         # Leer el archivo
         with open(ruta_encontrada, 'rb') as f:
             config = tomllib.load(f)
             logger.info(f"✅ Configuración cargada desde: {ruta_encontrada}")
-            
-            # Verificar configuración mínima REQUERIDA
-            config_ok = True
-            errores = []
-            
-            # Verificar SSH
-            ssh_config = config.get('ssh', {})
-            if not ssh_config:
-                errores.append("❌ No hay sección [ssh] en secrets.toml")
-                config_ok = False
-            
-            required_ssh = ['host', 'username', 'password', 'port', 'remote_dir']
-            for req in required_ssh:
-                if not ssh_config.get(req):
-                    errores.append(f"❌ Falta '{req}' en sección [ssh]")
-                    config_ok = False
-            
-            # Verificar paths
-            paths_config = config.get('paths', {})
-            required_paths = ['remote_db_escuela', 'remote_uploads_path']
-            for req in required_paths:
-                if not paths_config.get(req):
-                    errores.append(f"❌ Falta '{req}' en sección [paths]")
-                    config_ok = False
-            
-            if not config_ok:
-                st.error("❌ ERROR: Configuración incompleta en secrets.toml")
-                for error in errores:
-                    st.error(error)
-                st.stop()
-            
             return config
         
     except Exception as e:
         logger.error(f"❌ Error cargando secrets.toml: {e}")
         import traceback
         logger.error(f"❌ Detalles: {traceback.format_exc()}")
-        st.error(f"❌ Error cargando configuración: {e}")
-        st.stop()
+        return {}
 
 # =============================================================================
 # ARCHIVO DE ESTADO PERSISTENTE PARA MIGRACIÓN
@@ -257,6 +215,11 @@ class GestorConexionRemotaMigracion:
         # Cargar configuración desde secrets.toml
         logger.info("📋 Cargando configuración desde secrets.toml...")
         self.config_completa = cargar_configuracion_secrets()
+        
+        if not self.config_completa:
+            logger.error("❌ No se pudo cargar configuración de secrets.toml")
+            return
+            
         self.config = self._cargar_configuracion_completa()
         
         # Configuración de migración
@@ -274,33 +237,17 @@ class GestorConexionRemotaMigracion:
         
         # Verificar que TENEMOS configuración SSH
         if not self.config.get('host'):
-            st.error("❌ ERROR CRÍTICO: No hay configuración SSH en secrets.toml")
-            st.error("""
-            Agrega esta configuración a secrets.toml:
-            
-            [ssh]
-            host = "187.217.52.137"
-            port = 3792
-            username = "POLANCO6"
-            password = "tt6plco6"
-            remote_dir = "/home/POLANCO6/ESCUELANUEVA"
-            
-            [paths]
-            remote_db_escuela = "/home/POLANCO6/ESCUELANUEVA/datos/escuela.db"
-            remote_uploads_path = "/home/POLANCO6/ESCUELANUEVA/uploads"
-            """)
-            st.stop()
+            logger.warning("⚠️ No hay configuración SSH en secrets.toml")
+            return
         
         # Configurar rutas
         self.db_path_remoto = self.config.get('remote_db_escuela')
         self.uploads_path_remoto = self.config.get('remote_uploads_path')
         
-        logger.info(f"🔗 Configuración SSH cargada para {self.config['host']}:{self.config.get('port', 22)}")
-        logger.info(f"📁 DB remota: {self.db_path_remoto}")
-        logger.info(f"📁 Uploads remoto: {self.uploads_path_remoto}")
+        logger.info(f"🔗 Configuración SSH cargada para {self.config.get('host', 'No configurado')}")
         
         # Intentar conexión automática si está configurado
-        if self.auto_connect:
+        if self.auto_connect and self.config.get('host'):
             self.probar_conexion_inicial()
     
     def _cargar_configuracion_completa(self):
@@ -346,17 +293,19 @@ class GestorConexionRemotaMigracion:
             }
             config['smtp'] = smtp_config
             
-            logger.info(f"✅ Configuración completa cargada")
+            logger.info("✅ Configuración completa cargada")
             
         except Exception as e:
             logger.error(f"❌ Error cargando configuración: {e}")
-            st.error(f"❌ Error en configuración: {e}")
         
         return config
     
     def probar_conexion_inicial(self):
         """Probar la conexión SSH al inicio"""
         try:
+            if not self.config.get('host'):
+                return False
+                
             logger.info(f"🔍 Probando conexión SSH a {self.config['host']}...")
             
             ssh_test = paramiko.SSHClient()
@@ -383,20 +332,9 @@ class GestorConexionRemotaMigracion:
             ssh_test.close()
             
             logger.info(f"✅ Conexión SSH exitosa a {self.config['host']}")
-            logger.info(f"📁 Directorio remoto: {output}")
             estado_migracion.set_ssh_conectado(True, None)
             return True
             
-        except paramiko.AuthenticationException:
-            error_msg = "Error de autenticación SSH. Verifique usuario/contraseña"
-            logger.error(f"❌ {error_msg}")
-            estado_migracion.set_ssh_conectado(False, error_msg)
-            return False
-        except paramiko.SSHException as e:
-            error_msg = f"Error SSH: {str(e)}"
-            logger.error(f"❌ {error_msg}")
-            estado_migracion.set_ssh_conectado(False, error_msg)
-            return False
         except Exception as e:
             error_msg = f"Error de conexión SSH: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -406,6 +344,10 @@ class GestorConexionRemotaMigracion:
     def conectar_ssh(self):
         """Establecer conexión SSH con el servidor remoto"""
         try:
+            if not self.config.get('host'):
+                st.error("❌ No hay configuración SSH disponible")
+                return False
+                
             logger.info(f"🔗 Conectando SSH a {self.config['host']}:{self.config.get('port', 22)}...")
             
             self.ssh = paramiko.SSHClient()
@@ -428,34 +370,13 @@ class GestorConexionRemotaMigracion:
             self.sftp = self.ssh.open_sftp()
             logger.info(f"✅ Conexión SSH establecida a {self.config['host']}")
             
-            # Verificar directorio remoto
-            try:
-                remote_dir = self.config.get('remote_dir', '/')
-                self.sftp.stat(remote_dir)
-                logger.info(f"✅ Directorio remoto accesible: {remote_dir}")
-            except Exception as e:
-                logger.warning(f"⚠️ No se puede acceder al directorio remoto {remote_dir}: {e}")
-            
             estado_migracion.set_ssh_conectado(True, None)
             return True
             
-        except paramiko.AuthenticationException:
-            error_msg = "Error de autenticación SSH. Verifique usuario/contraseña"
-            logger.error(f"❌ {error_msg}")
-            estado_migracion.set_ssh_conectado(False, error_msg)
-            st.error(f"❌ {error_msg}")
-            return False
-        except paramiko.SSHException as e:
-            error_msg = f"Error SSH: {e}"
-            logger.error(f"❌ {error_msg}")
-            estado_migracion.set_ssh_conectado(False, error_msg)
-            st.error(f"❌ {error_msg}")
-            return False
         except Exception as e:
             error_msg = f"Error de conexión SSH: {e}"
             logger.error(f"❌ {error_msg}")
             estado_migracion.set_ssh_conectado(False, error_msg)
-            st.error(f"❌ {error_msg}")
             return False
     
     def desconectar_ssh(self):
@@ -770,10 +691,7 @@ class GestorConexionRemotaMigracion:
             # Subir nuevo archivo
             self.sftp.put(ruta_local, self.db_path_remoto)
             
-            # Verificar que se subió correctamente
-            stat = self.sftp.stat(self.db_path_remoto)
-            file_size = stat.st_size
-            logger.info(f"✅ Base de datos subida a servidor: {self.db_path_remoto} ({file_size} bytes)")
+            logger.info(f"✅ Base de datos subida a servidor: {self.db_path_remoto}")
             
             return True
             
@@ -826,41 +744,6 @@ class GestorConexionRemotaMigracion:
             logger.error(f"❌ Error renombrando archivos en servidor: {e}")
             return 0
     
-    def obtener_nombres_archivos_pdf(self, matricula):
-        """Obtener los nombres de los archivos PDF renombrados para una matrícula"""
-        try:
-            if not self.conectar_ssh():
-                return f"{matricula}_documentos.pdf"
-            
-            nombres_archivos = []
-            
-            try:
-                self.sftp.stat(self.uploads_path_remoto)
-                archivos = self.sftp.listdir(self.uploads_path_remoto)
-                
-                # Buscar archivos que contengan la matrícula
-                for archivo in archivos:
-                    if (archivo.lower().endswith('.pdf') and 
-                        (archivo.startswith(matricula + '_') or f"_{matricula}_" in archivo or matricula in archivo)):
-                        nombres_archivos.append(archivo)
-                
-                logger.info(f"Encontrados {len(nombres_archivos)} archivos PDF para {matricula}")
-                
-            except FileNotFoundError:
-                logger.warning(f"📁 Directorio de uploads no encontrado: {self.uploads_path_remoto}")
-            
-            self.desconectar_ssh()
-            
-            if nombres_archivos:
-                resultado = ", ".join(nombres_archivos)
-                return resultado
-            else:
-                return f"Documentos de {matricula}"
-                
-        except Exception as e:
-            logger.error(f"Error obteniendo nombres de archivos PDF: {e}")
-            return f"Documentos de {matricula}"
-    
     def verificar_conexion_ssh(self):
         """Verificar estado de conexión SSH"""
         return self.probar_conexion_inicial()
@@ -884,10 +767,6 @@ class SistemaBaseDatosMigracion:
         # Configuración de migración
         self.retry_attempts = self.gestor.retry_attempts
         self.retry_delay = self.gestor.retry_delay
-        
-        # Sincronizar al inicio si está configurado
-        if self.gestor.sync_on_start:
-            self.sincronizar_desde_remoto()
     
     def sincronizar_desde_remoto(self):
         """Sincronizar base de datos desde el servidor remoto - CON REINTENTOS"""
@@ -937,7 +816,6 @@ class SistemaBaseDatosMigracion:
                     time.sleep(self.retry_delay)
                     continue
                 else:
-                    st.error(f"❌ No se pudo sincronizar después de {self.retry_attempts} intentos")
                     return False
     
     def _inicializar_estructura_db(self):
@@ -982,7 +860,6 @@ class SistemaBaseDatosMigracion:
                     time.sleep(self.retry_delay)
                     continue
                 else:
-                    st.error(f"❌ No se pudo subir cambios después de {self.retry_attempts} intentos")
                     return False
     
     @contextmanager
@@ -1007,7 +884,6 @@ class SistemaBaseDatosMigracion:
             if conn:
                 conn.rollback()
             logger.error(f"❌ Error en conexión a base de datos: {e}")
-            st.error(f"❌ Error en base de datos: {e}")
             raise
         finally:
             if conn:
@@ -1522,10 +1398,6 @@ class SistemaMigracionCompleto:
     def renombrar_archivos_pdf(self, matricula_vieja, matricula_nueva):
         """Renombrar archivos PDF en el servidor remoto"""
         return self.gestor.renombrar_archivos_pdf(matricula_vieja, matricula_nueva)
-    
-    def obtener_nombres_archivos_pdf(self, matricula):
-        """Obtener los nombres de archivos PDF renombrados"""
-        return self.gestor.obtener_nombres_archivos_pdf(matricula)
     
     def migrar_inscrito_a_estudiante(self, inscrito_data):
         """Migrar de inscrito a estudiante"""
@@ -2256,103 +2128,32 @@ class SistemaMigracionCompleto:
 migrador = SistemaMigracionCompleto()
 
 # =============================================================================
-# FUNCIÓN PARA ENVIAR NOTIFICACIONES POR EMAIL
-# =============================================================================
-
-def enviar_notificacion_email(asunto, mensaje, destinatario=None):
-    """Enviar notificación por email usando configuración SMTP"""
-    try:
-        config_smtp = gestor_remoto_migracion.config.get('smtp', {})
-        
-        if not config_smtp.get('smtp_server') or not config_smtp.get('email_user'):
-            logger.warning("⚠️ Configuración SMTP no disponible para enviar email")
-            return False
-        
-        # Si no se especifica destinatario, usar el de notificación
-        if not destinatario:
-            destinatario = config_smtp.get('notification_email')
-            if not destinatario:
-                logger.warning("⚠️ No hay destinatario de notificación configurado")
-                return False
-        
-        # Crear mensaje
-        msg = MIMEMultipart()
-        msg['From'] = config_smtp['email_user']
-        msg['To'] = destinatario
-        msg['Subject'] = asunto
-        
-        # Agregar cuerpo del mensaje
-        msg.attach(MIMEText(mensaje, 'plain'))
-        
-        # Conectar al servidor SMTP
-        server = smtplib.SMTP(config_smtp['smtp_server'], config_smtp['smtp_port'])
-        server.starttls()
-        server.login(config_smtp['email_user'], config_smtp['email_password'])
-        
-        # Enviar email
-        server.send_message(msg)
-        server.quit()
-        
-        logger.info(f"✅ Email enviado a {destinatario}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Error enviando email: {e}")
-        return False
-
-# =============================================================================
-# INTERFAZ PRINCIPAL DEL MIGRADOR
+# INTERFAZ PRINCIPAL DEL MIGRADOR - CORREGIDA
 # =============================================================================
 
 def mostrar_login_migracion():
-    """Interfaz de login para el migrador"""
+    """Interfaz de login para el migrador - SIEMPRE MOSTRAR FORMULARIO"""
     st.title("🔄 Sistema Escuela Enfermería - Migración SSH REMOTA")
     st.markdown("---")
     
-    # Información del estado
-    if not estado_migracion.esta_inicializada():
-        st.warning("""
-        ⚠️ **Primer uso del sistema de migración REMOTO**
-        
-        Para comenzar, necesitas inicializar la base de datos remota:
-        
-        1. Haz clic en **"Inicializar Base de Datos Remota"** en el sidebar
-        2. Se crearán todas las tablas necesarias en el servidor remoto
-        3. Se creará automáticamente el usuario administrador
-        4. Podrás iniciar sesión con las credenciales por defecto
-        """)
-        
-        st.info("""
-        **Credenciales por defecto (se crearán automáticamente):**
-        - 👤 Usuario: **admin**
-        - 🔒 Contraseña: **Admin123!**
-        """)
-        
-        st.warning("""
-        **⚠️ IMPORTANTE:**
-        Este sistema trabaja EXCLUSIVAMENTE en modo remoto.
-        Todos los datos se guardarán en el servidor SSH configurado.
-        """)
-        
-        # Mostrar información de conexión
-        with st.expander("🔗 Información de Conexión SSH"):
-            if gestor_remoto_migracion.config.get('host'):
-                st.write(f"**Servidor:** {gestor_remoto_migracion.config['host']}")
-                st.write(f"**Puerto:** {gestor_remoto_migracion.config.get('port', 22)}")
-                st.write(f"**Usuario:** {gestor_remoto_migracion.config['username']}")
-                st.write(f"**Directorio Remoto:** {gestor_remoto_migracion.config.get('remote_dir', 'No configurado')}")
-            else:
-                st.error("❌ No hay configuración SSH disponible")
-        
-        return
+    # Mostrar estado actual
+    col1, col2 = st.columns(2)
     
-    # Si ya está inicializada, mostrar formulario de login
-    st.success("✅ Base de datos remota lista. Puedes iniciar sesión.")
+    with col1:
+        if estado_migracion.esta_inicializada():
+            st.success("✅ Base de datos inicializada")
+        else:
+            st.warning("⚠️ Base de datos NO inicializada")
     
-    # Verificar conexión SSH
-    if not estado_migracion.estado.get('ssh_conectado'):
-        st.warning("⚠️ No hay conexión SSH activa al servidor remoto")
+    with col2:
+        if estado_migracion.estado.get('ssh_conectado'):
+            st.success("✅ SSH Conectado")
+        else:
+            st.error("❌ SSH Desconectado")
     
+    st.markdown("---")
+    
+    # SIEMPRE mostrar formulario de login, independientemente del estado
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         with st.form("login_form_migracion"):
@@ -2361,7 +2162,11 @@ def mostrar_login_migracion():
             usuario = st.text_input("👤 Usuario", placeholder="admin", key="login_usuario_migracion")
             password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!", key="login_password_migracion")
             
-            login_button = st.form_submit_button("🚀 Ingresar al Migrador", use_container_width=True)
+            col_a, col_b = st.columns(2)
+            with col_a:
+                login_button = st.form_submit_button("🚀 Iniciar Sesión", use_container_width=True)
+            with col_b:
+                inicializar_button = st.form_submit_button("🔄 Inicializar DB", use_container_width=True, type="secondary")
 
             if login_button:
                 if usuario and password:
@@ -2373,11 +2178,29 @@ def mostrar_login_migracion():
                 else:
                     st.warning("⚠️ Complete todos los campos")
             
+            if inicializar_button:
+                with st.spinner("Inicializando base de datos en servidor remoto..."):
+                    if db_migracion.sincronizar_desde_remoto():
+                        st.success("✅ Base de datos remota inicializada")
+                        st.info("Ahora puedes iniciar sesión con:")
+                        st.info("👤 Usuario: admin")
+                        st.info("🔒 Contraseña: Admin123!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error inicializando base de datos")
+            
             # Información de acceso
             with st.expander("ℹ️ Información de acceso"):
-                st.info("**Credenciales por defecto:**")
-                st.info("👤 Usuario: admin")
-                st.info("🔒 Contraseña: Admin123!")
+                st.info("""
+                **Primer uso:**
+                1. Haz clic en **"Inicializar DB"** para crear la base de datos en el servidor
+                2. Usa las credenciales por defecto que se crearán automáticamente
+                3. Inicia sesión con esas credenciales
+                
+                **Credenciales por defecto (después de inicializar):**
+                - 👤 Usuario: **admin**
+                - 🔒 Contraseña: **Admin123!**
+                """)
 
 def mostrar_interfaz_migracion():
     """Interfaz principal después del login en el migrador"""
@@ -2391,7 +2214,8 @@ def mostrar_interfaz_migracion():
         st.write(f"**👤 Administrador:** {nombre_usuario}")
     
     with col2:
-        st.write(f"**🔗 Servidor:** {gestor_remoto_migracion.config['host']}")
+        if gestor_remoto_migracion.config.get('host'):
+            st.write(f"**🔗 Servidor:** {gestor_remoto_migracion.config['host']}")
     
     with col3:
         if st.button("🔄 Recargar Datos", use_container_width=True):
@@ -2683,7 +2507,7 @@ def mostrar_migracion_egresados():
         st.warning("No hay egresados disponibles para mostrar")
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PRINCIPAL - CORREGIDA
 # =============================================================================
 
 def main():
@@ -2743,18 +2567,10 @@ def main():
         
         st.markdown("---")
         
-        # Botones de control
+        # Botones de control - SOLO SI ESTÁ LOGUEADO
         st.subheader("⚙️ Controles")
         
-        if not estado_migracion.esta_inicializada():
-            if st.button("🔄 Inicializar Base de Datos Remota", use_container_width=True, type="primary"):
-                with st.spinner("Creando base de datos y tablas en servidor remoto..."):
-                    if db_migracion.sincronizar_desde_remoto():
-                        st.success("✅ Base de datos remota inicializada")
-                        st.rerun()
-                    else:
-                        st.error("❌ Error inicializando base de datos remota")
-        else:
+        if st.session_state.get('login_exitoso', False):
             if st.button("🔄 Sincronizar Ahora", use_container_width=True):
                 with st.spinner("Sincronizando con servidor remoto..."):
                     if db_migracion.sincronizar_desde_remoto():
@@ -2787,6 +2603,8 @@ def main():
                             st.error("❌ No hay tablas en la base de datos remota")
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
+        else:
+            st.info("ℹ️ Inicia sesión para usar los controles")
     
     # Inicializar estado de sesión
     if 'login_exitoso' not in st.session_state:
@@ -2826,14 +2644,17 @@ def main():
 
 if __name__ == "__main__":
     try:
-        # Mostrar banner de advertencia
-        st.warning("""
-        ⚠️ **SISTEMA DE MIGRACIÓN EXCLUSIVAMENTE REMOTO**
+        # Mostrar banner informativo
+        st.info("""
+        🔄 **SISTEMA DE MIGRACIÓN EXCLUSIVAMENTE REMOTO**
         
         Este sistema trabaja EXCLUSIVAMENTE en modo remoto SSH.
         Todos los datos se guardan y sincronizan con el servidor configurado.
         
-        **Configuración SSH requerida en secrets.toml**
+        **Para comenzar:**
+        1. Configura secrets.toml con tus credenciales SSH
+        2. Haz clic en "Inicializar DB" para crear la base de datos en el servidor
+        3. Inicia sesión con las credenciales por defecto
         """)
         
         main()
@@ -2848,34 +2669,23 @@ if __name__ == "__main__":
             
             st.write("**Configuración SSH cargada:**")
             if gestor_remoto_migracion.config:
-                # Mostrar configuración sin contraseñas
-                config_safe = {k: ('***' if 'password' in k.lower() else v) 
-                             for k, v in gestor_remoto_migracion.config.items() if k != 'smtp'}
-                st.json(config_safe)
+                st.write(f"Host: {gestor_remoto_migracion.config.get('host', 'No configurado')}")
+                st.write(f"Usuario: {gestor_remoto_migracion.config.get('username', 'No configurado')}")
             else:
                 st.write("No hay configuración SSH cargada")
-            
-            st.write("**Archivo secrets.toml:**")
-            st.write(f"TOML disponible: {HAS_TOMLLIB}")
-            
-        # Botones de recuperación
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Reiniciar Sistema", use_container_width=True):
-                try:
-                    # Eliminar archivo de estado
-                    if os.path.exists(estado_migracion.archivo_estado):
-                        os.remove(estado_migracion.archivo_estado)
-                    
-                    # Limpiar session_state
-                    for key in list(st.session_state.keys()):
-                        del st.session_state[key]
-                    
-                    st.success("✅ Sistema reiniciado")
-                    st.rerun()
-                except Exception as e2:
-                    st.error(f"❌ Error: {e2}")
         
-        with col2:
-            if st.button("🔄 Recargar Página", use_container_width=True):
+        # Botón de reinicio
+        if st.button("🔄 Reiniciar Sistema", use_container_width=True):
+            try:
+                # Eliminar archivo de estado
+                if os.path.exists(estado_migracion.archivo_estado):
+                    os.remove(estado_migracion.archivo_estado)
+                
+                # Limpiar session_state
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                
+                st.success("✅ Sistema reiniciado")
                 st.rerun()
+            except Exception as e2:
+                st.error(f"❌ Error: {e2}")
