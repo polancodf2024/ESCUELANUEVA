@@ -5,3 +5,4 @@ bcrypt>=4.0.1
 protobuf>=3.20.0
 python-dateutil>=2.8.0
 setuptools>=60.0.0
+paramiko>=3.3.0
