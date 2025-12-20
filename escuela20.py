@@ -2,6 +2,7 @@
 escuela20.py - Sistema de Gestión Escuela de Enfermería
 VERSIÓN CONEXIÓN DIRECTA A SERVIDOR REMOTO VIA SSH
 Base de datos SQLite remota - VERSIÓN COMPLETA Y CORREGIDA
+CON MODO LOCAL COMO FALLBACK
 """
 
 import streamlit as st
@@ -30,7 +31,10 @@ import sys
 warnings.filterwarnings('ignore')
 
 # Configuración de logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Configuración de página
@@ -42,38 +46,73 @@ st.set_page_config(
 )
 
 # =============================================================================
-# CONFIGURACIÓN SSH Y SISTEMA DE CONEXIÓN REMOTA
+# CONFIGURACIÓN SSH Y SISTEMA DE CONEXIÓN REMOTA - MEJORADA CON FALLBACK
 # =============================================================================
 
 class GestorConexionRemota:
-    """Gestor de conexión SSH al servidor remoto para acceso a base de datos SQLite"""
+    """Gestor de conexión SSH al servidor remoto para acceso a base de datos SQLite
+    CON MODO LOCAL COMO FALLBACK"""
     
     def __init__(self):
         self.ssh = None
         self.sftp = None
         self.config = self._cargar_configuracion_ssh()
-        self.db_path_remoto = "/home/POLANCO6/ESCUELA/datos/escuela.db"
+        
+        # Determinar modo de operación
+        if self.config and all(key in self.config for key in ['remote_host', 'remote_user', 'remote_password']):
+            self.modo_remoto = True
+            self.db_path_remoto = "/home/POLANCO6/ESCUELA/datos/escuela.db"
+            logger.info("🔗 Modo remoto SSH activado")
+        else:
+            self.modo_remoto = False
+            # Usar base de datos local si no hay SSH
+            self.db_local_path = "/mount/src/escuelanueva/datos/escuela.db"
+            logger.info("💻 Modo local activado (sin SSH)")
+        
         self.temp_db_path = None
         self.conexion_local = None
     
     def _cargar_configuracion_ssh(self):
-        """Cargar configuración SSH desde secrets.toml"""
+        """Cargar configuración SSH desde secrets.toml - CON MEJOR MANEJO DE ERRORES"""
         try:
-            return {
+            # Verificar si st.secrets está disponible
+            if not hasattr(st, 'secrets'):
+                logger.warning("st.secrets no está disponible")
+                return {}
+            
+            # Intentar cargar configuración
+            config = {
                 'remote_host': st.secrets["remote_host"],
-                'remote_port': int(st.secrets.get("remote_port")),
+                'remote_port': int(st.secrets.get("remote_port", 22)),  # Valor por defecto
                 'remote_user': st.secrets["remote_user"],
                 'remote_password': st.secrets["remote_password"]
             }
+            
+            # Verificar que no estén vacíos
+            for key, value in config.items():
+                if not value:
+                    logger.warning(f"Configuración SSH: {key} está vacío")
+                    return {}
+            
+            logger.info(f"✅ Configuración SSH cargada para {config['remote_host']}")
+            return config
+            
+        except KeyError as e:
+            # Error específico de clave faltante
+            missing_key = str(e).replace("'", "")
+            logger.warning(f"⚠️ Clave faltante en secrets.toml: {missing_key}")
+            return {}
+            
         except Exception as e:
-            logger.error(f"Error cargando configuración SSH: {e}")
-            st.error("❌ Error en configuración SSH. Verifique secrets.toml")
+            # Error general
+            logger.warning(f"⚠️ Error cargando configuración SSH: {e}")
             return {}
     
     def conectar_ssh(self):
         """Establecer conexión SSH con el servidor remoto"""
         try:
-            if not self.config:
+            if not self.config or not self.modo_remoto:
+                logger.warning("Modo remoto no disponible")
                 return False
             
             self.ssh = paramiko.SSHClient()
@@ -91,16 +130,13 @@ class GestorConexionRemota:
             return True
             
         except paramiko.AuthenticationException:
-            st.error("❌ Error de autenticación SSH. Verifique usuario/contraseña")
-            logger.error("Error de autenticación SSH")
+            logger.error("❌ Error de autenticación SSH. Verifique usuario/contraseña")
             return False
         except paramiko.SSHException as e:
-            st.error(f"❌ Error SSH: {e}")
-            logger.error(f"Error SSH: {e}")
+            logger.error(f"❌ Error SSH: {e}")
             return False
         except Exception as e:
-            st.error(f"❌ Error de conexión SSH: {e}")
-            logger.error(f"Error de conexión SSH: {e}")
+            logger.error(f"❌ Error de conexión SSH: {e}")
             return False
     
     def desconectar_ssh(self):
@@ -111,36 +147,109 @@ class GestorConexionRemota:
             if self.ssh:
                 self.ssh.close()
             logger.info("🔌 Conexión SSH cerrada")
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"⚠️ Error cerrando conexión SSH: {e}")
     
     def descargar_db_remota(self):
-        """Descargar la base de datos SQLite del servidor remoto a local temporal"""
+        """Descargar base de datos SQLite del servidor remoto - CON MANEJO MEJORADO"""
         try:
+            # Si estamos en modo local, usar base de datos local
+            if not self.modo_remoto:
+                logger.info("📁 Usando base de datos local (modo sin SSH)")
+                return self._usar_db_local()
+            
+            # Modo remoto: conectar SSH
             if not self.conectar_ssh():
-                return None
+                logger.warning("⚠️ Falló conexión SSH, usando modo local")
+                return self._usar_db_local()
             
             # Crear archivo temporal local
             temp_dir = tempfile.gettempdir()
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.temp_db_path = os.path.join(temp_dir, f"escuela_temp_{timestamp}.db")
             
-            # Descargar archivo desde remoto
-            self.sftp.get(self.db_path_remoto, self.temp_db_path)
+            # Intentar descargar archivo remoto
+            try:
+                logger.info(f"📥 Descargando base de datos desde: {self.db_path_remoto}")
+                self.sftp.get(self.db_path_remoto, self.temp_db_path)
+                
+                # Verificar que el archivo se descargó correctamente
+                if os.path.exists(self.temp_db_path) and os.path.getsize(self.temp_db_path) > 0:
+                    file_size = os.path.getsize(self.temp_db_path)
+                    logger.info(f"✅ Base de datos descargada exitosamente: {self.temp_db_path} ({file_size} bytes)")
+                    return self.temp_db_path
+                else:
+                    logger.warning("⚠️ Archivo descargado vacío o corrupto")
+                    return self._crear_nueva_db_local()
+                    
+            except FileNotFoundError:
+                logger.warning(f"⚠️ Base de datos remota no encontrada: {self.db_path_remoto}")
+                return self._crear_nueva_db_local()
+                
+            except Exception as e:
+                logger.error(f"❌ Error descargando archivo: {e}")
+                return self._crear_nueva_db_local()
+                
+        except Exception as e:
+            logger.error(f"❌ Error en descargar_db_remota: {e}")
+            return self._crear_nueva_db_local()
+        finally:
+            if self.modo_remoto:
+                self.desconectar_ssh()
+    
+    def _usar_db_local(self):
+        """Usar base de datos local si existe, o crear una nueva"""
+        try:
+            # Si ya tenemos una base de datos temporal, usarla
+            if self.temp_db_path and os.path.exists(self.temp_db_path):
+                logger.info(f"📁 Usando base de datos temporal existente: {self.temp_db_path}")
+                return self.temp_db_path
             
-            logger.info(f"✅ Base de datos descargada a: {self.temp_db_path}")
+            # Verificar si existe base de datos local en ruta estándar
+            if os.path.exists(self.db_local_path):
+                logger.info(f"📁 Usando base de datos local existente: {self.db_local_path}")
+                return self.db_local_path
+            else:
+                # Crear directorio si no existe
+                os.makedirs(os.path.dirname(self.db_local_path), exist_ok=True)
+                logger.info(f"📁 Creando nueva base de datos local: {self.db_local_path}")
+                return self._crear_nueva_db_local()
+        except Exception as e:
+            logger.error(f"❌ Error usando base de datos local: {e}")
+            return self._crear_nueva_db_local()
+    
+    def _crear_nueva_db_local(self):
+        """Crear una nueva base de datos SQLite local"""
+        try:
+            # Crear archivo temporal para la nueva base de datos
+            temp_dir = tempfile.gettempdir()
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            self.temp_db_path = os.path.join(temp_dir, f"escuela_nueva_{timestamp}.db")
+            
+            logger.info(f"📝 Creando nueva base de datos en: {self.temp_db_path}")
+            
+            # La estructura se inicializará cuando se use por primera vez
             return self.temp_db_path
             
         except Exception as e:
-            logger.error(f"❌ Error descargando base de datos: {e}")
-            st.error(f"❌ Error descargando base de datos: {e}")
-            return None
-        finally:
-            self.desconectar_ssh()
+            logger.error(f"❌ Error creando nueva base de datos: {e}")
+            
+            # Último intento: usar un archivo en directorio actual
+            try:
+                self.temp_db_path = "datos/escuela_temp.db"
+                os.makedirs("datos", exist_ok=True)
+                return self.temp_db_path
+            except:
+                logger.critical("❌ No se pudo crear base de datos")
+                return None
     
     def subir_db_local(self, ruta_local):
         """Subir base de datos local al servidor remoto (sobreescribir)"""
         try:
+            if not self.modo_remoto:
+                logger.info("📤 Modo local: no se sube a servidor remoto")
+                return True
+            
             if not self.conectar_ssh():
                 return False
             
@@ -149,8 +258,9 @@ class GestorConexionRemota:
                 backup_path = f"{self.db_path_remoto}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 self.sftp.rename(self.db_path_remoto, backup_path)
                 logger.info(f"✅ Backup creado: {backup_path}")
-            except:
-                pass  # Si no se puede crear backup, continuar igual
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo crear backup: {e}")
+                # Continuar aunque no se pueda hacer backup
             
             # Subir nuevo archivo
             self.sftp.put(ruta_local, self.db_path_remoto)
@@ -160,22 +270,20 @@ class GestorConexionRemota:
             
         except Exception as e:
             logger.error(f"❌ Error subiendo base de datos: {e}")
-            st.error(f"❌ Error subiendo base de datos: {e}")
             return False
         finally:
-            self.desconectar_ssh()
+            if self.modo_remoto:
+                self.desconectar_ssh()
     
     def ejecutar_comando_remoto(self, comando):
         """Ejecutar comando en el servidor remoto"""
         try:
-            if not self.conectar_ssh():
+            if not self.modo_remoto or not self.conectar_ssh():
                 return None
             
             stdin, stdout, stderr = self.ssh.exec_command(comando)
             salida = stdout.read().decode()
             error = stderr.read().decode()
-            
-            self.desconectar_ssh()
             
             if error:
                 logger.warning(f"⚠️ Error ejecutando comando remoto: {error}")
@@ -185,13 +293,19 @@ class GestorConexionRemota:
         except Exception as e:
             logger.error(f"❌ Error ejecutando comando remoto: {e}")
             return None
+        finally:
+            if self.modo_remoto:
+                self.desconectar_ssh()
     
     def verificar_conexion(self):
         """Verificar que la conexión SSH funcione"""
         try:
+            if not self.modo_remoto:
+                return False, "❌ Modo local activado (sin SSH)"
+            
             if self.conectar_ssh():
                 self.desconectar_ssh()
-                return True, "✅ Conexión SSH establecida correctamente"
+                return True, f"✅ Conexión SSH establecida a {self.config['remote_host']}"
             else:
                 return False, "❌ No se pudo establecer conexión SSH"
         except Exception as e:
@@ -201,30 +315,40 @@ class GestorConexionRemota:
 gestor_remoto = GestorConexionRemota()
 
 # =============================================================================
-# SISTEMA DE BASE DE DATOS SQLITE REMOTA - COMPLETO
+# SISTEMA DE BASE DE DATOS SQLITE REMOTA - COMPLETO CON FALLBACK
 # =============================================================================
 
 class SistemaBaseDatosRemota:
-    """Sistema de base de datos SQLite con sincronización remota via SSH"""
+    """Sistema de base de datos SQLite con sincronización remota via SSH
+    Y modo local como fallback"""
     
     def __init__(self):
         self.gestor = gestor_remoto
         self.db_local_temp = None
         self.conexion_actual = None
         self.ultima_sincronizacion = None
+        self.estructura_inicializada = False
         
     def sincronizar_desde_remoto(self):
-        """Sincronizar base de datos desde el servidor remoto"""
+        """Sincronizar base de datos desde el servidor remoto o crear local"""
         with st.spinner("🌐 Sincronizando con servidor remoto..."):
             try:
-                # 1. Descargar base de datos remota
+                # 1. Descargar base de datos remota o crear local
                 self.db_local_temp = self.gestor.descargar_db_remota()
                 
-                if not self.db_local_temp or not os.path.exists(self.db_local_temp):
-                    st.error("❌ No se pudo descargar la base de datos remota")
+                if not self.db_local_temp:
+                    st.error("❌ No se pudo obtener base de datos")
                     return False
                 
-                # 2. Verificar que el archivo es una base de datos SQLite válida
+                # 2. Verificar que el archivo existe
+                if not os.path.exists(self.db_local_temp):
+                    logger.error(f"❌ Archivo de base de datos no existe: {self.db_local_temp}")
+                    return False
+                
+                # 3. Inicializar estructura si es una base de datos nueva/vacía
+                self._inicializar_estructura_si_necesario()
+                
+                # 4. Verificar que sea una base de datos SQLite válida
                 try:
                     conn = sqlite3.connect(self.db_local_temp)
                     cursor = conn.cursor()
@@ -232,23 +356,46 @@ class SistemaBaseDatosRemota:
                     tablas = cursor.fetchall()
                     conn.close()
                     
+                    logger.info(f"✅ Base de datos verificada: {len(tablas)} tablas")
+                    
                     if len(tablas) == 0:
-                        logger.warning("⚠️ Base de datos vacía o corrupta")
-                        # Inicializar estructura si está vacía
+                        logger.warning("⚠️ Base de datos vacía")
+                        # Inicializar estructura
                         self._inicializar_estructura_db()
                 except Exception as e:
                     logger.error(f"❌ Base de datos corrupta: {e}")
-                    st.error("La base de datos remota está corrupta. Se creará una nueva.")
+                    st.error("La base de datos está corrupta. Se creará una nueva.")
                     self._crear_nueva_db()
                 
                 self.ultima_sincronizacion = datetime.now()
-                logger.info(f"✅ Sincronización exitosa: {len(tablas) if 'tablas' in locals() else 'N/A'} tablas")
+                logger.info(f"✅ Sincronización exitosa: {self.db_local_temp}")
                 return True
                 
             except Exception as e:
                 logger.error(f"❌ Error en sincronización: {e}")
-                st.error(f"❌ Error sincronizando con servidor remoto: {e}")
+                st.error(f"❌ Error sincronizando: {e}")
                 return False
+    
+    def _inicializar_estructura_si_necesario(self):
+        """Inicializar estructura si la base de datos está vacía"""
+        try:
+            if self.estructura_inicializada:
+                return
+                
+            conn = sqlite3.connect(self.db_local_temp)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tablas = cursor.fetchall()
+            
+            if len(tablas) == 0:
+                logger.info("📝 Inicializando estructura de base de datos...")
+                self._inicializar_estructura_db()
+            
+            conn.close()
+            self.estructura_inicializada = True
+            
+        except Exception as e:
+            logger.error(f"❌ Error verificando estructura: {e}")
     
     def sincronizar_hacia_remoto(self):
         """Sincronizar base de datos local hacia el servidor remoto"""
@@ -258,34 +405,41 @@ class SistemaBaseDatosRemota:
                     st.error("❌ No hay base de datos local para subir")
                     return False
                 
-                # Subir al servidor remoto
-                exito = self.gestor.subir_db_local(self.db_local_temp)
-                
-                if exito:
-                    self.ultima_sincronizacion = datetime.now()
-                    logger.info("✅ Cambios subidos exitosamente al servidor")
-                    return True
+                # Subir al servidor remoto (si estamos en modo remoto)
+                if self.gestor.modo_remoto:
+                    exito = self.gestor.subir_db_local(self.db_local_temp)
+                    
+                    if exito:
+                        self.ultima_sincronizacion = datetime.now()
+                        logger.info("✅ Cambios subidos exitosamente al servidor")
+                        return True
+                    else:
+                        return False
                 else:
-                    return False
+                    # En modo local, solo actualizamos la marca de tiempo
+                    self.ultima_sincronizacion = datetime.now()
+                    logger.info("💻 Modo local: cambios guardados localmente")
+                    return True
                     
             except Exception as e:
                 logger.error(f"❌ Error subiendo cambios: {e}")
-                st.error(f"❌ Error subiendo cambios al servidor: {e}")
+                st.error(f"❌ Error subiendo cambios: {e}")
                 return False
     
     def _crear_nueva_db(self):
         """Crear una nueva base de datos si no existe"""
         try:
-            # Usar un archivo temporal nuevo
-            temp_dir = tempfile.gettempdir()
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            self.db_local_temp = os.path.join(temp_dir, f"escuela_nueva_{timestamp}.db")
+            # Obtener nueva ruta del gestor
+            self.db_local_temp = self.gestor._crear_nueva_db_local()
             
-            # Crear estructura inicial
-            self._inicializar_estructura_db()
-            
-            logger.info(f"✅ Nueva base de datos creada: {self.db_local_temp}")
-            return True
+            if self.db_local_temp:
+                # Crear estructura inicial
+                self._inicializar_estructura_db()
+                logger.info(f"✅ Nueva base de datos creada: {self.db_local_temp}")
+                return True
+            else:
+                logger.error("❌ No se pudo crear nueva base de datos")
+                return False
         except Exception as e:
             logger.error(f"❌ Error creando nueva base de datos: {e}")
             return False
@@ -293,6 +447,10 @@ class SistemaBaseDatosRemota:
     def _inicializar_estructura_db(self):
         """Inicializar estructura de la base de datos"""
         try:
+            if not self.db_local_temp:
+                logger.error("❌ No hay ruta de base de datos para inicializar")
+                return
+            
             conn = sqlite3.connect(self.db_local_temp)
             cursor = conn.cursor()
             
@@ -445,8 +603,8 @@ class SistemaBaseDatosRemota:
             for nombre_idx, definicion in indices:
                 try:
                     cursor.execute(f'CREATE INDEX IF NOT EXISTS {nombre_idx} ON {definicion}')
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"⚠️ Error creando índice {nombre_idx}: {e}")
             
             # Verificar si existe usuario admin
             cursor.execute("SELECT COUNT(*) FROM usuarios WHERE usuario = 'admin'")
@@ -469,6 +627,23 @@ class SistemaBaseDatosRemota:
                     'ADMIN-001'
                 ))
                 logger.info("✅ Usuario administrador por defecto creado")
+            
+            # Crear algunos programas de ejemplo
+            cursor.execute("SELECT COUNT(*) FROM programas")
+            if cursor.fetchone()[0] == 0:
+                programas_ejemplo = [
+                    ('ENF-001', 'Enfermería General', 'Programa de enfermería general', 36, 25000.00, 'Presencial'),
+                    ('ENF-002', 'Enfermería Pediátrica', 'Especialidad en enfermería pediátrica', 24, 30000.00, 'Presencial'),
+                    ('ENF-003', 'Enfermería Geriátrica', 'Especialidad en cuidado geriátrico', 24, 28000.00, 'Mixta'),
+                ]
+                
+                for programa in programas_ejemplo:
+                    cursor.execute('''
+                        INSERT INTO programas (codigo, nombre, descripcion, duracion_meses, costo, modalidad)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', programa)
+                
+                logger.info("✅ Programas de ejemplo creados")
             
             conn.commit()
             conn.close()
@@ -494,8 +669,6 @@ class SistemaBaseDatosRemota:
             
             if conn:
                 conn.commit()
-                # Sincronizar cambios con servidor remoto automáticamente
-                self.sincronizar_hacia_remoto()
                 
         except Exception as e:
             if conn:
@@ -581,7 +754,9 @@ class SistemaBaseDatosRemota:
         try:
             with self.get_connection() as conn:
                 query = "SELECT * FROM inscritos ORDER BY fecha_registro DESC"
-                return pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn)
+                logger.info(f"Obtenidos {len(df)} inscritos")
+                return df
         except Exception as e:
             logger.error(f"Error obteniendo inscritos: {e}")
             return pd.DataFrame()
@@ -591,7 +766,9 @@ class SistemaBaseDatosRemota:
         try:
             with self.get_connection() as conn:
                 query = "SELECT * FROM estudiantes ORDER BY fecha_ingreso DESC"
-                return pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn)
+                logger.info(f"Obtenidos {len(df)} estudiantes")
+                return df
         except Exception as e:
             logger.error(f"Error obteniendo estudiantes: {e}")
             return pd.DataFrame()
@@ -601,7 +778,9 @@ class SistemaBaseDatosRemota:
         try:
             with self.get_connection() as conn:
                 query = "SELECT * FROM egresados ORDER BY fecha_graduacion DESC"
-                return pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn)
+                logger.info(f"Obtenidos {len(df)} egresados")
+                return df
         except Exception as e:
             logger.error(f"Error obteniendo egresados: {e}")
             return pd.DataFrame()
@@ -611,7 +790,9 @@ class SistemaBaseDatosRemota:
         try:
             with self.get_connection() as conn:
                 query = "SELECT * FROM contratados ORDER BY fecha_contratacion DESC"
-                return pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn)
+                logger.info(f"Obtenidos {len(df)} contratados")
+                return df
         except Exception as e:
             logger.error(f"Error obteniendo contratados: {e}")
             return pd.DataFrame()
@@ -621,7 +802,9 @@ class SistemaBaseDatosRemota:
         try:
             with self.get_connection() as conn:
                 query = "SELECT * FROM usuarios ORDER BY fecha_creacion DESC"
-                return pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn)
+                logger.info(f"Obtenidos {len(df)} usuarios")
+                return df
         except Exception as e:
             logger.error(f"Error obteniendo usuarios: {e}")
             return pd.DataFrame()
@@ -631,7 +814,9 @@ class SistemaBaseDatosRemota:
         try:
             with self.get_connection() as conn:
                 query = "SELECT * FROM programas ORDER BY nombre"
-                return pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn)
+                logger.info(f"Obtenidos {len(df)} programas")
+                return df
         except Exception as e:
             logger.error(f"Error obteniendo programas: {e}")
             return pd.DataFrame()
@@ -987,11 +1172,11 @@ db_remota = SistemaBaseDatosRemota()
 try:
     sincronizado = db_remota.sincronizar_desde_remoto()
     if sincronizado:
-        logger.info("✅ Base de datos remota inicializada correctamente")
+        logger.info("✅ Base de datos inicializada correctamente")
     else:
         logger.warning("⚠️ No se pudo sincronizar inicialmente")
 except Exception as e:
-    logger.error(f"❌ Error inicializando base de datos remota: {e}")
+    logger.error(f"❌ Error inicializando base de datos: {e}")
 
 # =============================================================================
 # SISTEMA DE AUTENTICACIÓN
@@ -1073,6 +1258,10 @@ class SistemaEmail:
     def obtener_configuracion_email(self):
         """Obtiene la configuración de email desde secrets.toml"""
         try:
+            if not hasattr(st, 'secrets'):
+                logger.warning("st.secrets no disponible para email")
+                return {}
+                
             return {
                 'smtp_server': st.secrets.get("smtp_server", "smtp.gmail.com"),
                 'smtp_port': st.secrets.get("smtp_port", 587),
@@ -1081,7 +1270,7 @@ class SistemaEmail:
                 'notification_email': st.secrets.get("notification_email", "")
             }
         except Exception as e:
-            st.error(f"Error al cargar configuración de email: {e}")
+            logger.error(f"Error al cargar configuración de email: {e}")
             return {}
     
     def verificar_configuracion_email(self):
@@ -1093,24 +1282,23 @@ class SistemaEmail:
             notification_email = config.get('notification_email', '')
             
             if not email_user:
-                st.error("❌ No se encontró 'email_user' en los secrets")
+                logger.error("❌ No se encontró 'email_user' en los secrets")
                 return False
                 
             if not email_password:
-                st.error("❌ No se encontró 'email_password' en los secrets")
+                logger.error("❌ No se encontró 'email_password' en los secrets")
                 return False
                 
             if not notification_email:
-                st.error("❌ No se encontró 'notification_email' en los secrets")
-                return False
+                logger.warning("⚠️ No se encontró 'notification_email' en los secrets")
+                # No es crítico, solo advertencia
+                config['notification_email'] = email_user  # Usar email_user como fallback
                 
-            st.success("✅ Configuración de email encontrada en secrets")
-            st.info(f"📧 Remitente: {email_user}")
-            st.info(f"📧 Email de notificación: {notification_email}")
+            logger.info("✅ Configuración de email verificada")
             return True
             
         except Exception as e:
-            st.error(f"❌ Error verificando configuración: {e}")
+            logger.error(f"❌ Error verificando configuración: {e}")
             return False
     
     def test_conexion_smtp(self):
@@ -1174,7 +1362,7 @@ class SistemaEmail:
             msg = MIMEMultipart()
             msg['From'] = config['email_user']
             msg['To'] = email_destino
-            msg['Cc'] = config['notification_email']  # AGREGAR COPIA AL EMAIL DE NOTIFICACIÓN
+            msg['Cc'] = config.get('notification_email', config['email_user'])  # AGREGAR COPIA
             msg['Subject'] = f"✅ Confirmación de Proceso - Instituto Nacional de Cardiología"
             
             # Determinar tipo de proceso
@@ -1243,7 +1431,7 @@ class SistemaEmail:
                                 <strong>⚠️ Información importante:</strong><br>
                                 • Este es un mensaje automático, por favor no responda a este email.<br>
                                 • Sistema Académico - Instituto Nacional de Cardiología<br>
-                                • Copia enviada a: {config['notification_email']}
+                                • Copia enviada a: {config.get('notification_email', 'No especificado')}
                             </p>
                         </div>
                     </div>
@@ -1255,13 +1443,16 @@ class SistemaEmail:
             msg.attach(MIMEText(cuerpo_html, 'html'))
             
             # Enviar email con timeout - INCLUYENDO EL EMAIL DE NOTIFICACIÓN EN LOS DESTINATARIOS
-            destinatarios = [email_destino, config['notification_email']]
+            destinatarios = [email_destino]
+            if config.get('notification_email'):
+                destinatarios.append(config['notification_email'])
             
             server.sendmail(config['email_user'], destinatarios, msg.as_string())
             server.quit()
             
             st.success(f"✅ Email de confirmación enviado exitosamente a: {email_destino}")
-            st.success(f"✅ Copia enviada a: {config['notification_email']}")
+            if config.get('notification_email'):
+                st.success(f"✅ Copia enviada a: {config['notification_email']}")
             return True
             
         except smtplib.SMTPAuthenticationError:
@@ -1694,7 +1885,7 @@ def mostrar_dashboard_administrador():
         if conexion_ok:
             st.success("✅ Conexión SSH: Activa")
         else:
-            st.error(f"❌ Conexión SSH: {mensaje}")
+            st.warning(f"⚠️ Conexión SSH: {mensaje}")
         
         # Verificar email
         estado_email, mensaje_email = sistema_email.test_conexion_smtp()
@@ -1709,6 +1900,12 @@ def mostrar_dashboard_administrador():
             st.info(f"🔄 Última sincronización: {db_remota.ultima_sincronizacion.strftime('%H:%M:%S')}")
         else:
             st.warning("🔄 Última sincronización: Nunca")
+        
+        # Modo de operación
+        if gestor_remoto.modo_remoto:
+            st.success("🔗 Modo remoto SSH activado")
+        else:
+            st.info("💻 Modo local activado")
         
         # Botón para sincronizar manualmente
         if st.button("🔄 Sincronizar Ahora", use_container_width=True):
@@ -1895,6 +2092,20 @@ def mostrar_configuracion_email():
                     st.error(mensaje)
     else:
         st.error("❌ Configuración de email incompleta o incorrecta")
+        
+        st.info("""
+        ### 📝 Configuración requerida en secrets.toml:
+        
+        ```toml
+        email_user = "tu-email@gmail.com"
+        email_password = "tu-contrasena-app"
+        notification_email = "notificaciones@ejemplo.com"
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        ```
+        
+        **Nota:** Para Gmail, necesitas una "Contraseña de aplicación" si tienes 2FA habilitado.
+        """)
 
 def mostrar_herramientas_sistema():
     """Herramientas del sistema"""
@@ -1939,13 +2150,14 @@ def mostrar_herramientas_sistema():
                 st.warning("No hay datos para exportar")
         
         st.write("**🗑️ Limpieza**")
-        if st.button("Limpiar Caché Local", use_container_width=True):
+        if st.button("Limpiar Caché Temporal", use_container_width=True):
             try:
-                if db_remota.temp_db_path and os.path.exists(db_remota.temp_db_path):
-                    os.remove(db_remota.temp_db_path)
-                    st.success("✅ Caché local limpiado")
+                if db_remota.db_local_temp and os.path.exists(db_remota.db_local_temp):
+                    os.remove(db_remota.db_local_temp)
+                    st.success("✅ Caché temporal limpiado")
+                    db_remota.db_local_temp = None
                 else:
-                    st.info("No hay caché local para limpiar")
+                    st.info("No hay caché temporal para limpiar")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
@@ -1954,8 +2166,8 @@ def mostrar_herramientas_sistema():
 # =============================================================================
 
 def cargar_datos_completos():
-    """Cargar todos los datos desde la base de datos remota"""
-    with st.spinner("📊 Cargando datos desde servidor remoto..."):
+    """Cargar todos los datos desde la base de datos"""
+    with st.spinner("📊 Cargando datos..."):
         try:
             datos = {
                 'inscritos': db_remota.obtener_inscritos(),
@@ -1968,7 +2180,7 @@ def cargar_datos_completos():
             
             total_registros = sum(len(df) for df in datos.values() if isinstance(df, pd.DataFrame))
             if total_registros > 0:
-                logger.info(f"✅ {total_registros} registros cargados desde remoto")
+                logger.info(f"✅ {total_registros} registros cargados")
             
             return datos
         except Exception as e:
@@ -1983,26 +2195,26 @@ def cargar_datos_completos():
             }
 
 # =============================================================================
-# INTERFAZ DE LOGIN MEJORADA - COMPLETA
+# INTERFAZ DE LOGIN MEJORADA - COMPLETA CON VERIFICACIÓN
 # =============================================================================
 
 def mostrar_login():
-    """Interfaz de login - CON ESTADO DE CONEXIÓN REMOTA"""
+    """Interfaz de login - CON ESTADO DE CONEXIÓN MEJORADO"""
     st.title("🔐 Sistema Escuela Enfermería - Modo Supervisión Remota")
     st.markdown("---")
 
-    # Estado de la conexión remota
-    with st.expander("🌐 Estado de la Conexión Remota", expanded=True):
+    # Estado del sistema
+    with st.expander("🔧 Estado del Sistema", expanded=True):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            # Probar conexión SSH
-            if st.button("🔗 Probar Conexión SSH"):
-                conexion_ok, mensaje = gestor_remoto.verificar_conexion()
-                if conexion_ok:
-                    st.success(mensaje)
-                else:
-                    st.error(mensaje)
+            # Modo de operación
+            if gestor_remoto.modo_remoto:
+                st.success("🔗 Modo remoto SSH")
+                if 'remote_host' in gestor_remoto.config:
+                    st.caption(f"Servidor: {gestor_remoto.config['remote_host']}")
+            else:
+                st.info("💻 Modo local")
         
         with col2:
             # Última sincronización
@@ -2013,9 +2225,10 @@ def mostrar_login():
         
         with col3:
             # Sincronizar ahora
-            if st.button("🔄 Sincronizar Ahora"):
+            if st.button("🔄 Sincronizar", use_container_width=True):
                 if db_remota.sincronizar_desde_remoto():
                     st.success("✅ Sincronización exitosa")
+                    st.rerun()
                 else:
                     st.error("❌ Error en sincronización")
         
@@ -2025,19 +2238,19 @@ def mostrar_login():
         col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
         with col_stat1:
             ins = len(datos['inscritos'])
-            st.metric("Inscritos", f"{'✅' if ins > 0 else '❌'} {ins}")
+            st.metric("Inscritos", f"{ins}")
         with col_stat2:
             est = len(datos['estudiantes'])
-            st.metric("Estudiantes", f"{'✅' if est > 0 else '❌'} {est}")
+            st.metric("Estudiantes", f"{est}")
         with col_stat3:
             egr = len(datos['egresados'])
-            st.metric("Egresados", f"{'✅' if egr > 0 else '❌'} {egr}")
+            st.metric("Egresados", f"{egr}")
         with col_stat4:
             con = len(datos['contratados'])
-            st.metric("Contratados", f"{'✅' if con > 0 else '❌'} {con}")
-
+            st.metric("Contratados", f"{con}")
+    
     # Diagnóstico de email
-    with st.expander("🔧 Diagnóstico del Sistema de Email", expanded=False):
+    with st.expander("📧 Diagnóstico del Sistema de Email", expanded=False):
         st.write("### 🔍 Verificación de Configuración")
         config_ok = sistema_email.verificar_configuracion_email()
         
@@ -2051,14 +2264,26 @@ def mostrar_login():
                     st.error(mensaje)
         else:
             st.error("❌ Configuración de email incompleta")
+            
+            st.info("""
+            ### 🔧 Configuración requerida:
+            
+            Agrega estas claves a tus secrets de Streamlit Cloud:
+            
+            ```toml
+            email_user = "tu-email@gmail.com"
+            email_password = "tu-contrasena-app"
+            notification_email = "notificaciones@ejemplo.com"
+            ```
+            """)
 
     # Formulario de login
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         with st.form("login_form"):
             st.subheader("Iniciar Sesión")
-            usuario = st.text_input("👤 Usuario", placeholder="admin")
-            password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!")
+            usuario = st.text_input("👤 Usuario", placeholder="admin", key="login_usuario")
+            password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!", key="login_password")
             login_button = st.form_submit_button("🚀 Ingresar al Sistema", use_container_width=True)
 
             if login_button:
@@ -2072,16 +2297,47 @@ def mostrar_login():
                     st.warning("⚠️ Complete todos los campos")
             
             # Información de acceso por defecto
-            st.info("**Credenciales por defecto:**")
-            st.info("👤 Usuario: admin")
-            st.info("🔒 Contraseña: Admin123!")
+            with st.expander("ℹ️ Información de acceso"):
+                st.info("**Credenciales por defecto:**")
+                st.info("👤 Usuario: admin")
+                st.info("🔒 Contraseña: Admin123!")
+                
+                st.info("""
+                **Notas:**
+                - Si es la primera vez que usas el sistema, se creará automáticamente el usuario admin
+                - La base de datos se creará automáticamente si no existe
+                - Puedes trabajar en modo local si no hay configuración SSH
+                """)
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL - COMPLETA
+# FUNCIÓN PRINCIPAL - COMPLETA CON VERIFICACIÓN
 # =============================================================================
 
 def main():
     """Función principal de la aplicación"""
+    
+    # Mostrar estado del sistema en sidebar
+    with st.sidebar:
+        st.subheader("🔧 Estado del Sistema")
+        
+        # Modo de operación
+        if gestor_remoto.modo_remoto:
+            st.success("🔗 Modo remoto SSH")
+            if gestor_remoto.config.get('remote_host'):
+                st.caption(f"Servidor: {gestor_remoto.config['remote_host']}")
+        else:
+            st.info("💻 Modo local activado")
+            st.caption("(Sin configuración SSH)")
+        
+        # Última sincronización
+        if db_remota.ultima_sincronizacion:
+            st.caption(f"🔄 Sinc: {db_remota.ultima_sincronizacion.strftime('%H:%M:%S')}")
+        
+        # Botón de sincronización rápida
+        if st.button("🔄 Sincronizar ahora", use_container_width=True):
+            if db_remota.sincronizar_desde_remoto():
+                st.success("✅ Sincronizado")
+                st.rerun()
     
     # Inicializar estado de sesión
     if 'login_exitoso' not in st.session_state:
@@ -2137,20 +2393,61 @@ def main():
             st.info("Roles disponibles: administrador, inscrito, estudiante, egresado, contratado")
 
 # =============================================================================
-# EJECUCIÓN PRINCIPAL
+# EJECUCIÓN PRINCIPAL CON MANEJO DE ERRORES
 # =============================================================================
 
 if __name__ == "__main__":
     try:
-        main()
+        # Verificar que podemos importar todas las dependencias
+        import_deps = [
+            ('streamlit', 'st'),
+            ('pandas', 'pd'),
+            ('paramiko', 'paramiko'),
+            ('bcrypt', 'bcrypt'),
+            ('sqlite3', 'sqlite3')
+        ]
+        
+        missing_deps = []
+        for dep, alias in import_deps:
+            try:
+                __import__(dep)
+            except ImportError:
+                missing_deps.append(dep)
+        
+        if missing_deps:
+            st.error(f"❌ Faltan dependencias: {', '.join(missing_deps)}")
+            st.info("Ejecuta: pip install -r requirements.txt")
+        else:
+            main()
+            
     except Exception as e:
         st.error(f"❌ Error crítico en la aplicación: {e}")
         logger.error(f"Error crítico: {e}", exc_info=True)
         
-        # Botón de recuperación
-        if st.button("🔄 Reintentar Conexión"):
+        # Información de diagnóstico
+        with st.expander("🔧 Información de diagnóstico"):
+            st.write("**Versiones:**")
             try:
-                db_remota.sincronizar_desde_remoto()
-                st.rerun()
+                st.write(f"- Python: {sys.version}")
+                st.write(f"- Streamlit: {st.__version__}")
+                st.write(f"- Pandas: {pd.__version__}")
             except:
-                st.error("No se pudo recuperar la conexión")
+                pass
+            
+            st.write("**Variables de entorno:**")
+            st.write(f"- Directorio actual: {os.getcwd()}")
+            st.write(f"- Archivos en directorio: {os.listdir('.')}")
+        
+        # Botón de recuperación
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Reintentar Conexión"):
+                try:
+                    db_remota.sincronizar_desde_remoto()
+                    st.rerun()
+                except:
+                    st.error("No se pudo recuperar la conexión")
+        
+        with col2:
+            if st.button("🔄 Recargar Página"):
+                st.rerun()
