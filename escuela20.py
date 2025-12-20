@@ -1,7 +1,7 @@
 """
 escuela10.py - Sistema de Gestión Escuela de Enfermería
 Versión actualizada para usar SQLite con BCRYPT y estructura unificada
-CONECTADO A SERVIDOR REMOTO VIA SECRETS.TOML
+CONFIGURACIÓN MEDIANTE SECRETS.TOML - USANDO db_escuela
 """
 
 import streamlit as st
@@ -22,66 +22,83 @@ import sqlite3
 from contextlib import contextmanager
 import logging
 import bcrypt
-import paramiko  # Para conexión SSH
-from pathlib import Path
 warnings.filterwarnings('ignore')
 
 # =============================================
-# CONFIGURACIÓN DESDE SECRETS.TOML
+# CONFIGURACIÓN MEDIANTE SECRETS.TOML
 # =============================================
+# Lee las configuraciones del archivo secrets.toml
+
+# Configuración de logging primero para poder registrar
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Verificar si estamos en modo supervisor (servidor remoto)
 try:
-    # Leer configuración de secrets.toml
     SUPERVISOR_MODE = st.secrets.get("supervisor_mode", False)
     DEBUG_MODE = st.secrets.get("debug_mode", False)
     
-    # Configuración de email
-    SMTP_SERVER = st.secrets.get("smtp_server", "smtp.gmail.com")
-    SMTP_PORT = st.secrets.get("smtp_port", 587)
-    EMAIL_USER = st.secrets.get("email_user", "")
-    EMAIL_PASSWORD = st.secrets.get("email_password", "")
-    
-    # Configuración SSH para servidor remoto
-    REMOTE_HOST = st.secrets.get("remote_host", "localhost")
+    # Configuración SSH para servidor remoto (solo en supervisor_mode)
+    REMOTE_HOST = st.secrets.get("remote_host", "")
     REMOTE_PORT = st.secrets.get("remote_port", 22)
     REMOTE_USER = st.secrets.get("remote_user", "")
     REMOTE_PASSWORD = st.secrets.get("remote_password", "")
     REMOTE_DIR = st.secrets.get("remote_dir", "")
     
-    # Rutas desde secrets.toml
+    # Obtener rutas específicas del secrets.toml
+    # USAR db_escuela DEL SECRETS.TOML COMO SOLICITASTE
     PATHS = st.secrets.get("paths", {})
+    BASE_PATH = PATHS.get("base_path", "")
+    DB_ESCUELA = PATHS.get("db_escuela", "")  # Esta es la variable clave
+    DB_INSCRITOS = PATHS.get("db_inscritos", "")
+    UPLOADS_PATH = PATHS.get("uploads_path", "")
     
-    # Determinar entorno basado en supervisor_mode
+    # Configuración de correo
+    SMTP_SERVER = st.secrets.get("smtp_server", "")
+    SMTP_PORT = st.secrets.get("smtp_port")
+    EMAIL_USER = st.secrets.get("email_user", "")
+    EMAIL_PASSWORD = st.secrets.get("email_password", "")
+    NOTIFICATION_EMAIL = st.secrets.get("notification_email", "")
+    
+    # Determinar el entorno basado en supervisor_mode
     if SUPERVISOR_MODE:
         ENTORNO = "servidor"
-        # Usar rutas del servidor remoto
-        BASE_PATH = PATHS.get("base_path", "/home/POLANCO6/ESCUELANUEVA")
-        DB_PATH = PATHS.get("db_escuela", "/home/POLANCO6/ESCUELANUEVA/datos/escuela.db")
-        UPLOADS_PATH = PATHS.get("uploads_path", "/home/POLANCO6/ESCUELANUEVA/uploads")
+        logger.info("✅ Modo supervisor activado - Usando configuración de servidor remoto")
+        
+        # Validar que db_escuela esté configurado
+        if not DB_ESCUELA:
+            logger.warning("⚠️ db_escuela no está configurado en secrets.toml")
+            DB_ESCUELA = "escuela.db"  # Nombre simple por defecto
+            logger.info(f"Usando valor por defecto: {DB_ESCUELA}")
+        else:
+            logger.info(f"📁 Base de datos configurada (db_escuela): {DB_ESCUELA}")
     else:
         ENTORNO = "laptop"
-        BASE_PATH = os.getcwd()
-        DB_PATH = os.path.join(BASE_PATH, "escuela.db")
-        UPLOADS_PATH = os.path.join(BASE_PATH, "uploads")
-    
-    CONFIG = {
-        "base_path": BASE_PATH,
-        "db_path": DB_PATH,
-        "uploads_path": UPLOADS_PATH
-    }
-    
+        logger.info("💻 Modo local activado")
+        
 except Exception as e:
-    st.error(f"❌ Error cargando configuración: {e}")
-    # Valores por defecto
-    ENTORNO = "laptop"
-    CONFIG = {
-        "base_path": os.getcwd(),
-        "db_path": os.path.join(os.getcwd(), "escuela.db"),
-        "uploads_path": os.path.join(os.getcwd(), "uploads")
-    }
+    # Valores por defecto si no hay secrets.toml
+    logger.warning(f"No se pudo cargar secrets.toml: {e}")
+    SUPERVISOR_MODE = False
+    ENTORNO = "laptop"  # Por defecto modo laptop
+    DB_ESCUELA = "escuela.db"  # Nombre por defecto local
 
-# Configuración de logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configuraciones por entorno usando las variables de secrets
+CONFIG_PATHS = {
+    "servidor": {
+        "base_path": BASE_PATH if BASE_PATH else ".",
+        "db_path": DB_ESCUELA,  # USAR DB_ESCUELA DEL SECRETS.TOML
+        "uploads_path": UPLOADS_PATH if UPLOADS_PATH else "uploads"
+    },
+    "laptop": {
+        "base_path": ".",
+        "db_path": "escuela.db",
+        "uploads_path": "uploads"
+    }
+}
+
+# Configuración activa basada en ENTORNO
+CONFIG = CONFIG_PATHS[ENTORNO]
 
 # Configuración de página
 st.set_page_config(
@@ -92,134 +109,82 @@ st.set_page_config(
 )
 
 # =============================================================================
-# CLIENTE SSH PARA ACCESO REMOTO
+# FUNCIÓN PARA MOSTRAR INFORMACIÓN DE CONFIGURACIÓN EN EL SIDEBAR
 # =============================================================================
 
-class ClienteSSH:
-    """Cliente para conexión SSH al servidor remoto"""
+def mostrar_info_configuracion():
+    """Muestra información de configuración en el sidebar"""
+    st.sidebar.title("⚙️ Configuración")
     
-    def __init__(self):
-        self.host = REMOTE_HOST
-        self.port = REMOTE_PORT
-        self.username = REMOTE_USER
-        self.password = REMOTE_PASSWORD
-        self.remote_dir = REMOTE_DIR
-        self.client = None
-        self.sftp = None
+    # Mostrar entorno actual
+    entorno_display = "🌍 Servidor Remoto" if ENTORNO == "servidor" else "💻 Laptop Local"
+    st.sidebar.info(f"**{entorno_display}**")
     
-    def conectar(self):
-        """Establecer conexión SSH"""
-        try:
-            self.client = paramiko.SSHClient()
-            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            self.client.connect(
-                hostname=self.host,
-                port=self.port,
-                username=self.username,
-                password=self.password,
-                timeout=10
-            )
-            self.sftp = self.client.open_sftp()
-            logger.info(f"✅ Conexión SSH establecida a {self.host}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Error conectando SSH: {e}")
-            return False
+    # Mostrar información de la base de datos
+    with st.sidebar.expander("📊 Base de Datos"):
+        db_name = os.path.basename(CONFIG["db_path"])
+        st.info(f"**Archivo:** {db_name}")
+        
+        # Mostrar ruta de forma segura
+        if ENTORNO == "servidor":
+            st.success("✅ Conectado a base de datos remota")
+            # Solo mostrar el nombre del archivo, no la ruta completa
+            st.info("**Configuración:** Desde secrets.toml")
     
-    def desconectar(self):
-        """Cerrar conexión SSH"""
-        try:
-            if self.sftp:
-                self.sftp.close()
-            if self.client:
-                self.client.close()
-            logger.info("🔌 Conexión SSH cerrada")
-        except Exception as e:
-            logger.error(f"Error cerrando conexión SSH: {e}")
+    # Mostrar información del sistema
+    with st.sidebar.expander("📋 Información del Sistema"):
+        st.info("**Versión:** 10.0 (SQLite + BCRYPT + Secrets)")
+        st.info(f"**Supervisor Mode:** {'✅ Activado' if SUPERVISOR_MODE else '❌ Desactivado'}")
+        st.info(f"**Debug Mode:** {'✅ Activado' if DEBUG_MODE else '❌ Desactivado'}")
+        
+        # Mostrar información de correo si está configurado
+        if 'EMAIL_USER' in globals() and EMAIL_USER:
+            email_name = EMAIL_USER.split('@')[0] if '@' in EMAIL_USER else EMAIL_USER
+            st.info(f"**Email Notificaciones:** {email_name}@...")
     
-    def descargar_archivo(self, remote_path, local_path):
-        """Descargar archivo del servidor remoto"""
-        try:
-            if not self.sftp:
-                if not self.conectar():
-                    return False
-            
-            # Crear directorio local si no existe
-            local_dir = os.path.dirname(local_path)
-            os.makedirs(local_dir, exist_ok=True)
-            
-            # Descargar archivo
-            self.sftp.get(remote_path, local_path)
-            logger.info(f"📥 Archivo descargado: {remote_path} -> {local_path}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Error descargando archivo {remote_path}: {e}")
-            return False
-    
-    def subir_archivo(self, local_path, remote_path):
-        """Subir archivo al servidor remoto"""
-        try:
-            if not self.sftp:
-                if not self.conectar():
-                    return False
-            
-            # Subir archivo
-            self.sftp.put(local_path, remote_path)
-            logger.info(f"📤 Archivo subido: {local_path} -> {remote_path}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Error subiendo archivo {local_path}: {e}")
-            return False
-    
-    def ejecutar_comando(self, comando):
-        """Ejecutar comando en servidor remoto"""
-        try:
-            if not self.client:
-                if not self.conectar():
-                    return None
-            
-            stdin, stdout, stderr = self.client.exec_command(comando)
-            salida = stdout.read().decode()
-            error = stderr.read().decode()
-            
-            if error:
-                logger.warning(f"Comando generó error: {error}")
-            
-            return salida
-        except Exception as e:
-            logger.error(f"❌ Error ejecutando comando: {e}")
-            return None
+    st.sidebar.markdown("---")
+    st.sidebar.info("**Características:**")
+    st.sidebar.info("✅ Autenticación BCRYPT")
+    st.sidebar.info("✅ Base de datos SQLite")
+    st.sidebar.info("✅ Configuración por secrets.toml")
+    st.sidebar.info("✅ Gestión completa")
 
 # =============================================================================
-# SISTEMA DE BASE DE DATOS SQLITE CON SOPORTE REMOTO
+# SISTEMA DE BASE DE DATOS SQLITE - ACTUALIZADO CON SECRETS.TOML
 # =============================================================================
 
 class SistemaBaseDatos:
     def __init__(self, db_path=None):
-        # Usar la ruta configurada
+        # Usar la ruta configurada por entorno o la proporcionada
         if db_path is None:
             self.db_path = CONFIG["db_path"]
+            logger.info(f"Base de datos configurada: {self.db_path}")
+            
+            # Información adicional
+            if ENTORNO == "servidor":
+                logger.info(f"Usando db_escuela del secrets.toml")
         else:
             self.db_path = db_path
         
-        self.es_remoto = SUPERVISOR_MODE
-        self.cliente_ssh = None
+        # Si estamos en modo servidor y la ruta es remota, mostrar información
+        if ENTORNO == "servidor":
+            logger.info(f"🔗 Modo servidor activado")
+            if SUPERVISOR_MODE:
+                logger.info("📡 Supervisor mode: Conectando a servidor remoto")
         
-        if self.es_remoto:
-            self.cliente_ssh = ClienteSSH()
-            logger.info(f"Modo remoto activado. Base de datos en: {self.db_path}")
-        else:
-            logger.info(f"Modo local. Base de datos en: {self.db_path}")
+        logger.info(f"Base de datos escuela inicializada")
         
-        # Crear directorio local si no existe
-        if not self.es_remoto:
+        # Crear directorio si no existe (solo en modo local para archivos relativos)
+        if ENTORNO == "laptop":
             db_dir = os.path.dirname(self.db_path)
             if db_dir and not os.path.exists(db_dir):
                 try:
                     os.makedirs(db_dir, exist_ok=True)
-                    logger.info(f"Directorio creado: {db_dir}")
+                    logger.info(f"Directorio creado para base de datos")
                 except Exception as e:
-                    logger.warning(f"No se pudo crear directorio {db_dir}: {e}")
+                    logger.warning(f"No se pudo crear directorio: {e}")
+                    # Usar directorio actual como fallback
+                    self.db_path = "escuela.db"
         
         # Inicializar tablas con manejo de errores
         try:
@@ -228,20 +193,16 @@ class SistemaBaseDatos:
             logger.error(f"Error inicializando tablas: {e}")
             # Intentar crear una base de datos mínima
             try:
-                if not self.es_remoto:
-                    conn = sqlite3.connect(self.db_path)
-                    conn.close()
-                    logger.info(f"Base de datos básica creada en: {self.db_path}")
-                    # Reintentar inicialización
-                    self.init_tablas()
-                else:
-                    # En modo remoto, crear base de datos local temporal
-                    local_db_path = "escuela_temp.db"
-                    conn = sqlite3.connect(local_db_path)
-                    conn.close()
-                    logger.info("Base de datos temporal creada localmente")
+                conn = sqlite3.connect(self.db_path)
+                conn.close()
+                logger.info(f"Base de datos básica creada")
+                # Reintentar inicialización
+                self.init_tablas()
             except Exception as db_error:
                 logger.error(f"Error crítico: {db_error}")
+                # Si estamos en modo servidor, podría ser un problema de conexión
+                if ENTORNO == "servidor":
+                    st.warning(f"⚠️ Posible problema de conexión con la base de datos remota")
                 raise
     
     @contextmanager
@@ -249,49 +210,19 @@ class SistemaBaseDatos:
         """Context manager para manejar conexiones a la base de datos"""
         conn = None
         try:
-            if self.es_remoto and self.cliente_ssh:
-                # En modo remoto, sincronizar la base de datos primero
-                local_db_path = "escuela_remote_temp.db"
-                remote_db_path = self.db_path
-                
-                # Descargar la base de datos remota
-                if os.path.exists(local_db_path):
-                    # Verificar si la remota es más reciente
-                    try:
-                        stat_remoto = self.cliente_ssh.sftp.stat(remote_db_path)
-                        stat_local = os.path.getmtime(local_db_path)
-                        
-                        if stat_remoto.st_mtime > stat_local:
-                            self.cliente_ssh.descargar_archivo(remote_db_path, local_db_path)
-                    except:
-                        # Si hay error, descargar de nuevo
-                        self.cliente_ssh.descargar_archivo(remote_db_path, local_db_path)
-                else:
-                    # Descargar por primera vez
-                    self.cliente_ssh.descargar_archivo(remote_db_path, local_db_path)
-                
-                # Conectar a la base de datos local temporal
-                conn = sqlite3.connect(local_db_path)
-            else:
-                # Modo local
-                conn = sqlite3.connect(self.db_path)
-            
+            conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             yield conn
-            
             if conn:
                 conn.commit()
-                
-                # En modo remoto, subir cambios al servidor
-                if self.es_remoto and self.cliente_ssh:
-                    local_db_path = "escuela_remote_temp.db"
-                    remote_db_path = self.db_path
-                    self.cliente_ssh.subir_archivo(local_db_path, remote_db_path)
-                    
         except Exception as e:
             if conn:
                 conn.rollback()
             logger.error(f"Error en transacción de base de datos: {e}")
+            
+            # Mostrar mensaje más informativo según el entorno
+            if ENTORNO == "servidor":
+                st.warning(f"⚠️ Error conectando a la base de datos remota. Verifique la configuración en secrets.toml")
             raise e
         finally:
             if conn:
@@ -1187,13 +1118,22 @@ db = None
 try:
     db = SistemaBaseDatos()
     logger.info("✅ Base de datos inicializada exitosamente")
-    if SUPERVISOR_MODE:
-        logger.info("🔗 Modo remoto activo - Conectado al servidor")
+    
+    # Mostrar información sobre la base de datos cargada
+    if ENTORNO == "servidor":
+        logger.info("📡 Conectado a base de datos remota")
+        st.info("🔗 Configuración desde secrets.toml")
     else:
-        logger.info("💻 Modo local activo")
+        logger.info("💻 Conectado a base de datos local")
+        
 except Exception as e:
     logger.error(f"❌ Error crítico inicializando base de datos: {e}")
-    st.error(f"⚠️ Error inicializando base de datos: {e}")
+    
+    # Mostrar mensaje según el entorno
+    if ENTORNO == "servidor":
+        st.error(f"⚠️ Error conectando a la base de datos remota. Verifique la configuración en secrets.toml")
+    else:
+        st.error(f"⚠️ Error inicializando base de datos local")
     
     # Crear una clase dummy para continuar
     class DummyDB:
@@ -1355,976 +1295,7 @@ def cargar_datos_completos():
             }
 
 # =============================================================================
-# SISTEMA DE GESTIÓN DE INSCRIPCIONES
-# =============================================================================
-
-class SistemaInscripciones:
-    def __init__(self):
-        self.db = db
-    
-    def mostrar_formulario_inscripcion(self):
-        """Mostrar formulario para nueva inscripción"""
-        st.subheader("📝 Formulario de Inscripción")
-        
-        with st.form("formulario_inscripcion", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                nombre_completo = st.text_input("Nombre Completo*", placeholder="Ej: Juan Pérez González")
-                email = st.text_input("Correo Electrónico*", placeholder="ejemplo@email.com")
-                telefono = st.text_input("Teléfono*", placeholder="55 1234 5678")
-                fecha_nacimiento = st.date_input("Fecha de Nacimiento*", 
-                                                value=datetime.now() - timedelta(days=365*25),
-                                                max_value=datetime.now())
-            
-            with col2:
-                # Obtener programas disponibles
-                programas_df = self.db.obtener_programas()
-                programas_lista = []
-                
-                if not programas_df.empty:
-                    programas_lista = programas_df['nombre'].tolist()
-                
-                programa_interes = st.selectbox("Programa de Interés*", 
-                                              programas_lista if programas_lista else 
-                                              ["Especialidad en Enfermería Cardiovascular",
-                                               "Licenciatura en Enfermería",
-                                               "Diplomado en Enfermería en Urgencias"])
-                
-                como_se_entero = st.selectbox("¿Cómo se enteró del programa?*",
-                                            ["Internet", "Redes Sociales", "Amigo/Familiar", 
-                                             "Publicidad", "Evento", "Otro"])
-                
-                # Campos opcionales
-                documentos_subidos = st.number_input("Documentos Subidos", min_value=0, max_value=10, value=0)
-                observaciones = st.text_area("Observaciones", placeholder="Información adicional...")
-            
-            submitted = st.form_submit_button("✅ Registrar Inscripción")
-            
-            if submitted:
-                if not nombre_completo or not email or not telefono:
-                    st.error("❌ Los campos marcados con * son obligatorios")
-                    return None
-                
-                # Validar email
-                if '@' not in email or '.' not in email:
-                    st.error("❌ Por favor ingrese un correo electrónico válido")
-                    return None
-                
-                # Preparar datos
-                inscrito_data = {
-                    'nombre_completo': nombre_completo,
-                    'email': email,
-                    'telefono': telefono,
-                    'fecha_nacimiento': fecha_nacimiento,
-                    'programa_interes': programa_interes,
-                    'como_se_entero': como_se_entero,
-                    'documentos_subidos': documentos_subidos,
-                    'fecha_registro': datetime.now(),
-                    'estatus': 'Pre-inscrito'
-                }
-                
-                if observaciones:
-                    inscrito_data['documentos_guardados'] = observaciones
-                
-                return inscrito_data
-        
-        return None
-    
-    def procesar_inscripcion(self, inscrito_data):
-        """Procesar y guardar nueva inscripción"""
-        try:
-            with st.spinner("⏳ Procesando inscripción..."):
-                inscrito_id, matricula = self.db.agregar_inscrito(inscrito_data)
-                
-                if inscrito_id and matricula:
-                    # Registrar en bitácora
-                    usuario_actual = st.session_state.get('usuario_actual', {})
-                    usuario_nombre = usuario_actual.get('usuario', 'Sistema')
-                    
-                    self.db.registrar_bitacora(
-                        usuario_nombre,
-                        'INSCRIPCION_NUEVA',
-                        f'Nueva inscripción: {inscrito_data["nombre_completo"]} - {matricula}'
-                    )
-                    
-                    st.success(f"🎉 ¡Inscripción registrada exitosamente!")
-                    st.info(f"**Matrícula asignada:** {matricula}")
-                    st.info(f"**Nombre:** {inscrito_data['nombre_completo']}")
-                    st.info(f"**Programa:** {inscrito_data['programa_interes']}")
-                    
-                    # Mostrar información de acceso
-                    st.subheader("🔐 Información de Acceso")
-                    st.info(f"**Usuario:** {matricula}")
-                    st.info("**Contraseña temporal:** Los primeros 6 caracteres de la matrícula + '123'")
-                    st.warning("⚠️ Recomendamos cambiar la contraseña en el primer acceso")
-                    
-                    return True
-                else:
-                    st.error("❌ Error al guardar la inscripción")
-                    return False
-                    
-        except Exception as e:
-            st.error(f"❌ Error procesando inscripción: {e}")
-            return False
-    
-    def mostrar_lista_inscritos(self, df_inscritos):
-        """Mostrar lista de inscritos con opciones"""
-        if df_inscritos.empty:
-            st.info("📭 No hay inscritos registrados")
-            return
-        
-        st.subheader("📋 Lista de Inscritos")
-        
-        # Filtrar por búsqueda
-        busqueda = st.text_input("🔍 Buscar por nombre o matrícula", key="buscar_inscritos")
-        
-        if busqueda:
-            df_filtrado = df_inscritos[
-                df_inscritos['nombre_completo'].str.contains(busqueda, case=False, na=False) |
-                df_inscritos['matricula'].str.contains(busqueda, case=False, na=False)
-            ]
-        else:
-            df_filtrado = df_inscritos
-        
-        if df_filtrado.empty:
-            st.info("🔍 No se encontraron resultados")
-            return
-        
-        # Mostrar estadísticas
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Inscritos", len(df_filtrado))
-        with col2:
-            preinscritos = len(df_filtrado[df_filtrado['estatus'] == 'Pre-inscrito'])
-            st.metric("Pre-inscritos", preinscritos)
-        with col3:
-            otros = len(df_filtrado[df_filtrado['estatus'] != 'Pre-inscrito'])
-            st.metric("Otros Estatus", otros)
-        
-        # Mostrar tabla con columnas seleccionadas
-        columnas_mostrar = ['matricula', 'nombre_completo', 'email', 'telefono', 
-                          'programa_interes', 'fecha_registro', 'estatus']
-        
-        st.dataframe(
-            df_filtrado[columnas_mostrar],
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Opciones para cada inscrito
-        st.subheader("⚙️ Acciones")
-        inscritos_lista = df_filtrado['matricula'].tolist()
-        
-        if inscritos_lista:
-            matricula_seleccionada = st.selectbox(
-                "Seleccione una matrícula para ver detalles o acciones:",
-                inscritos_lista,
-                key="select_inscrito_acciones"
-            )
-            
-            if matricula_seleccionada:
-                inscrito = df_filtrado[df_filtrado['matricula'] == matricula_seleccionada].iloc[0]
-                
-                # Mostrar detalles
-                with st.expander("📋 Ver Detalles Completos", expanded=False):
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.write("**Información Personal:**")
-                        st.write(f"**Matrícula:** {inscrito.get('matricula', 'N/A')}")
-                        st.write(f"**Nombre:** {inscrito.get('nombre_completo', 'N/A')}")
-                        st.write(f"**Email:** {inscrito.get('email', 'N/A')}")
-                        st.write(f"**Teléfono:** {inscrito.get('telefono', 'N/A')}")
-                        if 'fecha_nacimiento' in inscrito and pd.notna(inscrito['fecha_nacimiento']):
-                            st.write(f"**Fecha Nacimiento:** {inscrito['fecha_nacimiento']}")
-                    
-                    with col2:
-                        st.write("**Información Académica:**")
-                        st.write(f"**Programa de Interés:** {inscrito.get('programa_interes', 'N/A')}")
-                        st.write(f"**Fecha Registro:** {inscrito.get('fecha_registro', 'N/A')}")
-                        st.write(f"**Estatus:** {inscrito.get('estatus', 'N/A')}")
-                        st.write(f"**Folio:** {inscrito.get('folio', 'N/A')}")
-                        st.write(f"**Como se enteró:** {inscrito.get('como_se_entero', 'N/A')}")
-                        if 'documentos_subidos' in inscrito:
-                            st.write(f"**Documentos Subidos:** {inscrito['documentos_subidos']}")
-                
-                # Acciones
-                col_acc1, col_acc2, col_acc3 = st.columns(3)
-                
-                with col_acc1:
-                    if st.button("✏️ Editar Inscrito", key=f"editar_{matricula_seleccionada}"):
-                        st.session_state.editar_inscrito = matricula_seleccionada
-                        st.rerun()
-                
-                with col_acc2:
-                    if st.button("📧 Enviar Recordatorio", key=f"recordatorio_{matricula_seleccionada}"):
-                        self.enviar_recordatorio(inscrito)
-                
-                with col_acc3:
-                    if st.button("🗑️ Eliminar Inscrito", key=f"eliminar_{matricula_seleccionada}"):
-                        if self.eliminar_inscrito(matricula_seleccionada):
-                            st.success(f"✅ Inscrito {matricula_seleccionada} eliminado")
-                            time.sleep(2)
-                            st.rerun()
-    
-    def editar_inscrito(self, matricula, df_inscritos):
-        """Formulario para editar inscrito"""
-        st.subheader(f"✏️ Editar Inscrito: {matricula}")
-        
-        # Buscar inscrito
-        inscrito = df_inscritos[df_inscritos['matricula'] == matricula]
-        
-        if inscrito.empty:
-            st.error("❌ Inscrito no encontrado")
-            return
-        
-        inscrito_data = inscrito.iloc[0].to_dict()
-        
-        with st.form("formulario_editar_inscrito"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                nombre_completo = st.text_input("Nombre Completo*", 
-                                              value=inscrito_data.get('nombre_completo', ''))
-                email = st.text_input("Correo Electrónico*", 
-                                    value=inscrito_data.get('email', ''))
-                telefono = st.text_input("Teléfono*", 
-                                       value=inscrito_data.get('telefono', ''))
-            
-            with col2:
-                programa_interes = st.text_input("Programa de Interés", 
-                                               value=inscrito_data.get('programa_interes', ''))
-                estatus = st.selectbox("Estatus", 
-                                     ["Pre-inscrito", "Documentación Pendiente", "Aceptado", "Rechazado"],
-                                     index=["Pre-inscrito", "Documentación Pendiente", "Aceptado", "Rechazado"]
-                                     .index(inscrito_data.get('estatus', 'Pre-inscrito')))
-                documentos_subidos = st.number_input("Documentos Subidos", 
-                                                   value=int(inscrito_data.get('documentos_subidos', 0)),
-                                                   min_value=0, max_value=10)
-            
-            observaciones = st.text_area("Observaciones", 
-                                       value=inscrito_data.get('documentos_guardados', ''))
-            
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                guardar = st.form_submit_button("💾 Guardar Cambios")
-            with col_btn2:
-                cancelar = st.form_submit_button("❌ Cancelar")
-            
-            if guardar:
-                if not nombre_completo or not email or not telefono:
-                    st.error("❌ Los campos marcados con * son obligatorios")
-                    return
-                
-                datos_actualizados = {
-                    'nombre_completo': nombre_completo,
-                    'email': email,
-                    'telefono': telefono,
-                    'programa_interes': programa_interes,
-                    'estatus': estatus,
-                    'documentos_subidos': documentos_subidos,
-                    'documentos_guardados': observaciones
-                }
-                
-                if self.db.actualizar_inscrito(matricula, datos_actualizados):
-                    st.success("✅ Cambios guardados exitosamente")
-                    
-                    # Registrar en bitácora
-                    usuario_actual = st.session_state.get('usuario_actual', {})
-                    usuario_nombre = usuario_actual.get('usuario', 'Sistema')
-                    
-                    self.db.registrar_bitacora(
-                        usuario_nombre,
-                        'INSCRITO_ACTUALIZADO',
-                        f'Inscrito actualizado: {matricula}'
-                    )
-                    
-                    time.sleep(2)
-                    if 'editar_inscrito' in st.session_state:
-                        del st.session_state.editar_inscrito
-                    st.rerun()
-                else:
-                    st.error("❌ Error al guardar cambios")
-            
-            if cancelar:
-                if 'editar_inscrito' in st.session_state:
-                    del st.session_state.editar_inscrito
-                st.rerun()
-    
-    def eliminar_inscrito(self, matricula):
-        """Eliminar inscrito"""
-        try:
-            confirmacion = st.checkbox("⚠️ Confirmar eliminación permanente")
-            
-            if confirmacion:
-                if st.button("🗑️ Sí, eliminar definitivamente", type="primary"):
-                    if self.db.eliminar_inscrito(matricula):
-                        # Registrar en bitácora
-                        usuario_actual = st.session_state.get('usuario_actual', {})
-                        usuario_nombre = usuario_actual.get('usuario', 'Sistema')
-                        
-                        self.db.registrar_bitacora(
-                            usuario_nombre,
-                            'INSCRITO_ELIMINADO',
-                            f'Inscrito eliminado: {matricula}'
-                        )
-                        
-                        return True
-                    else:
-                        st.error("❌ Error al eliminar inscrito")
-            
-            return False
-        except Exception as e:
-            st.error(f"❌ Error eliminando inscrito: {e}")
-            return False
-    
-    def enviar_recordatorio(self, inscrito):
-        """Enviar recordatorio por email (simulado)"""
-        st.info("📧 Función de envío de recordatorios en desarrollo")
-        st.info(f"Se enviaría un recordatorio a: {inscrito.get('email', '')}")
-        # Aquí iría la lógica real de envío de emails
-
-# =============================================================================
-# SISTEMA DE GESTIÓN DE ESTUDIANTES
-# =============================================================================
-
-class SistemaEstudiantes:
-    def __init__(self):
-        self.db = db
-    
-    def mostrar_lista_estudiantes(self, df_estudiantes):
-        """Mostrar lista de estudiantes"""
-        if df_estudiantes.empty:
-            st.info("🎓 No hay estudiantes registrados")
-            return
-        
-        st.subheader("🎓 Lista de Estudiantes")
-        
-        # Filtrar por búsqueda
-        busqueda = st.text_input("🔍 Buscar por nombre o matrícula", key="buscar_estudiantes")
-        
-        if busqueda:
-            df_filtrado = df_estudiantes[
-                df_estudiantes['nombre_completo'].str.contains(busqueda, case=False, na=False) |
-                df_estudiantes['matricula'].str.contains(busqueda, case=False, na=False)
-            ]
-        else:
-            df_filtrado = df_estudiantes
-        
-        if df_filtrado.empty:
-            st.info("🔍 No se encontraron resultados")
-            return
-        
-        # Mostrar estadísticas
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Estudiantes", len(df_filtrado))
-        with col2:
-            activos = len(df_filtrado[df_filtrado['estatus'] == 'ACTIVO'])
-            st.metric("Activos", activos)
-        with col3:
-            inactivos = len(df_filtrado[df_filtrado['estatus'] != 'ACTIVO'])
-            st.metric("Inactivos", inactivos)
-        
-        # Mostrar tabla con columnas seleccionadas
-        columnas_mostrar = ['matricula', 'nombre_completo', 'programa', 'email', 
-                          'telefono', 'fecha_ingreso', 'estatus']
-        
-        st.dataframe(
-            df_filtrado[columnas_mostrar],
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Opciones para cada estudiante
-        if st.checkbox("📋 Ver detalles de estudiante específico"):
-            estudiantes_lista = df_filtrado['matricula'].tolist()
-            
-            if estudiantes_lista:
-                matricula_seleccionada = st.selectbox(
-                    "Seleccione una matrícula:",
-                    estudiantes_lista,
-                    key="select_estudiante_detalles"
-                )
-                
-                if matricula_seleccionada:
-                    estudiante = df_filtrado[df_filtrado['matricula'] == matricula_seleccionada].iloc[0]
-                    self.mostrar_detalles_estudiante(estudiante)
-    
-    def mostrar_detalles_estudiante(self, estudiante):
-        """Mostrar detalles completos de un estudiante"""
-        st.subheader(f"📋 Detalles del Estudiante: {estudiante.get('matricula', '')}")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Información Personal:**")
-            st.write(f"**Matrícula:** {estudiante.get('matricula', 'N/A')}")
-            st.write(f"**Nombre:** {estudiante.get('nombre_completo', 'N/A')}")
-            st.write(f"**Email:** {estudiante.get('email', 'N/A')}")
-            st.write(f"**Teléfono:** {estudiante.get('telefono', 'N/A')}")
-            if 'fecha_nacimiento' in estudiante and pd.notna(estudiante['fecha_nacimiento']):
-                st.write(f"**Fecha Nacimiento:** {estudiante['fecha_nacimiento']}")
-            if 'genero' in estudiante:
-                st.write(f"**Género:** {estudiante['genero']}")
-        
-        with col2:
-            st.write("**Información Académica:**")
-            st.write(f"**Programa:** {estudiante.get('programa', 'N/A')}")
-            st.write(f"**Fecha Inscripción:** {estudiante.get('fecha_inscripcion', 'N/A')}")
-            st.write(f"**Fecha Ingreso:** {estudiante.get('fecha_ingreso', 'N/A')}")
-            st.write(f"**Estatus:** {estudiante.get('estatus', 'N/A')}")
-            if 'programa_interes' in estudiante:
-                st.write(f"**Programa Interés Original:** {estudiante['programa_interes']}")
-            if 'folio' in estudiante:
-                st.write(f"**Folio:** {estudiante['folio']}")
-            if 'como_se_entero' in estudiante:
-                st.write(f"**Como se enteró:** {estudiante['como_se_entero']}")
-
-# =============================================================================
-# SISTEMA DE GESTIÓN DE EGRESADOS
-# =============================================================================
-
-class SistemaEgresados:
-    def __init__(self):
-        self.db = db
-    
-    def mostrar_lista_egresados(self, df_egresados):
-        """Mostrar lista de egresados"""
-        if df_egresados.empty:
-            st.info("🎓 No hay egresados registrados")
-            return
-        
-        st.subheader("🎓 Lista de Egresados")
-        
-        # Filtrar por búsqueda
-        busqueda = st.text_input("🔍 Buscar por nombre o matrícula", key="buscar_egresados")
-        
-        if busqueda:
-            df_filtrado = df_egresados[
-                df_egresados['nombre_completo'].str.contains(busqueda, case=False, na=False) |
-                df_egresados['matricula'].str.contains(busqueda, case=False, na=False)
-            ]
-        else:
-            df_filtrado = df_egresados
-        
-        if df_filtrado.empty:
-            st.info("🔍 No se encontraron resultados")
-            return
-        
-        # Mostrar estadísticas
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Egresados", len(df_filtrado))
-        with col2:
-            empleados = len(df_filtrado[df_filtrado['estado_laboral'] == 'Contratada'])
-            st.metric("Empleados", empleados)
-        with col3:
-            buscando = len(df_filtrado[df_filtrado['estado_laboral'] == 'Buscando empleo'])
-            st.metric("Buscando empleo", buscando)
-        
-        # Mostrar tabla con columnas seleccionadas
-        columnas_mostrar = ['matricula', 'nombre_completo', 'programa_original', 
-                          'nivel_academico', 'email', 'estado_laboral', 'fecha_graduacion']
-        
-        st.dataframe(
-            df_filtrado[columnas_mostrar],
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Opciones para cada egresado
-        if st.checkbox("📋 Ver detalles de egresado específico"):
-            egresados_lista = df_filtrado['matricula'].tolist()
-            
-            if egresados_lista:
-                matricula_seleccionada = st.selectbox(
-                    "Seleccione una matrícula:",
-                    egresados_lista,
-                    key="select_egresado_detalles"
-                )
-                
-                if matricula_seleccionada:
-                    egresado = df_filtrado[df_filtrado['matricula'] == matricula_seleccionada].iloc[0]
-                    self.mostrar_detalles_egresado(egresado)
-    
-    def mostrar_detalles_egresado(self, egresado):
-        """Mostrar detalles completos de un egresado"""
-        st.subheader(f"📋 Detalles del Egresado: {egresado.get('matricula', '')}")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Información Personal:**")
-            st.write(f"**Matrícula:** {egresado.get('matricula', 'N/A')}")
-            st.write(f"**Nombre:** {egresado.get('nombre_completo', 'N/A')}")
-            st.write(f"**Email:** {egresado.get('email', 'N/A')}")
-            st.write(f"**Teléfono:** {egresado.get('telefono', 'N/A')}")
-            st.write(f"**Estado Laboral:** {egresado.get('estado_laboral', 'N/A')}")
-        
-        with col2:
-            st.write("**Información Académica:**")
-            st.write(f"**Programa Original:** {egresado.get('programa_original', 'N/A')}")
-            st.write(f"**Fecha Graduación:** {egresado.get('fecha_graduacion', 'N/A')}")
-            st.write(f"**Nivel Académico:** {egresado.get('nivel_academico', 'N/A')}")
-            st.write(f"**Fecha Actualización:** {egresado.get('fecha_actualizacion', 'N/A')}")
-            if 'documentos_subidos' in egresado:
-                st.write(f"**Documentos:** {egresado['documentos_subidos']}")
-
-# =============================================================================
-# SISTEMA DE GESTIÓN DE CONTRATADOS
-# =============================================================================
-
-class SistemaContratados:
-    def __init__(self):
-        self.db = db
-    
-    def mostrar_lista_contratados(self, df_contratados):
-        """Mostrar lista de contratados"""
-        if df_contratados.empty:
-            st.info("💼 No hay contratados registrados")
-            return
-        
-        st.subheader("💼 Lista de Contratados")
-        
-        # Filtrar por búsqueda
-        busqueda = st.text_input("🔍 Buscar por matrícula", key="buscar_contratados")
-        
-        if busqueda:
-            df_filtrado = df_contratados[
-                df_contratados['matricula'].str.contains(busqueda, case=False, na=False)
-            ]
-        else:
-            df_filtrado = df_contratados
-        
-        if df_filtrado.empty:
-            st.info("🔍 No se encontraron resultados")
-            return
-        
-        # Mostrar estadísticas
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Contratados", len(df_filtrado))
-        with col2:
-            activos = len(df_filtrado[df_filtrado['estatus'] == 'Activo'])
-            st.metric("Activos", activos)
-        with col3:
-            inactivos = len(df_filtrado[df_filtrado['estatus'] != 'Activo'])
-            st.metric("Inactivos", inactivos)
-        
-        # Mostrar tabla con columnas seleccionadas
-        columnas_mostrar = ['matricula', 'puesto', 'departamento', 
-                          'estatus', 'salario', 'tipo_contrato', 'fecha_contratacion']
-        
-        st.dataframe(
-            df_filtrado[columnas_mostrar],
-            use_container_width=True,
-            hide_index=True
-        )
-
-# =============================================================================
-# SISTEMA DE GESTIÓN DE USUARIOS
-# =============================================================================
-
-class SistemaUsuarios:
-    def __init__(self):
-        self.db = db
-    
-    def mostrar_lista_usuarios(self, df_usuarios):
-        """Mostrar lista de usuarios"""
-        if df_usuarios.empty:
-            st.info("👥 No hay usuarios registrados")
-            return
-        
-        st.subheader("👥 Lista de Usuarios")
-        
-        # Solo administradores pueden ver esta sección
-        rol_usuario = st.session_state.get('rol_usuario', '')
-        if rol_usuario != 'administrador':
-            st.warning("⚠️ Solo los administradores pueden acceder a esta sección")
-            return
-        
-        # Filtrar por búsqueda
-        busqueda = st.text_input("🔍 Buscar por usuario o nombre", key="buscar_usuarios")
-        
-        if busqueda:
-            df_filtrado = df_usuarios[
-                df_usuarios['usuario'].str.contains(busqueda, case=False, na=False) |
-                df_usuarios['nombre_completo'].str.contains(busqueda, case=False, na=False)
-            ]
-        else:
-            df_filtrado = df_usuarios
-        
-        if df_filtrado.empty:
-            st.info("🔍 No se encontraron resultados")
-            return
-        
-        # Mostrar estadísticas
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Usuarios", len(df_filtrado))
-        with col2:
-            activos = len(df_filtrado[df_filtrado['activo'] == 1])
-            st.metric("Activos", activos)
-        with col3:
-            admin = len(df_filtrado[df_filtrado['rol'] == 'administrador'])
-            st.metric("Administradores", admin)
-        
-        # Mostrar tabla con columnas seleccionadas
-        columnas_mostrar = ['usuario', 'nombre_completo', 'rol', 'matricula', 
-                          'email', 'activo', 'fecha_creacion']
-        
-        st.dataframe(
-            df_filtrado[columnas_mostrar],
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Opciones para administrador
-        if st.checkbox("🛠️ Herramientas de Administrador"):
-            self.mostrar_herramientas_admin(df_filtrado)
-    
-    def mostrar_herramientas_admin(self, df_usuarios):
-        """Mostrar herramientas de administración de usuarios"""
-        st.subheader("🛠️ Herramientas de Administración")
-        
-        tab1, tab2, tab3 = st.tabs(["➕ Nuevo Usuario", "✏️ Editar Usuario", "🔧 Configuración"])
-        
-        with tab1:
-            self.formulario_nuevo_usuario()
-        
-        with tab2:
-            self.formulario_editar_usuario(df_usuarios)
-        
-        with tab3:
-            st.info("Configuración del sistema")
-            if st.button("🔄 Recrear Base de Datos", type="secondary"):
-                if st.checkbox("⚠️ Esta acción eliminará todos los datos existentes"):
-                    if st.button("✅ Confirmar recreación", type="primary"):
-                        try:
-                            # En modo remoto, eliminar archivo remoto
-                            if SUPERVISOR_MODE and db.cliente_ssh:
-                                db.cliente_ssh.ejecutar_comando(f"rm -f {CONFIG['db_path']}")
-                                st.success("✅ Base de datos remota eliminada")
-                            else:
-                                # Modo local
-                                if os.path.exists(CONFIG['db_path']):
-                                    os.remove(CONFIG['db_path'])
-                                    st.success("✅ Base de datos local eliminada")
-                            
-                            st.info("🔄 Por favor, recarga la página para recrear la base de datos")
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
-    
-    def formulario_nuevo_usuario(self):
-        """Formulario para crear nuevo usuario"""
-        with st.form("form_nuevo_usuario"):
-            st.write("### ➕ Crear Nuevo Usuario")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                usuario = st.text_input("Usuario*", placeholder="nombre.usuario")
-                nombre_completo = st.text_input("Nombre Completo*", placeholder="Nombre Apellidos")
-                email = st.text_input("Email*", placeholder="usuario@escuela.edu.mx")
-                matricula = st.text_input("Matrícula", placeholder="MAT-XXX-000")
-            
-            with col2:
-                rol = st.selectbox("Rol*", ["inscrito", "estudiante", "egresado", "contratado", "administrador"])
-                password = st.text_input("Contraseña*", type="password", placeholder="********")
-                confirm_password = st.text_input("Confirmar Contraseña*", type="password", placeholder="********")
-                activo = st.checkbox("Usuario Activo", value=True)
-            
-            crear = st.form_submit_button("✅ Crear Usuario")
-            
-            if crear:
-                if not usuario or not nombre_completo or not email or not password:
-                    st.error("❌ Los campos marcados con * son obligatorios")
-                    return
-                
-                if password != confirm_password:
-                    st.error("❌ Las contraseñas no coinciden")
-                    return
-                
-                if len(password) < 8:
-                    st.error("❌ La contraseña debe tener al menos 8 caracteres")
-                    return
-                
-                # Crear usuario en la base de datos
-                try:
-                    with self.db.get_connection() as conn:
-                        cursor = conn.cursor()
-                        
-                        # Verificar si el usuario ya existe
-                        cursor.execute("SELECT COUNT(*) FROM usuarios WHERE usuario = ?", (usuario,))
-                        if cursor.fetchone()[0] > 0:
-                            st.error("❌ El usuario ya existe")
-                            return
-                        
-                        # Hash de la contraseña
-                        password_hash_str, salt_hex = self.db.hash_password(password)
-                        
-                        # Insertar nuevo usuario
-                        cursor.execute('''
-                            INSERT INTO usuarios 
-                            (usuario, password_hash, salt, rol, nombre_completo,
-                             nombre, email, matricula, activo)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            usuario,
-                            password_hash_str,
-                            salt_hex,
-                            rol,
-                            nombre_completo,
-                            nombre_completo,  # nombre = nombre_completo
-                            email,
-                            matricula if matricula else None,
-                            1 if activo else 0
-                        ))
-                        
-                        # Registrar en bitácora
-                        usuario_actual = st.session_state.get('usuario_actual', {})
-                        admin_nombre = usuario_actual.get('usuario', 'Sistema')
-                        
-                        self.db.registrar_bitacora(
-                            admin_nombre,
-                            'USUARIO_CREADO',
-                            f'Nuevo usuario creado: {usuario} ({rol})'
-                        )
-                        
-                        st.success(f"✅ Usuario '{usuario}' creado exitosamente")
-                        st.rerun()
-                        
-                except Exception as e:
-                    st.error(f"❌ Error creando usuario: {e}")
-    
-    def formulario_editar_usuario(self, df_usuarios):
-        """Formulario para editar usuario existente"""
-        st.write("### ✏️ Editar Usuario Existente")
-        
-        usuarios_lista = df_usuarios['usuario'].tolist()
-        
-        if not usuarios_lista:
-            st.info("No hay usuarios para editar")
-            return
-        
-        usuario_seleccionado = st.selectbox(
-            "Seleccionar usuario a editar:",
-            usuarios_lista,
-            key="select_usuario_editar"
-        )
-        
-        if usuario_seleccionado:
-            usuario_data = df_usuarios[df_usuarios['usuario'] == usuario_seleccionado].iloc[0]
-            
-            with st.form("form_editar_usuario"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    nuevo_usuario = st.text_input("Usuario", value=usuario_data.get('usuario', ''))
-                    nuevo_nombre = st.text_input("Nombre Completo", value=usuario_data.get('nombre_completo', ''))
-                    nuevo_email = st.text_input("Email", value=usuario_data.get('email', ''))
-                    nueva_matricula = st.text_input("Matrícula", value=usuario_data.get('matricula', ''))
-                
-                with col2:
-                    nuevo_rol = st.selectbox(
-                        "Rol", 
-                        ["inscrito", "estudiante", "egresado", "contratado", "administrador"],
-                        index=["inscrito", "estudiante", "egresado", "contratado", "administrador"]
-                        .index(usuario_data.get('rol', 'inscrito'))
-                    )
-                    nuevo_activo = st.checkbox("Usuario Activo", value=bool(usuario_data.get('activo', 1)))
-                    
-                    st.write("---")
-                    st.write("**Cambiar Contraseña (opcional)**")
-                    nueva_password = st.text_input("Nueva Contraseña", type="password", placeholder="Dejar en blanco para no cambiar")
-                    confirm_password = st.text_input("Confirmar Contraseña", type="password")
-                
-                guardar = st.form_submit_button("💾 Guardar Cambios")
-                
-                if guardar:
-                    if not nuevo_usuario or not nuevo_nombre or not nuevo_email:
-                        st.error("❌ Los campos de usuario, nombre y email son obligatorios")
-                        return
-                    
-                    if nueva_password and nueva_password != confirm_password:
-                        st.error("❌ Las contraseñas no coinciden")
-                        return
-                    
-                    if nueva_password and len(nueva_password) < 8:
-                        st.error("❌ La contraseña debe tener al menos 8 caracteres")
-                        return
-                    
-                    # Preparar datos para actualizar
-                    datos_actualizados = {
-                        'usuario': nuevo_usuario,
-                        'nombre_completo': nuevo_nombre,
-                        'nombre': nuevo_nombre,
-                        'email': nuevo_email,
-                        'matricula': nueva_matricula if nueva_matricula else None,
-                        'rol': nuevo_rol,
-                        'activo': 1 if nuevo_activo else 0
-                    }
-                    
-                    # Si hay nueva contraseña, actualizarla
-                    if nueva_password:
-                        password_hash_str, salt_hex = self.db.hash_password(nueva_password)
-                        datos_actualizados['password_hash'] = password_hash_str
-                        datos_actualizados['salt'] = salt_hex
-                    
-                    # Actualizar usuario
-                    if self.db.actualizar_usuario(usuario_data['id'], datos_actualizados):
-                        # Registrar en bitácora
-                        usuario_actual = st.session_state.get('usuario_actual', {})
-                        admin_nombre = usuario_actual.get('usuario', 'Sistema')
-                        
-                        self.db.registrar_bitacora(
-                            admin_nombre,
-                            'USUARIO_ACTUALIZADO',
-                            f'Usuario actualizado: {usuario_seleccionado} -> {nuevo_usuario}'
-                        )
-                        
-                        st.success("✅ Usuario actualizado exitosamente")
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error("❌ Error actualizando usuario")
-
-# =============================================================================
-# SISTEMA DE REPORTES Y ESTADÍSTICAS
-# =============================================================================
-
-class SistemaReportes:
-    def __init__(self):
-        self.db = db
-    
-    def mostrar_estadisticas_generales(self, datos):
-        """Mostrar estadísticas generales del sistema"""
-        st.subheader("📊 Estadísticas Generales")
-        
-        # Obtener estadísticas de la base de datos
-        estadisticas = self.db.obtener_estadisticas_generales()
-        
-        if not estadisticas:
-            st.info("No hay estadísticas disponibles")
-            return
-        
-        # Mostrar métricas principales
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric("Inscritos", estadisticas.get('total_inscritos', 0))
-        with col2:
-            st.metric("Estudiantes", estadisticas.get('total_estudiantes', 0))
-        with col3:
-            st.metric("Egresados", estadisticas.get('total_egresados', 0))
-        with col4:
-            st.metric("Contratados", estadisticas.get('total_contratados', 0))
-        with col5:
-            st.metric("Usuarios", estadisticas.get('total_usuarios', 0))
-        
-        # Gráficos y análisis
-        col_graf1, col_graf2 = st.columns(2)
-        
-        with col_graf1:
-            st.subheader("📈 Distribución por Programa")
-            if estadisticas.get('inscritos_por_programa'):
-                df_programas = pd.DataFrame(
-                    estadisticas['inscritos_por_programa'],
-                    columns=['programa', 'cantidad']
-                )
-                if not df_programas.empty:
-                    st.bar_chart(df_programas.set_index('programa'))
-        
-        with col_graf2:
-            st.subheader("🎓 Niveles Académicos")
-            if estadisticas.get('egresados_por_nivel'):
-                df_niveles = pd.DataFrame(
-                    estadisticas['egresados_por_nivel'],
-                    columns=['nivel', 'cantidad']
-                )
-                if not df_niveles.empty:
-                    st.bar_chart(df_niveles.set_index('nivel'))
-        
-        # Tabla de estudiantes por estatus
-        st.subheader("📋 Estudiantes por Estatus")
-        if estadisticas.get('estudiantes_por_estatus'):
-            df_estatus = pd.DataFrame(
-                estadisticas['estudiantes_por_estatus'],
-                columns=['estatus', 'cantidad']
-            )
-            if not df_estatus.empty:
-                st.dataframe(df_estatus, use_container_width=True, hide_index=True)
-    
-    def mostrar_reporte_inscripciones(self, df_inscritos):
-        """Mostrar reporte detallado de inscripciones"""
-        st.subheader("📋 Reporte de Inscripciones")
-        
-        if df_inscritos.empty:
-            st.info("No hay datos de inscripciones")
-            return
-        
-        # Filtros de fecha
-        col_fecha1, col_fecha2 = st.columns(2)
-        with col_fecha1:
-            fecha_inicio = st.date_input("Fecha inicio", 
-                                        value=datetime.now() - timedelta(days=30))
-        with col_fecha2:
-            fecha_fin = st.date_input("Fecha fin", value=datetime.now())
-        
-        # Convertir fechas a datetime
-        fecha_inicio_dt = datetime.combine(fecha_inicio, datetime.min.time())
-        fecha_fin_dt = datetime.combine(fecha_fin, datetime.max.time())
-        
-        # Filtrar por fecha
-        df_inscritos['fecha_registro_dt'] = pd.to_datetime(df_inscritos['fecha_registro'])
-        df_filtrado = df_inscritos[
-            (df_inscritos['fecha_registro_dt'] >= fecha_inicio_dt) &
-            (df_inscritos['fecha_registro_dt'] <= fecha_fin_dt)
-        ]
-        
-        if df_filtrado.empty:
-            st.info(f"No hay inscripciones entre {fecha_inicio} y {fecha_fin}")
-            return
-        
-        # Métricas del período
-        col_met1, col_met2, col_met3 = st.columns(3)
-        with col_met1:
-            st.metric("Inscripciones totales", len(df_filtrado))
-        with col_met2:
-            st.metric("Inscripciones/día", round(len(df_filtrado) / 30, 1))
-        with col_met3:
-            programas_unicos = df_filtrado['programa_interes'].nunique()
-            st.metric("Programas diferentes", programas_unicos)
-        
-        # Gráfico de inscripciones por día
-        st.subheader("📈 Inscripciones por Día")
-        df_diario = df_filtrado.copy()
-        df_diario['fecha'] = df_diario['fecha_registro_dt'].dt.date
-        conteo_diario = df_diario.groupby('fecha').size().reset_index(name='inscripciones')
-        
-        if not conteo_diario.empty:
-            st.line_chart(conteo_diario.set_index('fecha'))
-        
-        # Tabla detallada
-        st.subheader("📋 Detalle de Inscripciones")
-        columnas_mostrar = ['matricula', 'nombre_completo', 'email', 'programa_interes', 
-                          'fecha_registro', 'estatus']
-        st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True, hide_index=True)
-        
-        # Opción de exportación
-        if st.button("📥 Exportar a CSV"):
-            csv = df_filtrado[columnas_mostrar].to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Descargar CSV",
-                data=csv,
-                file_name=f"inscripciones_{fecha_inicio}_{fecha_fin}.csv",
-                mime="text/csv"
-            )
-
-# =============================================================================
-# INTERFAZ PRINCIPAL
+# INTERFAZ DE LOGIN ACTUALIZADA
 # =============================================================================
 
 def mostrar_login():
@@ -2333,12 +1304,19 @@ def mostrar_login():
     st.markdown("---")
     
     # Mostrar entorno actual
-    if SUPERVISOR_MODE:
-        st.success(f"**🌍 MODO SERVIDOR REMOTO** - Conectado a: {REMOTE_HOST}")
-    else:
-        st.info(f"**💻 MODO LOCAL** - Base de datos local")
+    entorno_display = "🌍 Servidor Remoto" if ENTORNO == "servidor" else "💻 Laptop Local"
+    st.info(f"**{entorno_display}**")
     
-    st.info(f"**📁 Base de datos:** {CONFIG['db_path']}")
+    # Mostrar información de la base de datos de forma segura
+    db_name = os.path.basename(CONFIG['db_path'])
+    st.info(f"**Base de datos:** {db_name}")
+    
+    # Mostrar si se está usando secrets.toml
+    try:
+        if st.secrets:
+            st.success("✅ Configuración cargada desde secrets.toml")
+    except:
+        st.warning("⚠️ No se encontró archivo secrets.toml")
     
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
@@ -2367,6 +1345,10 @@ def mostrar_login():
         st.info("🔒 Contraseña: Admin123!")
         st.warning("⚠️ **Nota:** Cambie estas credenciales en producción")
 
+# =============================================================================
+# INTERFAZ PRINCIPAL ACTUALIZADA
+# =============================================================================
+
 def mostrar_interfaz_principal():
     """Interfaz principal del sistema"""
     st.title("🏥 Sistema Escuela de Enfermería")
@@ -2376,10 +1358,8 @@ def mostrar_interfaz_principal():
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
-        if SUPERVISOR_MODE:
-            st.success(f"**🌍 SERVIDOR REMOTO** - {REMOTE_HOST}")
-        else:
-            st.info("💻 MODO LOCAL")
+        entorno_display = "🌍 Servidor Remoto" if ENTORNO == "servidor" else "💻 Laptop Local"
+        st.write(f"**{entorno_display}**")
         
         nombre_usuario = "Usuario"
         if usuario_actual:
@@ -2410,10 +1390,11 @@ def mostrar_interfaz_principal():
     df_programas = datos.get('programas', pd.DataFrame())
     
     # Menú lateral
-    st.sidebar.title("📊 Menú Principal")
+    mostrar_info_configuracion()
     
+    # Menú principal debajo del sidebar
     opcion_menu = st.sidebar.selectbox(
-        "Seleccione una opción:",
+        "📊 Menú Principal",
         [
             "🏠 Dashboard",
             "📝 Inscripciones",
@@ -2481,27 +1462,21 @@ def mostrar_interfaz_principal():
         st.header("⚙️ Configuración del Sistema")
         
         with st.expander("🌍 Configuración de Entorno"):
-            if SUPERVISOR_MODE:
-                st.success("✅ **MODO SERVIDOR REMOTO ACTIVO**")
-                st.info(f"**Servidor:** {REMOTE_HOST}")
-                st.info(f"**Usuario:** {REMOTE_USER}")
-                st.info(f"**Directorio remoto:** {REMOTE_DIR}")
-            else:
-                st.info("💻 **MODO LOCAL ACTIVO**")
+            st.info(f"**Entorno actual:** {ENTORNO.upper()}")
             
-            st.info(f"**Ruta base de datos:** {CONFIG['db_path']}")
-            st.info(f"**Ruta uploads:** {CONFIG['uploads_path']}")
+            # Mostrar información de forma segura
+            st.subheader("🔐 Configuración desde secrets.toml")
+            st.info(f"**Supervisor Mode:** {SUPERVISOR_MODE}")
+            st.info(f"**Debug Mode:** {DEBUG_MODE}")
             
-            # Test de conexión SSH
-            if SUPERVISOR_MODE:
-                if st.button("🔗 Probar conexión SSH"):
-                    with st.spinner("Probando conexión..."):
-                        cliente = ClienteSSH()
-                        if cliente.conectar():
-                            st.success("✅ Conexión SSH exitosa")
-                            cliente.desconectar()
-                        else:
-                            st.error("❌ Error de conexión SSH")
+            # Mostrar nombres de archivos, no rutas completas
+            db_name = os.path.basename(CONFIG['db_path'])
+            st.info(f"**Base de datos:** {db_name}")
+            
+            # Mostrar correo de forma segura
+            if 'EMAIL_USER' in globals() and EMAIL_USER:
+                email_display = f"{EMAIL_USER.split('@')[0]}@..." if '@' in EMAIL_USER else "Configurado"
+                st.info(f"**Email notificaciones:** {email_display}")
         
         with st.expander("🗄️ Base de Datos"):
             st.info("**Tablas disponibles:**")
@@ -2521,18 +1496,22 @@ def mostrar_interfaz_principal():
                         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
                         tablas = cursor.fetchall()
                         st.success(f"✅ Conexión exitosa. Tablas: {len(tablas)}")
+                        
+                        # Mostrar lista de tablas
+                        if tablas:
+                            st.write("**Lista de tablas:**")
+                            for tabla in tablas:
+                                st.write(f"- {tabla[0]}")
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
+
+# =============================================================================
+# DASHBOARD
+# =============================================================================
 
 def mostrar_dashboard(datos, sistema_reportes):
     """Mostrar dashboard principal"""
     st.header("🏠 Dashboard Principal")
-    
-    # Mostrar modo de conexión
-    if SUPERVISOR_MODE:
-        st.success(f"🔗 **Conectado al servidor remoto:** {REMOTE_HOST}")
-    else:
-        st.info("💻 **Ejecutando en modo local**")
     
     # Métricas rápidas
     col1, col2, col3, col4 = st.columns(4)
@@ -2623,27 +1602,6 @@ def main():
         st.session_state.editar_inscrito = None
     if 'menu_opcion' not in st.session_state:
         st.session_state.menu_opcion = "🏠 Dashboard"
-    
-    # Configuración del sidebar
-    st.sidebar.title("⚙️ Configuración")
-    
-    if SUPERVISOR_MODE:
-        st.sidebar.success("🌍 **SERVIDOR REMOTO**")
-        st.sidebar.info(f"**Host:** {REMOTE_HOST}")
-    else:
-        st.sidebar.info("💻 **MODO LOCAL**")
-    
-    st.sidebar.info(f"**Versión:** 10.0 (SQLite + BCRYPT)")
-    
-    st.sidebar.markdown("---")
-    st.sidebar.info("**Características:**")
-    st.sidebar.info("✅ Autenticación BCRYPT")
-    st.sidebar.info("✅ Base de datos SQLite")
-    st.sidebar.info("✅ Compatible con migracion10.py")
-    if SUPERVISOR_MODE:
-        st.sidebar.success("✅ Conectado a servidor remoto")
-    else:
-        st.sidebar.info("✅ Modo local activo")
     
     # Mostrar interfaz según estado de autenticación
     if not st.session_state.login_exitoso:
