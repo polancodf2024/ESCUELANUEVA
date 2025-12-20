@@ -1,6 +1,6 @@
 """
 migracion20.py - Sistema de migración con BCRYPT y SSH
-Versión completa corregida - EXCLUSIVAMENTE MODO REMOTO SSH
+Versión completa mejorada con todas las recomendaciones
 Sistema completo de migración con base de datos SQLite remota
 NO SOPORTA MODO LOCAL - SIEMPRE CONECTA AL SERVIDOR REMOTO
 """
@@ -28,6 +28,13 @@ import logging
 import bcrypt
 import subprocess
 import sys
+import socket
+import re
+import glob
+import atexit
+import math
+import psutil
+from typing import Optional, Dict, Any, List, Tuple
 warnings.filterwarnings('ignore')
 
 # Intentar importar tomllib (Python 3.11+) o tomli (Python < 3.11)
@@ -43,14 +50,90 @@ except ImportError:
         st.error("❌ ERROR CRÍTICO: No se encontró tomllib o tomli. Instalar con: pip install tomli")
         st.stop()
 
-# Configuración de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# =============================================================================
+# CONFIGURACIÓN DE LOGGING MEJORADA
+# =============================================================================
 
-# Configuración de página
+class EnhancedLogger:
+    """Logger mejorado con diferentes niveles y formato detallado"""
+    
+    def __init__(self):
+        # Configurar logging a archivo y consola
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+        
+        # Formato detallado
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        # Handler para consola
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        
+        # Handler para archivo
+        file_handler = logging.FileHandler('migracion_detallado.log', encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        
+        # Agregar handlers
+        self.logger.addHandler(console_handler)
+        self.logger.addHandler(file_handler)
+    
+    def debug(self, message, extra=None):
+        """Log nivel debug"""
+        self.logger.debug(message, extra=extra)
+    
+    def info(self, message, extra=None):
+        """Log nivel info"""
+        self.logger.info(message, extra=extra)
+    
+    def warning(self, message, extra=None):
+        """Log nivel warning"""
+        self.logger.warning(message, extra=extra)
+    
+    def error(self, message, exc_info=False, extra=None):
+        """Log nivel error"""
+        self.logger.error(message, exc_info=exc_info, extra=extra)
+    
+    def critical(self, message, exc_info=False, extra=None):
+        """Log nivel critical"""
+        self.logger.critical(message, exc_info=exc_info, extra=extra)
+    
+    def log_migration(self, operation, status, details):
+        """Log específico para operaciones de migración"""
+        log_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'operation': operation,
+            'status': status,
+            'details': details
+        }
+        
+        # Guardar en archivo JSON para análisis posterior
+        log_file = 'migration_operations.json'
+        try:
+            if os.path.exists(log_file):
+                with open(log_file, 'r') as f:
+                    logs = json.load(f)
+            else:
+                logs = []
+            
+            logs.append(log_entry)
+            
+            with open(log_file, 'w') as f:
+                json.dump(logs, f, indent=2, default=str)
+        except Exception as e:
+            self.error(f"Error guardando log de migración: {e}")
+
+# Instancia global del logger mejorado
+logger = EnhancedLogger()
+
+# =============================================================================
+# CONFIGURACIÓN DE PÁGINA
+# =============================================================================
+
 st.set_page_config(
     page_title="Sistema Escuela Enfermería - Migración SSH REMOTA",
     page_icon="🔄",
@@ -71,12 +154,12 @@ def cargar_configuracion_secrets():
         
         # Buscar el archivo secrets.toml en posibles ubicaciones
         posibles_rutas = [
-            ".streamlit/secrets.toml",          # Primera prioridad: Streamlit Cloud
-            "secrets.toml",                     # Segunda prioridad: directorio actual
-            "./.streamlit/secrets.toml",        # Para desarrollo
-            "../.streamlit/secrets.toml",       # Para desarrollo
-            "/mount/src/escuelanueva/.streamlit/secrets.toml",  # Ruta absoluta
-            "config/secrets.toml",              # Subdirectorio config
+            ".streamlit/secrets.toml",
+            "secrets.toml",
+            "./.streamlit/secrets.toml",
+            "../.streamlit/secrets.toml",
+            "/mount/src/escuelanueva/.streamlit/secrets.toml",
+            "config/secrets.toml",
             os.path.join(os.path.dirname(__file__), ".streamlit/secrets.toml")
         ]
         
@@ -98,13 +181,253 @@ def cargar_configuracion_secrets():
             return config
         
     except Exception as e:
-        logger.error(f"❌ Error cargando secrets.toml: {e}")
-        import traceback
-        logger.error(f"❌ Detalles: {traceback.format_exc()}")
+        logger.error(f"❌ Error cargando secrets.toml: {e}", exc_info=True)
         return {}
 
 # =============================================================================
-# ARCHIVO DE ESTADO PERSISTENTE PARA MIGRACIÓN
+# SISTEMA DE BACKUP AUTOMÁTICO
+# =============================================================================
+
+class SistemaBackupAutomatico:
+    """Sistema de backup automático antes de migraciones"""
+    
+    def __init__(self, gestor_ssh):
+        self.gestor_ssh = gestor_ssh
+        self.backup_dir = "backups_migracion"
+        self.max_backups = 10  # Mantener solo los últimos 10 backups
+        
+    def crear_backup_pre_migracion(self, tipo_migracion, detalles):
+        """Crear backup automático antes de una migración"""
+        try:
+            # Crear directorio de backups si no existe
+            if not os.path.exists(self.backup_dir):
+                os.makedirs(self.backup_dir)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"backup_{tipo_migracion}_{timestamp}.zip"
+            backup_path = os.path.join(self.backup_dir, backup_filename)
+            
+            # Descargar base de datos actual para backup
+            if self.gestor_ssh.conectar_ssh():
+                try:
+                    # Crear archivo temporal para backup
+                    temp_db = self.gestor_ssh.descargar_db_remota()
+                    if temp_db:
+                        # Crear archivo zip con metadatos
+                        import zipfile
+                        with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            zipf.write(temp_db, 'database.db')
+                            
+                            # Agregar metadatos
+                            metadata = {
+                                'fecha_backup': datetime.now().isoformat(),
+                                'tipo_migracion': tipo_migracion,
+                                'detalles': detalles,
+                                'usuario': st.session_state.get('usuario_actual', {}).get('usuario', 'desconocido')
+                            }
+                            
+                            metadata_str = json.dumps(metadata, indent=2, default=str)
+                            zipf.writestr('metadata.json', metadata_str)
+                        
+                        logger.info(f"✅ Backup creado: {backup_path}")
+                        
+                        # Limpiar backups antiguos
+                        self._limpiar_backups_antiguos()
+                        
+                        return backup_path
+                finally:
+                    self.gestor_ssh.desconectar_ssh()
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error creando backup: {e}")
+            return None
+    
+    def _limpiar_backups_antiguos(self):
+        """Mantener solo los últimos N backups"""
+        try:
+            if not os.path.exists(self.backup_dir):
+                return
+            
+            backups = []
+            for file in os.listdir(self.backup_dir):
+                if file.startswith('backup_') and file.endswith('.zip'):
+                    filepath = os.path.join(self.backup_dir, file)
+                    backups.append((filepath, os.path.getmtime(filepath)))
+            
+            # Ordenar por fecha (más reciente primero)
+            backups.sort(key=lambda x: x[1], reverse=True)
+            
+            # Eliminar backups antiguos
+            for backup in backups[self.max_backups:]:
+                try:
+                    os.remove(backup[0])
+                    logger.info(f"🗑️ Backup antiguo eliminado: {backup[0]}")
+                except Exception as e:
+                    logger.warning(f"⚠️ No se pudo eliminar backup antiguo: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error limpiando backups antiguos: {e}")
+    
+    def listar_backups(self):
+        """Listar todos los backups disponibles"""
+        try:
+            if not os.path.exists(self.backup_dir):
+                return []
+            
+            backups = []
+            for file in os.listdir(self.backup_dir):
+                if file.startswith('backup_') and file.endswith('.zip'):
+                    filepath = os.path.join(self.backup_dir, file)
+                    file_info = {
+                        'nombre': file,
+                        'ruta': filepath,
+                        'tamaño': os.path.getsize(filepath),
+                        'fecha': datetime.fromtimestamp(os.path.getmtime(filepath))
+                    }
+                    backups.append(file_info)
+            
+            return sorted(backups, key=lambda x: x['fecha'], reverse=True)
+            
+        except Exception as e:
+            logger.error(f"Error listando backups: {e}")
+            return []
+
+# =============================================================================
+# SISTEMA DE NOTIFICACIONES
+# =============================================================================
+
+class SistemaNotificaciones:
+    """Sistema de notificaciones para migraciones exitosas/fallidas"""
+    
+    def __init__(self, config_smtp):
+        self.config_smtp = config_smtp
+        self.notificaciones_habilitadas = bool(config_smtp.get('email_user'))
+    
+    def enviar_notificacion_migracion(self, tipo_migracion, estado, detalles, destinatarios=None):
+        """Enviar notificación de migración por email"""
+        try:
+            if not self.notificaciones_habilitadas:
+                logger.warning("⚠️ Notificaciones por email no configuradas")
+                return False
+            
+            if not destinatarios:
+                destinatarios = [self.config_smtp.get('notification_email')]
+            
+            if not destinatarios or not all(destinatarios):
+                logger.warning("⚠️ No hay destinatarios para notificación")
+                return False
+            
+            # Preparar mensaje
+            subject = f"[Migración] {tipo_migracion} - {estado}"
+            
+            # Crear contenido HTML
+            html_content = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+                <h2>📊 Notificación de Migración</h2>
+                <div style="background-color: {'#d4edda' if estado == 'EXITOSA' else '#f8d7da'}; 
+                          padding: 15px; border-radius: 5px; margin: 10px 0;">
+                    <h3>Estado: <strong>{estado}</strong></h3>
+                    <p><strong>Tipo:</strong> {tipo_migracion}</p>
+                    <p><strong>Fecha:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    <p><strong>Usuario:</strong> {st.session_state.get('usuario_actual', {}).get('usuario', 'Desconocido')}</p>
+                </div>
+                
+                <h3>📋 Detalles:</h3>
+                <div style="background-color: #f8f9fa; padding: 10px; border-left: 4px solid #007bff;">
+                    <pre style="white-space: pre-wrap;">{detalles}</pre>
+                </div>
+                
+                <hr>
+                <p style="color: #6c757d; font-size: 0.9em;">
+                    Sistema de Migración - Escuela de Enfermería<br>
+                    Este es un mensaje automático, por favor no responder.
+                </p>
+            </body>
+            </html>
+            """
+            
+            # Configurar mensaje
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = self.config_smtp['email_user']
+            msg['To'] = ', '.join(destinatarios)
+            
+            # Adjuntar partes HTML y texto plano
+            msg.attach(MIMEText(html_content, 'html'))
+            
+            # Enviar email
+            with smtplib.SMTP(self.config_smtp['smtp_server'], self.config_smtp['smtp_port']) as server:
+                server.starttls()
+                server.login(self.config_smtp['email_user'], self.config_smtp['email_password'])
+                server.send_message(msg)
+            
+            logger.info(f"✅ Notificación enviada: {tipo_migracion} - {estado}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error enviando notificación: {e}")
+            return False
+    
+    def mostrar_notificacion_streamlit(self, estado, mensaje, tipo="info"):
+        """Mostrar notificación en Streamlit"""
+        if tipo == "success":
+            st.success(f"✅ {mensaje}")
+        elif tipo == "error":
+            st.error(f"❌ {mensaje}")
+        elif tipo == "warning":
+            st.warning(f"⚠️ {mensaje}")
+        else:
+            st.info(f"ℹ️ {mensaje}")
+
+# =============================================================================
+# VALIDACIONES MEJORADAS
+# =============================================================================
+
+class ValidadorDatos:
+    """Clase para validaciones de datos mejoradas"""
+    
+    @staticmethod
+    def validar_email(email):
+        """Validar formato de email"""
+        if not email:
+            return False
+        
+        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        return bool(re.match(pattern, email))
+    
+    @staticmethod
+    def validar_telefono(telefono):
+        """Validar formato de teléfono (mínimo 10 dígitos)"""
+        if not telefono:
+            return True  # Opcional
+        
+        # Extraer solo dígitos
+        digitos = ''.join(filter(str.isdigit, telefono))
+        return len(digitos) >= 10
+    
+    @staticmethod
+    def validar_matricula(matricula):
+        """Validar formato de matrícula"""
+        if not matricula:
+            return False
+        
+        # Debe contener al menos 3 caracteres y algún número
+        return len(matricula) >= 3 and any(char.isdigit() for char in matricula)
+    
+    @staticmethod
+    def validar_fecha(fecha_str):
+        """Validar formato de fecha"""
+        try:
+            datetime.fromisoformat(fecha_str.replace('Z', '+00:00'))
+            return True
+        except:
+            return False
+
+# =============================================================================
+# ARCHIVO DE ESTADO PERSISTENTE PARA MIGRACIÓN - MEJORADO
 # =============================================================================
 
 class EstadoPersistenteMigracion:
@@ -119,19 +442,35 @@ class EstadoPersistenteMigracion:
         try:
             if os.path.exists(self.archivo_estado):
                 with open(self.archivo_estado, 'r') as f:
-                    return json.load(f)
+                    estado = json.load(f)
+                    
+                    # Migrar estado antiguo si es necesario
+                    if 'estadisticas_migracion' not in estado:
+                        estado['estadisticas_migracion'] = {
+                            'exitosas': estado.get('migraciones_realizadas', 0),
+                            'fallidas': 0,
+                            'total_tiempo': 0
+                        }
+                    
+                    return estado
             else:
                 # Estado por defecto - SOLO MODO REMOTO
                 return {
                     'db_inicializada': False,
                     'fecha_inicializacion': None,
                     'ultima_sincronizacion': None,
-                    'modo_operacion': 'remoto',  # SIEMPRE REMOTO
+                    'modo_operacion': 'remoto',
                     'migraciones_realizadas': 0,
                     'ultima_migracion': None,
                     'ssh_conectado': False,
                     'ssh_error': None,
-                    'ultima_verificacion': None
+                    'ultima_verificacion': None,
+                    'estadisticas_migracion': {
+                        'exitosas': 0,
+                        'fallidas': 0,
+                        'total_tiempo': 0
+                    },
+                    'backups_realizados': 0
                 }
         except Exception as e:
             logger.warning(f"⚠️ Error cargando estado: {e}")
@@ -143,12 +482,18 @@ class EstadoPersistenteMigracion:
             'db_inicializada': False,
             'fecha_inicializacion': None,
             'ultima_sincronizacion': None,
-            'modo_operacion': 'remoto',  # SOLO MODO REMOTO
+            'modo_operacion': 'remoto',
             'migraciones_realizadas': 0,
             'ultima_migracion': None,
             'ssh_conectado': False,
             'ssh_error': None,
-            'ultima_verificacion': None
+            'ultima_verificacion': None,
+            'estadisticas_migracion': {
+                'exitosas': 0,
+                'fallidas': 0,
+                'total_tiempo': 0
+            },
+            'backups_realizados': 0
         }
     
     def guardar_estado(self):
@@ -156,7 +501,7 @@ class EstadoPersistenteMigracion:
         try:
             with open(self.archivo_estado, 'w') as f:
                 json.dump(self.estado, f, indent=2, default=str)
-            logger.info(f"✅ Estado guardado en {self.archivo_estado}")
+            logger.debug(f"Estado guardado en {self.archivo_estado}")
         except Exception as e:
             logger.error(f"❌ Error guardando estado: {e}")
     
@@ -171,10 +516,24 @@ class EstadoPersistenteMigracion:
         self.estado['ultima_sincronizacion'] = datetime.now().isoformat()
         self.guardar_estado()
     
-    def registrar_migracion(self):
-        """Registrar una migración exitosa"""
+    def registrar_migracion(self, exitosa=True, tiempo_ejecucion=0):
+        """Registrar una migración"""
         self.estado['migraciones_realizadas'] = self.estado.get('migraciones_realizadas', 0) + 1
         self.estado['ultima_migracion'] = datetime.now().isoformat()
+        
+        # Estadísticas detalladas
+        if exitosa:
+            self.estado['estadisticas_migracion']['exitosas'] += 1
+        else:
+            self.estado['estadisticas_migracion']['fallidas'] += 1
+        
+        self.estado['estadisticas_migracion']['total_tiempo'] += tiempo_ejecucion
+        
+        self.guardar_estado()
+    
+    def registrar_backup(self):
+        """Registrar que se realizó un backup"""
+        self.estado['backups_realizados'] = self.estado.get('backups_realizados', 0) + 1
         self.guardar_estado()
     
     def set_ssh_conectado(self, conectado, error=None):
@@ -202,7 +561,44 @@ class EstadoPersistenteMigracion:
 estado_migracion = EstadoPersistenteMigracion()
 
 # =============================================================================
-# GESTOR DE CONEXIÓN REMOTA VIA SSH - EXCLUSIVAMENTE REMOTO
+# UTILIDADES DE DISCO Y RED
+# =============================================================================
+
+class UtilidadesSistema:
+    """Utilidades para verificación de disco y red"""
+    
+    @staticmethod
+    def verificar_espacio_disco(ruta, espacio_minimo_mb=100):
+        """Verificar espacio disponible en disco"""
+        try:
+            stat = psutil.disk_usage(ruta)
+            espacio_disponible_mb = stat.free / (1024 * 1024)
+            
+            logger.debug(f"Espacio disponible en {ruta}: {espacio_disponible_mb:.2f} MB")
+            
+            if espacio_disponible_mb < espacio_minimo_mb:
+                logger.warning(f"⚠️ Espacio en disco bajo: {espacio_disponible_mb:.2f} MB")
+                return False, espacio_disponible_mb
+            
+            return True, espacio_disponible_mb
+            
+        except Exception as e:
+            logger.error(f"Error verificando espacio en disco: {e}")
+            return False, 0
+    
+    @staticmethod
+    def verificar_conectividad_red(host="8.8.8.8", port=53, timeout=3):
+        """Verificar conectividad de red"""
+        try:
+            socket.setdefaulttimeout(timeout)
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+            return True
+        except Exception as e:
+            logger.warning(f"Sin conectividad de red: {e}")
+            return False
+
+# =============================================================================
+# GESTOR DE CONEXIÓN REMOTA VIA SSH - MEJORADO CON TIMEOUTS Y REINTENTOS
 # =============================================================================
 
 class GestorConexionRemotaMigracion:
@@ -211,6 +607,10 @@ class GestorConexionRemotaMigracion:
     def __init__(self):
         self.ssh = None
         self.sftp = None
+        self.temp_files = []  # Lista para rastrear archivos temporales
+        
+        # Registrar limpieza al cerrar
+        atexit.register(self._limpiar_archivos_temporales)
         
         # Cargar configuración desde secrets.toml
         logger.info("📋 Cargando configuración desde secrets.toml...")
@@ -222,13 +622,21 @@ class GestorConexionRemotaMigracion:
             
         self.config = self._cargar_configuracion_completa()
         
-        # Configuración de migración
+        # Configuración de migración con timeouts específicos
         self.config_migracion = self.config_completa.get('migration', {})
         self.auto_connect = self.config_migracion.get('auto_connect', True)
         self.sync_on_start = self.config_migracion.get('sync_on_start', True)
         self.retry_attempts = self.config_migracion.get('retry_attempts', 3)
-        self.retry_delay = self.config_migracion.get('retry_delay', 5)
+        self.retry_delay_base = self.config_migracion.get('retry_delay', 5)
         self.fallback_to_local = self.config_migracion.get('fallback_to_local', False)
+        
+        # Timeouts específicos para diferentes operaciones
+        self.timeouts = {
+            'ssh_connect': self.config_migracion.get('ssh_connect_timeout', 30),
+            'ssh_command': self.config_migracion.get('ssh_command_timeout', 60),
+            'sftp_transfer': self.config_migracion.get('sftp_transfer_timeout', 300),
+            'db_download': self.config_migracion.get('db_download_timeout', 180)
+        }
         
         # Configuración de base de datos
         self.config_database = self.config_completa.get('database', {})
@@ -296,9 +704,40 @@ class GestorConexionRemotaMigracion:
             logger.info("✅ Configuración completa cargada")
             
         except Exception as e:
-            logger.error(f"❌ Error cargando configuración: {e}")
+            logger.error(f"❌ Error cargando configuración: {e}", exc_info=True)
         
         return config
+    
+    def _limpiar_archivos_temporales(self):
+        """Limpiar archivos temporales creados"""
+        logger.debug("Limpiando archivos temporales...")
+        
+        for temp_file in self.temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+                    logger.debug(f"🗑️ Archivo temporal eliminado: {temp_file}")
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo eliminar {temp_file}: {e}")
+        
+        # También limpiar archivos antiguos en temp
+        temp_dir = tempfile.gettempdir()
+        pattern = os.path.join(temp_dir, "migracion_*.db")
+        for old_file in glob.glob(pattern):
+            try:
+                # Eliminar archivos con más de 1 hora
+                if os.path.getmtime(old_file) < time.time() - 3600:
+                    os.remove(old_file)
+                    logger.debug(f"🗑️ Archivo temporal antiguo eliminado: {old_file}")
+            except:
+                pass
+    
+    def _intento_conexion_con_backoff(self, attempt):
+        """Calcular tiempo de espera con backoff exponencial"""
+        # Backoff exponencial con jitter aleatorio
+        wait_time = min(self.retry_delay_base * (2 ** attempt), 60)  # Máximo 60 segundos
+        jitter = wait_time * 0.1 * np.random.random()  # 10% de jitter
+        return wait_time + jitter
     
     def probar_conexion_inicial(self):
         """Probar la conexión SSH al inicio"""
@@ -308,11 +747,16 @@ class GestorConexionRemotaMigracion:
                 
             logger.info(f"🔍 Probando conexión SSH a {self.config['host']}...")
             
+            # Verificar conectividad de red primero
+            if not UtilidadesSistema.verificar_conectividad_red():
+                logger.warning("⚠️ No hay conectividad de red")
+                return False
+            
             ssh_test = paramiko.SSHClient()
             ssh_test.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
             port = self.config.get('port', 22)
-            timeout = self.config.get('timeout', 30)
+            timeout = self.timeouts['ssh_connect']
             
             ssh_test.connect(
                 hostname=self.config['host'],
@@ -325,8 +769,8 @@ class GestorConexionRemotaMigracion:
                 look_for_keys=False
             )
             
-            # Ejecutar comando simple para verificar
-            stdin, stdout, stderr = ssh_test.exec_command('pwd')
+            # Ejecutar comando simple para verificar con timeout
+            stdin, stdout, stderr = ssh_test.exec_command('pwd', timeout=self.timeouts['ssh_command'])
             output = stdout.read().decode().strip()
             
             ssh_test.close()
@@ -335,6 +779,16 @@ class GestorConexionRemotaMigracion:
             estado_migracion.set_ssh_conectado(True, None)
             return True
             
+        except socket.timeout:
+            error_msg = f"Timeout conectando a {self.config['host']}"
+            logger.error(f"❌ {error_msg}")
+            estado_migracion.set_ssh_conectado(False, error_msg)
+            return False
+        except paramiko.AuthenticationException:
+            error_msg = "Error de autenticación SSH - Credenciales incorrectas"
+            logger.error(f"❌ {error_msg}")
+            estado_migracion.set_ssh_conectado(False, error_msg)
+            return False
         except Exception as e:
             error_msg = f"Error de conexión SSH: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -342,10 +796,10 @@ class GestorConexionRemotaMigracion:
             return False
     
     def conectar_ssh(self):
-        """Establecer conexión SSH con el servidor remoto"""
+        """Establecer conexión SSH con el servidor remoto con manejo detallado de errores"""
         try:
             if not self.config.get('host'):
-                st.error("❌ No hay configuración SSH disponible")
+                logger.error("No hay configuración SSH disponible")
                 return False
                 
             logger.info(f"🔗 Conectando SSH a {self.config['host']}:{self.config.get('port', 22)}...")
@@ -354,7 +808,13 @@ class GestorConexionRemotaMigracion:
             self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
             port = self.config.get('port', 22)
-            timeout = self.config.get('timeout', 30)
+            timeout = self.timeouts['ssh_connect']
+            
+            # Verificar espacio en disco antes de conectar
+            temp_dir = tempfile.gettempdir()
+            espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
+            if not espacio_ok:
+                logger.warning(f"⚠️ Espacio en disco bajo: {espacio_mb:.1f} MB disponible en {temp_dir}")
             
             self.ssh.connect(
                 hostname=self.config['host'],
@@ -368,13 +828,32 @@ class GestorConexionRemotaMigracion:
             )
             
             self.sftp = self.ssh.open_sftp()
+            
+            # Configurar timeout para operaciones SFTP
+            self.sftp.get_channel().settimeout(self.timeouts['sftp_transfer'])
+            
             logger.info(f"✅ Conexión SSH establecida a {self.config['host']}")
             
             estado_migracion.set_ssh_conectado(True, None)
             return True
             
+        except socket.timeout:
+            error_msg = f"Timeout conectando a {self.config['host']}"
+            logger.error(f"❌ {error_msg}")
+            estado_migracion.set_ssh_conectado(False, error_msg)
+            return False
+        except paramiko.AuthenticationException:
+            error_msg = "Error de autenticación SSH - Credenciales incorrectas"
+            logger.error(f"❌ {error_msg}")
+            estado_migracion.set_ssh_conectado(False, error_msg)
+            return False
+        except paramiko.SSHException as ssh_exc:
+            error_msg = f"Error SSH: {str(ssh_exc)}"
+            logger.error(f"❌ {error_msg}")
+            estado_migracion.set_ssh_conectado(False, error_msg)
+            return False
         except Exception as e:
-            error_msg = f"Error de conexión SSH: {e}"
+            error_msg = f"Error de conexión: {str(e)}"
             logger.error(f"❌ {error_msg}")
             estado_migracion.set_ssh_conectado(False, error_msg)
             return False
@@ -386,12 +865,14 @@ class GestorConexionRemotaMigracion:
                 self.sftp.close()
             if self.ssh:
                 self.ssh.close()
-            logger.info("🔌 Conexión SSH cerrada")
+            logger.debug("🔌 Conexión SSH cerrada")
         except Exception as e:
             logger.warning(f"⚠️ Error cerrando conexión SSH: {e}")
     
     def descargar_db_remota(self):
-        """Descargar base de datos SQLite del servidor remoto - CON REINTENTOS"""
+        """Descargar base de datos SQLite del servidor remoto - CON REINTENTOS INTELIGENTES"""
+        inicio_tiempo = time.time()
+        
         for attempt in range(self.retry_attempts):
             try:
                 logger.info(f"📥 Intento {attempt + 1}/{self.retry_attempts} descargando DB remota...")
@@ -399,7 +880,9 @@ class GestorConexionRemotaMigracion:
                 if not self.conectar_ssh():
                     logger.error(f"❌ Falló conexión SSH en intento {attempt + 1}")
                     if attempt < self.retry_attempts - 1:
-                        time.sleep(self.retry_delay)
+                        wait_time = self._intento_conexion_con_backoff(attempt)
+                        logger.info(f"⏳ Esperando {wait_time:.1f} segundos antes de reintentar...")
+                        time.sleep(wait_time)
                         continue
                     else:
                         raise Exception("No se pudo conectar SSH después de múltiples intentos")
@@ -408,38 +891,57 @@ class GestorConexionRemotaMigracion:
                 temp_dir = tempfile.gettempdir()
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 temp_db_path = os.path.join(temp_dir, f"migracion_temp_{timestamp}.db")
+                self.temp_files.append(temp_db_path)
                 
-                # Intentar descargar archivo remoto
-                try:
-                    logger.info(f"📥 Descargando base de datos desde: {self.db_path_remoto}")
-                    self.sftp.get(self.db_path_remoto, temp_db_path)
+                # Verificar espacio en disco antes de descargar
+                espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir, espacio_minimo_mb=200)
+                if not espacio_ok:
+                    raise Exception(f"Espacio en disco insuficiente: {espacio_mb:.1f} MB disponibles (se requieren 200 MB)")
+                
+                # Intentar descargar archivo remoto con timeout
+                logger.info(f"📥 Descargando base de datos desde: {self.db_path_remoto}")
+                
+                # Configurar timeout para la descarga
+                start_time = time.time()
+                self.sftp.get(self.db_path_remoto, temp_db_path)
+                download_time = time.time() - start_time
+                
+                # Verificar que el archivo se descargó correctamente
+                if os.path.exists(temp_db_path) and os.path.getsize(temp_db_path) > 0:
+                    file_size = os.path.getsize(temp_db_path)
+                    logger.info(f"✅ Base de datos descargada: {temp_db_path} ({file_size} bytes en {download_time:.1f}s)")
                     
-                    # Verificar que el archivo se descargó correctamente
-                    if os.path.exists(temp_db_path) and os.path.getsize(temp_db_path) > 0:
-                        file_size = os.path.getsize(temp_db_path)
-                        logger.info(f"✅ Base de datos descargada: {temp_db_path} ({file_size} bytes)")
+                    # Verificar integridad del archivo
+                    if self._verificar_integridad_db(temp_db_path):
+                        tiempo_total = time.time() - inicio_tiempo
+                        logger.info(f"⏱️ Descarga completada en {tiempo_total:.1f} segundos")
                         return temp_db_path
                     else:
-                        logger.warning("⚠️ Archivo descargado vacío o corrupto")
-                        # Intentar crear una nueva
-                        return self._crear_nueva_db_remota()
+                        logger.error("❌ Base de datos corrupta después de descarga")
+                        os.remove(temp_db_path)
+                        raise Exception("Base de datos corrupta")
                         
-                except FileNotFoundError:
-                    logger.warning(f"⚠️ Base de datos remota no encontrada: {self.db_path_remoto}")
+                else:
+                    logger.warning("⚠️ Archivo descargado vacío o corrupto")
+                    # Intentar crear una nueva
                     return self._crear_nueva_db_remota()
                     
-                except Exception as e:
-                    logger.error(f"❌ Error descargando archivo: {e}")
-                    if attempt < self.retry_attempts - 1:
-                        time.sleep(self.retry_delay)
-                        continue
-                    else:
-                        return self._crear_nueva_db_remota()
-                        
-            except Exception as e:
-                logger.error(f"❌ Error en intento {attempt + 1}: {e}")
+            except socket.timeout:
+                logger.error(f"❌ Timeout en intento {attempt + 1}")
                 if attempt < self.retry_attempts - 1:
-                    time.sleep(self.retry_delay)
+                    wait_time = self._intento_conexion_con_backoff(attempt)
+                    logger.info(f"⏳ Esperando {wait_time:.1f} segundos antes de reintentar...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    return self._crear_nueva_db_remota()
+                    
+            except Exception as e:
+                logger.error(f"❌ Error en intento {attempt + 1}: {e}", exc_info=True)
+                if attempt < self.retry_attempts - 1:
+                    wait_time = self._intento_conexion_con_backoff(attempt)
+                    logger.info(f"⏳ Esperando {wait_time:.1f} segundos antes de reintentar...")
+                    time.sleep(wait_time)
                     continue
                 else:
                     logger.error("❌ Todos los intentos fallaron")
@@ -448,8 +950,36 @@ class GestorConexionRemotaMigracion:
                 if self.ssh:
                     self.desconectar_ssh()
         
-        # Nunca debería llegar aquí
         return None
+    
+    def _verificar_integridad_db(self, db_path):
+        """Verificar integridad de la base de datos SQLite"""
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Verificar que sea una base de datos SQLite válida
+            cursor.execute("SELECT sqlite_version()")
+            version = cursor.fetchone()[0]
+            logger.debug(f"SQLite version: {version}")
+            
+            # Verificar tablas principales
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tablas = cursor.fetchall()
+            
+            tablas_esperadas = {'usuarios', 'inscritos', 'estudiantes', 'egresados', 'contratados', 'bitacora'}
+            tablas_encontradas = {t[0] for t in tablas}
+            
+            if not tablas_esperadas.issubset(tablas_encontradas):
+                logger.warning(f"Faltan tablas: {tablas_esperadas - tablas_encontradas}")
+                return False
+            
+            conn.close()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error verificando integridad DB: {e}")
+            return False
     
     def _crear_nueva_db_remota(self):
         """Crear una nueva base de datos SQLite y subirla al servidor remoto"""
@@ -460,6 +990,7 @@ class GestorConexionRemotaMigracion:
             temp_dir = tempfile.gettempdir()
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             temp_db_path = os.path.join(temp_dir, f"migracion_nueva_{timestamp}.db")
+            self.temp_files.append(temp_db_path)
             
             logger.info(f"📝 Creando nueva base de datos en: {temp_db_path}")
             
@@ -477,16 +1008,19 @@ class GestorConexionRemotaMigracion:
                         # Crear directorio recursivamente
                         self._crear_directorio_remoto_recursivo(remote_dir)
                     
-                    # Subir archivo
+                    # Subir archivo con timeout
+                    start_time = time.time()
                     self.sftp.put(temp_db_path, self.db_path_remoto)
-                    logger.info(f"✅ Nueva base de datos subida a servidor: {self.db_path_remoto}")
+                    upload_time = time.time() - start_time
+                    
+                    logger.info(f"✅ Nueva base de datos subida a servidor: {self.db_path_remoto} ({upload_time:.1f}s)")
                 finally:
                     self.desconectar_ssh()
             
             return temp_db_path
             
         except Exception as e:
-            logger.error(f"❌ Error creando nueva base de datos remota: {e}")
+            logger.error(f"❌ Error creando nueva base de datos remota: {e}", exc_info=True)
             raise
     
     def _crear_directorio_remoto_recursivo(self, remote_path):
@@ -666,7 +1200,7 @@ class GestorConexionRemotaMigracion:
             estado_migracion.marcar_db_inicializada()
             
         except Exception as e:
-            logger.error(f"❌ Error inicializando estructura: {e}")
+            logger.error(f"❌ Error inicializando estructura: {e}", exc_info=True)
             raise
     
     def subir_db_remota(self, ruta_local):
@@ -682,21 +1216,36 @@ class GestorConexionRemotaMigracion:
                 try:
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     backup_path = f"{self.db_path_remoto}.backup_{timestamp}"
+                    
+                    # Verificar espacio en servidor remoto
+                    try:
+                        stat = self.sftp.stat(self.db_path_remoto)
+                        file_size_mb = stat.st_size / (1024 * 1024)
+                        logger.info(f"📊 Tamaño archivo a respaldar: {file_size_mb:.1f} MB")
+                    except:
+                        pass
+                    
                     self.sftp.rename(self.db_path_remoto, backup_path)
-                    logger.info(f"✅ Backup creado: {backup_path}")
+                    logger.info(f"✅ Backup creado en servidor: {backup_path}")
+                    estado_migracion.registrar_backup()
                 except Exception as e:
-                    logger.warning(f"⚠️ No se pudo crear backup: {e}")
+                    logger.warning(f"⚠️ No se pudo crear backup en servidor: {e}")
                     # Continuar aunque no se pueda hacer backup
             
-            # Subir nuevo archivo
+            # Subir nuevo archivo con timeout
+            start_time = time.time()
             self.sftp.put(ruta_local, self.db_path_remoto)
+            upload_time = time.time() - start_time
             
-            logger.info(f"✅ Base de datos subida a servidor: {self.db_path_remoto}")
+            logger.info(f"✅ Base de datos subida a servidor: {self.db_path_remoto} ({upload_time:.1f}s)")
             
             return True
             
+        except socket.timeout:
+            logger.error("❌ Timeout subiendo base de datos")
+            return False
         except Exception as e:
-            logger.error(f"❌ Error subiendo base de datos: {e}")
+            logger.error(f"❌ Error subiendo base de datos: {e}", exc_info=True)
             return False
         finally:
             if self.ssh:
@@ -752,7 +1301,7 @@ class GestorConexionRemotaMigracion:
 gestor_remoto_migracion = GestorConexionRemotaMigracion()
 
 # =============================================================================
-# SISTEMA DE BASE DE DATOS SQLITE PARA MIGRACIÓN - EXCLUSIVAMENTE REMOTO
+# SISTEMA DE BASE DE DATOS SQLITE PARA MIGRACIÓN - MEJORADO CON PAGINACIÓN
 # =============================================================================
 
 class SistemaBaseDatosMigracion:
@@ -766,10 +1315,19 @@ class SistemaBaseDatosMigracion:
         
         # Configuración de migración
         self.retry_attempts = self.gestor.retry_attempts
-        self.retry_delay = self.gestor.retry_delay
+        self.retry_delay_base = self.gestor.retry_delay_base
+        
+        # Configuración de paginación
+        self.page_size = 50  # Registros por página
+    
+    def _intento_conexion_con_backoff(self, attempt):
+        """Calcular tiempo de espera con backoff exponencial"""
+        return self.gestor._intento_conexion_con_backoff(attempt)
     
     def sincronizar_desde_remoto(self):
-        """Sincronizar base de datos desde el servidor remoto - CON REINTENTOS"""
+        """Sincronizar base de datos desde el servidor remoto - CON REINTENTOS INTELIGENTES"""
+        inicio_tiempo = time.time()
+        
         for attempt in range(self.retry_attempts):
             try:
                 logger.info(f"🔄 Intento {attempt + 1}/{self.retry_attempts} sincronizando desde remoto...")
@@ -803,7 +1361,9 @@ class SistemaBaseDatosMigracion:
                     raise Exception(f"Base de datos corrupta: {e}")
                 
                 self.ultima_sincronizacion = datetime.now()
-                logger.info(f"✅ Sincronización exitosa: {self.db_local_temp}")
+                tiempo_total = time.time() - inicio_tiempo
+                
+                logger.info(f"✅ Sincronización exitosa en {tiempo_total:.1f}s: {self.db_local_temp}")
                 
                 # Actualizar estado de sincronización
                 estado_migracion.marcar_sincronizacion()
@@ -811,11 +1371,15 @@ class SistemaBaseDatosMigracion:
                 return True
                 
             except Exception as e:
-                logger.error(f"❌ Error en intento {attempt + 1}: {e}")
+                logger.error(f"❌ Error en intento {attempt + 1}: {e}", exc_info=True)
                 if attempt < self.retry_attempts - 1:
-                    time.sleep(self.retry_delay)
+                    wait_time = self._intento_conexion_con_backoff(attempt)
+                    logger.info(f"⏳ Esperando {wait_time:.1f} segundos antes de reintentar...")
+                    time.sleep(wait_time)
                     continue
                 else:
+                    tiempo_total = time.time() - inicio_tiempo
+                    logger.error(f"❌ Sincronización fallida después de {tiempo_total:.1f}s")
                     return False
     
     def _inicializar_estructura_db(self):
@@ -828,11 +1392,13 @@ class SistemaBaseDatosMigracion:
             self.gestor._inicializar_db_estructura(self.db_local_temp)
             
         except Exception as e:
-            logger.error(f"❌ Error inicializando estructura: {e}")
+            logger.error(f"❌ Error inicializando estructura: {e}", exc_info=True)
             raise
     
     def sincronizar_hacia_remoto(self):
         """Sincronizar base de datos local hacia el servidor remoto - CON REINTENTOS"""
+        inicio_tiempo = time.time()
+        
         for attempt in range(self.retry_attempts):
             try:
                 logger.info(f"📤 Intento {attempt + 1}/{self.retry_attempts} sincronizando hacia remoto...")
@@ -845,7 +1411,9 @@ class SistemaBaseDatosMigracion:
                 
                 if exito:
                     self.ultima_sincronizacion = datetime.now()
-                    logger.info("✅ Cambios subidos exitosamente al servidor")
+                    tiempo_total = time.time() - inicio_tiempo
+                    
+                    logger.info(f"✅ Cambios subidos exitosamente al servidor en {tiempo_total:.1f}s")
                     
                     # Actualizar estado
                     estado_migracion.marcar_sincronizacion()
@@ -855,11 +1423,15 @@ class SistemaBaseDatosMigracion:
                     raise Exception("Error subiendo al servidor")
                     
             except Exception as e:
-                logger.error(f"❌ Error en intento {attempt + 1}: {e}")
+                logger.error(f"❌ Error en intento {attempt + 1}: {e}", exc_info=True)
                 if attempt < self.retry_attempts - 1:
-                    time.sleep(self.retry_delay)
+                    wait_time = self._intento_conexion_con_backoff(attempt)
+                    logger.info(f"⏳ Esperando {wait_time:.1f} segundos antes de reintentar...")
+                    time.sleep(wait_time)
                     continue
                 else:
+                    tiempo_total = time.time() - inicio_tiempo
+                    logger.error(f"❌ Sincronización fallida después de {tiempo_total:.1f}s")
                     return False
     
     @contextmanager
@@ -875,6 +1447,10 @@ class SistemaBaseDatosMigracion:
             conn = sqlite3.connect(self.db_local_temp)
             conn.row_factory = sqlite3.Row  # Para acceso por nombre de columna
             self.conexion_actual = conn
+            
+            # Configurar timeout para queries
+            conn.execute("PRAGMA busy_timeout = 5000")  # 5 segundos
+            
             yield conn
             
             if conn:
@@ -883,7 +1459,7 @@ class SistemaBaseDatosMigracion:
         except Exception as e:
             if conn:
                 conn.rollback()
-            logger.error(f"❌ Error en conexión a base de datos: {e}")
+            logger.error(f"❌ Error en conexión a base de datos: {e}", exc_info=True)
             raise
         finally:
             if conn:
@@ -918,7 +1494,7 @@ class SistemaBaseDatosMigracion:
             return False
     
     # =============================================================================
-    # MÉTODOS DE CONSULTA PARA MIGRACIÓN
+    # MÉTODOS DE CONSULTA PARA MIGRACIÓN CON PAGINACIÓN
     # =============================================================================
     
     def obtener_usuario(self, usuario):
@@ -933,7 +1509,7 @@ class SistemaBaseDatosMigracion:
                 result = cursor.fetchone()
                 return dict(result) if result else None
         except Exception as e:
-            logger.error(f"Error obteniendo usuario {usuario}: {e}")
+            logger.error(f"Error obteniendo usuario {usuario}: {e}", exc_info=True)
             return None
     
     def verificar_login(self, usuario, password):
@@ -955,68 +1531,213 @@ class SistemaBaseDatosMigracion:
                 return None
                 
         except Exception as e:
-            logger.error(f"Error verificando login: {e}")
+            logger.error(f"Error verificando login: {e}", exc_info=True)
             return None
     
-    def obtener_inscritos(self):
-        """Obtener todos los inscritos"""
+    def obtener_inscritos(self, page=1, search_term=""):
+        """Obtener inscritos con paginación y búsqueda"""
         try:
+            offset = (page - 1) * self.page_size
+            
             with self.get_connection() as conn:
-                query = "SELECT * FROM inscritos ORDER BY fecha_registro DESC"
-                df = pd.read_sql_query(query, conn)
-                logger.info(f"Obtenidos {len(df)} inscritos")
-                return df
+                if search_term:
+                    query = """
+                        SELECT * FROM inscritos 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                        ORDER BY fecha_registro DESC 
+                        LIMIT ? OFFSET ?
+                    """
+                    search_pattern = f"%{search_term}%"
+                    params = (search_pattern, search_pattern, search_pattern, self.page_size, offset)
+                else:
+                    query = "SELECT * FROM inscritos ORDER BY fecha_registro DESC LIMIT ? OFFSET ?"
+                    params = (self.page_size, offset)
+                
+                df = pd.read_sql_query(query, conn, params=params)
+                
+                # Obtener total de registros
+                if search_term:
+                    count_query = """
+                        SELECT COUNT(*) FROM inscritos 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                    """
+                    count_params = (search_pattern, search_pattern, search_pattern)
+                else:
+                    count_query = "SELECT COUNT(*) FROM inscritos"
+                    count_params = ()
+                
+                total_records = pd.read_sql_query(count_query, conn, params=count_params).iloc[0, 0]
+                total_pages = math.ceil(total_records / self.page_size)
+                
+                logger.debug(f"Obtenidos {len(df)} inscritos (página {page}/{total_pages})")
+                return df, total_pages, total_records
         except Exception as e:
-            logger.error(f"Error obteniendo inscritos: {e}")
-            return pd.DataFrame()
+            logger.error(f"Error obteniendo inscritos: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
     
-    def obtener_estudiantes(self):
-        """Obtener todos los estudiantes"""
+    def obtener_estudiantes(self, page=1, search_term=""):
+        """Obtener estudiantes con paginación y búsqueda"""
         try:
+            offset = (page - 1) * self.page_size
+            
             with self.get_connection() as conn:
-                query = "SELECT * FROM estudiantes ORDER BY fecha_ingreso DESC"
-                df = pd.read_sql_query(query, conn)
-                logger.info(f"Obtenidos {len(df)} estudiantes")
-                return df
+                if search_term:
+                    query = """
+                        SELECT * FROM estudiantes 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                        ORDER BY fecha_ingreso DESC 
+                        LIMIT ? OFFSET ?
+                    """
+                    search_pattern = f"%{search_term}%"
+                    params = (search_pattern, search_pattern, search_pattern, self.page_size, offset)
+                else:
+                    query = "SELECT * FROM estudiantes ORDER BY fecha_ingreso DESC LIMIT ? OFFSET ?"
+                    params = (self.page_size, offset)
+                
+                df = pd.read_sql_query(query, conn, params=params)
+                
+                # Obtener total de registros
+                if search_term:
+                    count_query = """
+                        SELECT COUNT(*) FROM estudiantes 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                    """
+                    count_params = (search_pattern, search_pattern, search_pattern)
+                else:
+                    count_query = "SELECT COUNT(*) FROM estudiantes"
+                    count_params = ()
+                
+                total_records = pd.read_sql_query(count_query, conn, params=count_params).iloc[0, 0]
+                total_pages = math.ceil(total_records / self.page_size)
+                
+                logger.debug(f"Obtenidos {len(df)} estudiantes (página {page}/{total_pages})")
+                return df, total_pages, total_records
         except Exception as e:
-            logger.error(f"Error obteniendo estudiantes: {e}")
-            return pd.DataFrame()
+            logger.error(f"Error obteniendo estudiantes: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
     
-    def obtener_egresados(self):
-        """Obtener todos los egresados"""
+    def obtener_egresados(self, page=1, search_term=""):
+        """Obtener egresados con paginación y búsqueda"""
         try:
+            offset = (page - 1) * self.page_size
+            
             with self.get_connection() as conn:
-                query = "SELECT * FROM egresados ORDER BY fecha_graduacion DESC"
-                df = pd.read_sql_query(query, conn)
-                logger.info(f"Obtenidos {len(df)} egresados")
-                return df
+                if search_term:
+                    query = """
+                        SELECT * FROM egresados 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                        ORDER BY fecha_graduacion DESC 
+                        LIMIT ? OFFSET ?
+                    """
+                    search_pattern = f"%{search_term}%"
+                    params = (search_pattern, search_pattern, search_pattern, self.page_size, offset)
+                else:
+                    query = "SELECT * FROM egresados ORDER BY fecha_graduacion DESC LIMIT ? OFFSET ?"
+                    params = (self.page_size, offset)
+                
+                df = pd.read_sql_query(query, conn, params=params)
+                
+                # Obtener total de registros
+                if search_term:
+                    count_query = """
+                        SELECT COUNT(*) FROM egresados 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                    """
+                    count_params = (search_pattern, search_pattern, search_pattern)
+                else:
+                    count_query = "SELECT COUNT(*) FROM egresados"
+                    count_params = ()
+                
+                total_records = pd.read_sql_query(count_query, conn, params=count_params).iloc[0, 0]
+                total_pages = math.ceil(total_records / self.page_size)
+                
+                logger.debug(f"Obtenidos {len(df)} egresados (página {page}/{total_pages})")
+                return df, total_pages, total_records
         except Exception as e:
-            logger.error(f"Error obteniendo egresados: {e}")
-            return pd.DataFrame()
+            logger.error(f"Error obteniendo egresados: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
     
-    def obtener_contratados(self):
-        """Obtener todos los contratados"""
+    def obtener_contratados(self, page=1, search_term=""):
+        """Obtener contratados con paginación y búsqueda"""
         try:
+            offset = (page - 1) * self.page_size
+            
             with self.get_connection() as conn:
-                query = "SELECT * FROM contratados ORDER BY fecha_contratacion DESC"
-                df = pd.read_sql_query(query, conn)
-                logger.info(f"Obtenidos {len(df)} contratados")
-                return df
+                if search_term:
+                    query = """
+                        SELECT * FROM contratados 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                        ORDER BY fecha_contratacion DESC 
+                        LIMIT ? OFFSET ?
+                    """
+                    search_pattern = f"%{search_term}%"
+                    params = (search_pattern, search_pattern, search_pattern, self.page_size, offset)
+                else:
+                    query = "SELECT * FROM contratados ORDER BY fecha_contratacion DESC LIMIT ? OFFSET ?"
+                    params = (self.page_size, offset)
+                
+                df = pd.read_sql_query(query, conn, params=params)
+                
+                # Obtener total de registros
+                if search_term:
+                    count_query = """
+                        SELECT COUNT(*) FROM contratados 
+                        WHERE matricula LIKE ? OR nombre_completo LIKE ? OR email LIKE ?
+                    """
+                    count_params = (search_pattern, search_pattern, search_pattern)
+                else:
+                    count_query = "SELECT COUNT(*) FROM contratados"
+                    count_params = ()
+                
+                total_records = pd.read_sql_query(count_query, conn, params=count_params).iloc[0, 0]
+                total_pages = math.ceil(total_records / self.page_size)
+                
+                logger.debug(f"Obtenidos {len(df)} contratados (página {page}/{total_pages})")
+                return df, total_pages, total_records
         except Exception as e:
-            logger.error(f"Error obteniendo contratados: {e}")
-            return pd.DataFrame()
+            logger.error(f"Error obteniendo contratados: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
     
-    def obtener_usuarios(self):
-        """Obtener todos los usuarios"""
+    def obtener_usuarios(self, page=1, search_term=""):
+        """Obtener usuarios con paginación y búsqueda"""
         try:
+            offset = (page - 1) * self.page_size
+            
             with self.get_connection() as conn:
-                query = "SELECT * FROM usuarios ORDER BY fecha_creacion DESC"
-                df = pd.read_sql_query(query, conn)
-                logger.info(f"Obtenidos {len(df)} usuarios")
-                return df
+                if search_term:
+                    query = """
+                        SELECT * FROM usuarios 
+                        WHERE usuario LIKE ? OR nombre_completo LIKE ? OR email LIKE ? OR matricula LIKE ?
+                        ORDER BY fecha_creacion DESC 
+                        LIMIT ? OFFSET ?
+                    """
+                    search_pattern = f"%{search_term}%"
+                    params = (search_pattern, search_pattern, search_pattern, search_pattern, self.page_size, offset)
+                else:
+                    query = "SELECT * FROM usuarios ORDER BY fecha_creacion DESC LIMIT ? OFFSET ?"
+                    params = (self.page_size, offset)
+                
+                df = pd.read_sql_query(query, conn, params=params)
+                
+                # Obtener total de registros
+                if search_term:
+                    count_query = """
+                        SELECT COUNT(*) FROM usuarios 
+                        WHERE usuario LIKE ? OR nombre_completo LIKE ? OR email LIKE ? OR matricula LIKE ?
+                    """
+                    count_params = (search_pattern, search_pattern, search_pattern, search_pattern)
+                else:
+                    count_query = "SELECT COUNT(*) FROM usuarios"
+                    count_params = ()
+                
+                total_records = pd.read_sql_query(count_query, conn, params=count_params).iloc[0, 0]
+                total_pages = math.ceil(total_records / self.page_size)
+                
+                logger.debug(f"Obtenidos {len(df)} usuarios (página {page}/{total_pages})")
+                return df, total_pages, total_records
         except Exception as e:
-            logger.error(f"Error obteniendo usuarios: {e}")
-            return pd.DataFrame()
+            logger.error(f"Error obteniendo usuarios: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
     
     def obtener_inscrito_por_matricula(self, matricula):
         """Buscar inscrito por matrícula"""
@@ -1027,7 +1748,7 @@ class SistemaBaseDatosMigracion:
                 row = cursor.fetchone()
                 return dict(row) if row else None
         except Exception as e:
-            logger.error(f"Error buscando inscrito {matricula}: {e}")
+            logger.error(f"Error buscando inscrito {matricula}: {e}", exc_info=True)
             return None
     
     def obtener_estudiante_por_matricula(self, matricula):
@@ -1039,7 +1760,7 @@ class SistemaBaseDatosMigracion:
                 row = cursor.fetchone()
                 return dict(row) if row else None
         except Exception as e:
-            logger.error(f"Error buscando estudiante {matricula}: {e}")
+            logger.error(f"Error buscando estudiante {matricula}: {e}", exc_info=True)
             return None
     
     def obtener_egresado_por_matricula(self, matricula):
@@ -1051,7 +1772,7 @@ class SistemaBaseDatosMigracion:
                 row = cursor.fetchone()
                 return dict(row) if row else None
         except Exception as e:
-            logger.error(f"Error buscando egresado {matricula}: {e}")
+            logger.error(f"Error buscando egresado {matricula}: {e}", exc_info=True)
             return None
     
     def obtener_contratado_por_matricula(self, matricula):
@@ -1063,7 +1784,7 @@ class SistemaBaseDatosMigracion:
                 row = cursor.fetchone()
                 return dict(row) if row else None
         except Exception as e:
-            logger.error(f"Error buscando contratado {matricula}: {e}")
+            logger.error(f"Error buscando contratado {matricula}: {e}", exc_info=True)
             return None
     
     def actualizar_rol_usuario(self, usuario_id, nuevo_rol, nueva_matricula):
@@ -1082,7 +1803,7 @@ class SistemaBaseDatosMigracion:
                 return True
                 
         except Exception as e:
-            logger.error(f"Error al actualizar usuario: {e}")
+            logger.error(f"Error al actualizar usuario: {e}", exc_info=True)
             return False
     
     def eliminar_inscrito(self, matricula):
@@ -1096,7 +1817,7 @@ class SistemaBaseDatosMigracion:
                     logger.info(f"Inscrito eliminado: {matricula}")
                 return eliminado
         except Exception as e:
-            logger.error(f"Error eliminando inscrito {matricula}: {e}")
+            logger.error(f"Error eliminando inscrito {matricula}: {e}", exc_info=True)
             return False
     
     def eliminar_estudiante(self, matricula):
@@ -1110,7 +1831,7 @@ class SistemaBaseDatosMigracion:
                     logger.info(f"Estudiante eliminado: {matricula}")
                 return eliminado
         except Exception as e:
-            logger.error(f"Error eliminando estudiante {matricula}: {e}")
+            logger.error(f"Error eliminando estudiante {matricula}: {e}", exc_info=True)
             return False
     
     def eliminar_egresado(self, matricula):
@@ -1124,7 +1845,7 @@ class SistemaBaseDatosMigracion:
                     logger.info(f"Egresado eliminado: {matricula}")
                 return eliminado
         except Exception as e:
-            logger.error(f"Error eliminando egresado {matricula}: {e}")
+            logger.error(f"Error eliminando egresado {matricula}: {e}", exc_info=True)
             return False
     
     def agregar_estudiante(self, estudiante_data):
@@ -1161,7 +1882,7 @@ class SistemaBaseDatosMigracion:
                 logger.info(f"Estudiante agregado: {estudiante_data.get('matricula', '')}")
                 return estudiante_id
         except Exception as e:
-            logger.error(f"Error agregando estudiante: {e}")
+            logger.error(f"Error agregando estudiante: {e}", exc_info=True)
             return None
     
     def agregar_egresado(self, egresado_data):
@@ -1191,7 +1912,7 @@ class SistemaBaseDatosMigracion:
                 logger.info(f"Egresado agregado: {egresado_data.get('matricula', '')}")
                 return egresado_id
         except Exception as e:
-            logger.error(f"Error agregando egresado: {e}")
+            logger.error(f"Error agregando egresado: {e}", exc_info=True)
             return None
     
     def agregar_contratado(self, contratado_data):
@@ -1221,7 +1942,7 @@ class SistemaBaseDatosMigracion:
                 logger.info(f"Contratado agregado: {contratado_data.get('matricula', '')}")
                 return contratado_id
         except Exception as e:
-            logger.error(f"Error agregando contratado: {e}")
+            logger.error(f"Error agregando contratado: {e}", exc_info=True)
             return None
     
     def registrar_bitacora(self, usuario, accion, detalles, ip='localhost'):
@@ -1235,7 +1956,7 @@ class SistemaBaseDatosMigracion:
                 ''', (usuario, accion, detalles, ip))
                 return True
         except Exception as e:
-            logger.error(f"Error registrando en bitácora: {e}")
+            logger.error(f"Error registrando en bitácora: {e}", exc_info=True)
             return False
 
 # =============================================================================
@@ -1295,6 +2016,7 @@ class SistemaAutenticacionMigracion:
                     
         except Exception as e:
             st.error(f"❌ Error en el proceso de login: {e}")
+            logger.error(f"Error en login: {e}", exc_info=True)
             return False
     
     def cerrar_sesion(self):
@@ -1316,38 +2038,90 @@ class SistemaAutenticacionMigracion:
             
         except Exception as e:
             st.error(f"❌ Error cerrando sesión: {e}")
+            logger.error(f"Error cerrando sesión: {e}", exc_info=True)
 
 # Instancia global del sistema de autenticación para migración
 auth_migracion = SistemaAutenticacionMigracion()
 
 # =============================================================================
-# SISTEMA DE MIGRACIÓN DE ROLES - EXCLUSIVAMENTE REMOTO
+# SISTEMA DE MIGRACIÓN DE ROLES - MEJORADO CON NOTIFICACIONES Y BACKUPS
 # =============================================================================
 
 class SistemaMigracionCompleto:
     def __init__(self):
         self.gestor = gestor_remoto_migracion
         self.db = db_migracion
-        self.cargar_datos()
+        self.backup_system = SistemaBackupAutomatico(self.gestor)
+        self.notificaciones = SistemaNotificaciones(
+            gestor_remoto_migracion.config.get('smtp', {})
+        )
+        self.validador = ValidadorDatos()
         
-    def cargar_datos(self):
-        """Cargar datos desde la base de datos de migración"""
+        # Estado de paginación
+        self.current_page_inscritos = 1
+        self.current_page_estudiantes = 1
+        self.current_page_egresados = 1
+        
+        # Términos de búsqueda
+        self.search_term_inscritos = ""
+        self.search_term_estudiantes = ""
+        self.search_term_egresados = ""
+        
+        self.cargar_datos_paginados()
+        
+    def cargar_datos_paginados(self):
+        """Cargar datos desde la base de datos de migración con paginación"""
         try:
             with st.spinner("📊 Cargando datos desde servidor remoto..."):
-                self.df_inscritos = self.db.obtener_inscritos()
-                self.df_estudiantes = self.db.obtener_estudiantes()
-                self.df_egresados = self.db.obtener_egresados()
-                self.df_contratados = self.db.obtener_contratados()
-                self.df_usuarios = self.db.obtener_usuarios()
+                self.df_inscritos, self.total_pages_inscritos, self.total_inscritos = self.db.obtener_inscritos(
+                    page=self.current_page_inscritos,
+                    search_term=self.search_term_inscritos
+                )
                 
-                logger.info(f"Datos cargados: {len(self.df_inscritos)} inscritos, {len(self.df_estudiantes)} estudiantes")
+                self.df_estudiantes, self.total_pages_estudiantes, self.total_estudiantes = self.db.obtener_estudiantes(
+                    page=self.current_page_estudiantes,
+                    search_term=self.search_term_estudiantes
+                )
+                
+                self.df_egresados, self.total_pages_egresados, self.total_egresados = self.db.obtener_egresados(
+                    page=self.current_page_egresados,
+                    search_term=self.search_term_egresados
+                )
+                
+                self.df_contratados, self.total_pages_contratados, self.total_contratados = self.db.obtener_contratados(
+                    page=1, search_term=""
+                )
+                
+                self.df_usuarios, self.total_pages_usuarios, self.total_usuarios = self.db.obtener_usuarios(
+                    page=1, search_term=""
+                )
+                
+                logger.info(f"""
+                📊 Datos cargados:
+                - Inscritos: {self.total_inscritos} registros (página {self.current_page_inscritos}/{self.total_pages_inscritos})
+                - Estudiantes: {self.total_estudiantes} registros (página {self.current_page_estudiantes}/{self.total_pages_estudiantes})
+                - Egresados: {self.total_egresados} registros (página {self.current_page_egresados}/{self.total_pages_egresados})
+                """)
+                
         except Exception as e:
-            logger.error(f"Error cargando datos: {e}")
+            logger.error(f"Error cargando datos: {e}", exc_info=True)
             self.df_inscritos = pd.DataFrame()
             self.df_estudiantes = pd.DataFrame()
             self.df_egresados = pd.DataFrame()
             self.df_contratados = pd.DataFrame()
             self.df_usuarios = pd.DataFrame()
+            
+            self.total_pages_inscritos = 0
+            self.total_pages_estudiantes = 0
+            self.total_pages_egresados = 0
+            self.total_pages_contratados = 0
+            self.total_pages_usuarios = 0
+            
+            self.total_inscritos = 0
+            self.total_estudiantes = 0
+            self.total_egresados = 0
+            self.total_contratados = 0
+            self.total_usuarios = 0
     
     def obtener_prefijo_rol(self, rol):
         """Obtener prefijo de matrícula según el rol"""
@@ -1461,8 +2235,21 @@ class SistemaMigracionCompleto:
                 submitted = st.form_submit_button("💾 Confirmar Migración a Estudiante")
                 
                 if submitted:
+                    # Validaciones mejoradas
                     if not programa or not programa_interes:
                         st.error("❌ Los campos marcados con * son obligatorios")
+                        return False
+                    
+                    # Validar email si está presente
+                    email = inscrito_data.get('email', '')
+                    if email and not ValidadorDatos.validar_email(email):
+                        st.error("❌ Formato de email inválido")
+                        return False
+                    
+                    # Validar teléfono si está presente
+                    telefono = inscrito_data.get('telefono', '')
+                    if telefono and not ValidadorDatos.validar_telefono(telefono):
+                        st.error("❌ Formato de teléfono inválido (mínimo 10 dígitos)")
                         return False
                     
                     # Guardar datos en session_state
@@ -1496,6 +2283,18 @@ class SistemaMigracionCompleto:
                     st.info(f"**Nueva matrícula:** {datos_form['matricula_estudiante']}")
                     st.info(f"**Nombre:** {datos_form['nombre_completo']}")
                     st.info(f"**Programa:** {datos_form['programa']}")
+                    
+                    # Crear backup antes de proceder
+                    backup_info = f"Inscrito -> Estudiante: {datos_form['matricula_inscrito']} -> {datos_form['matricula_estudiante']}"
+                    
+                    with st.spinner("🔄 Creando backup antes de la migración..."):
+                        backup_path = self.backup_system.crear_backup_pre_migracion(
+                            "INSCRITO_A_ESTUDIANTE", 
+                            backup_info
+                        )
+                        
+                        if backup_path:
+                            st.success(f"✅ Backup creado: {os.path.basename(backup_path)}")
                     
                     st.warning("⚠️ **¿Está seguro de proceder con la migración?** Esta acción no se puede deshacer.")
                     
@@ -1577,6 +2376,16 @@ class SistemaMigracionCompleto:
                         st.error("❌ Los campos marcados con * son obligatorios")
                         return False
                     
+                    # Validar email
+                    if not ValidadorDatos.validar_email(email):
+                        st.error("❌ Formato de email inválido")
+                        return False
+                    
+                    # Validar teléfono si está presente
+                    if telefono and not ValidadorDatos.validar_telefono(telefono):
+                        st.error("❌ Formato de teléfono inválido (mínimo 10 dígitos)")
+                        return False
+                    
                     # Guardar datos en session_state
                     st.session_state.datos_formulario_estudiante = {
                         'programa_original': programa_original,
@@ -1606,6 +2415,18 @@ class SistemaMigracionCompleto:
                     st.info(f"**Nombre:** {datos_form['nombre_completo']}")
                     st.info(f"**Programa Original:** {datos_form['programa_original']}")
                     st.info(f"**Nivel Académico:** {datos_form['nivel_academico']}")
+                    
+                    # Crear backup antes de proceder
+                    backup_info = f"Estudiante -> Egresado: {datos_form['matricula_estudiante']} -> {datos_form['matricula_egresado']}"
+                    
+                    with st.spinner("🔄 Creando backup antes de la migración..."):
+                        backup_path = self.backup_system.crear_backup_pre_migracion(
+                            "ESTUDIANTE_A_EGRESADO", 
+                            backup_info
+                        )
+                        
+                        if backup_path:
+                            st.success(f"✅ Backup creado: {os.path.basename(backup_path)}")
                     
                     st.warning("⚠️ **¿Está seguro de proceder con la migración?** Esta acción no se puede deshacer.")
                     
@@ -1718,6 +2539,18 @@ class SistemaMigracionCompleto:
                     st.info(f"**Puesto:** {datos_form['puesto']}")
                     st.info(f"**Departamento:** {datos_form['departamento']}")
                     
+                    # Crear backup antes de proceder
+                    backup_info = f"Egresado -> Contratado: {datos_form['matricula_egresado']} -> {datos_form['matricula_contratado']}"
+                    
+                    with st.spinner("🔄 Creando backup antes de la migración..."):
+                        backup_path = self.backup_system.crear_backup_pre_migracion(
+                            "EGRESADO_A_CONTRATADO", 
+                            backup_info
+                        )
+                        
+                        if backup_path:
+                            st.success(f"✅ Backup creado: {os.path.basename(backup_path)}")
+                    
                     st.warning("⚠️ **¿Está seguro de proceder con la migración?** Esta acción no se puede deshacer.")
                     
                     col_confirm1, col_confirm2 = st.columns(2)
@@ -1745,6 +2578,8 @@ class SistemaMigracionCompleto:
 
     def ejecutar_migracion_inscrito_estudiante(self, datos_form):
         """Ejecutar el proceso de migración inscrito → estudiante"""
+        inicio_tiempo = time.time()
+        
         try:
             matricula_inscrito = datos_form['matricula_inscrito']
             matricula_estudiante = datos_form['matricula_estudiante']
@@ -1829,9 +2664,6 @@ class SistemaMigracionCompleto:
                 f'Usuario migrado de inscrito a estudiante. Matrícula: {matricula_inscrito} -> {matricula_estudiante}'
             )
             
-            # Registrar migración exitosa
-            estado_migracion.registrar_migracion()
-            
             # Sincronizar cambios con servidor remoto
             status_text.text("🌐 Sincronizando cambios con servidor remoto...")
             progress_bar.progress(90)
@@ -1844,7 +2676,28 @@ class SistemaMigracionCompleto:
             status_text.text("✅ Migración completada")
             progress_bar.progress(100)
             
-            st.success(f"🎉 ¡Migración completada exitosamente!")
+            tiempo_ejecucion = time.time() - inicio_tiempo
+            
+            # Registrar migración exitosa
+            estado_migracion.registrar_migracion(exitoso=True, tiempo_ejecucion=tiempo_ejecucion)
+            
+            # Enviar notificación
+            detalles_notificacion = f"""
+            Migración exitosa: Inscrito → Estudiante
+            Matrícula: {matricula_inscrito} → {matricula_estudiante}
+            Nombre: {inscrito_data.get('nombre_completo', '')}
+            Tiempo ejecución: {tiempo_ejecucion:.1f} segundos
+            Archivos renombrados: {archivos_renombrados}
+            Usuario: {st.session_state.usuario_actual.get('usuario', 'admin')}
+            """
+            
+            self.notificaciones.enviar_notificacion_migracion(
+                tipo_migracion="INSCRITO → ESTUDIANTE",
+                estado="EXITOSA",
+                detalles=detalles_notificacion
+            )
+            
+            st.success(f"🎉 ¡Migración completada exitosamente en {tiempo_ejecucion:.1f} segundos!")
             st.balloons()
             
             # Mostrar resumen final
@@ -1854,6 +2707,7 @@ class SistemaMigracionCompleto:
             st.success(f"✅ Registro creado en estudiantes")
             st.success(f"✅ Registro eliminado de inscritos")
             st.success(f"✅ Cambios sincronizados con servidor remoto")
+            st.success(f"✅ Notificación enviada")
             
             # Limpiar estado de sesión
             if 'inscrito_seleccionado' in st.session_state:
@@ -1863,19 +2717,53 @@ class SistemaMigracionCompleto:
             if 'datos_formulario_inscrito' in st.session_state:
                 del st.session_state.datos_formulario_inscrito
             
+            # Registrar en log de migración
+            logger.log_migration(
+                operation="INSCRITO_A_ESTUDIANTE",
+                status="EXITOSA",
+                details={
+                    'matricula_original': matricula_inscrito,
+                    'matricula_nueva': matricula_estudiante,
+                    'tiempo_ejecucion': tiempo_ejecucion,
+                    'archivos_renombrados': archivos_renombrados
+                }
+            )
+            
             # Recargar datos
             time.sleep(2)
             st.rerun()
             return True
                 
         except Exception as e:
-            st.error(f"❌ Error ejecutando la migración: {str(e)}")
-            import traceback
-            st.error(f"Detalles del error: {traceback.format_exc()}")
+            tiempo_ejecucion = time.time() - inicio_tiempo
+            logger.error(f"❌ Error ejecutando la migración: {str(e)}", exc_info=True)
+            
+            # Registrar migración fallida
+            estado_migracion.registrar_migracion(exitoso=False, tiempo_ejecucion=tiempo_ejecucion)
+            
+            # Enviar notificación de error
+            self.notificaciones.enviar_notificacion_migracion(
+                tipo_migracion="INSCRITO → ESTUDIANTE",
+                estado="FALLIDA",
+                detalles=f"Error: {str(e)}\nTiempo transcurrido: {tiempo_ejecucion:.1f}s"
+            )
+            
+            # Registrar en log de migración
+            logger.log_migration(
+                operation="INSCRITO_A_ESTUDIANTE",
+                status="FALLIDA",
+                details={
+                    'error': str(e),
+                    'tiempo_ejecucion': tiempo_ejecucion
+                }
+            )
+            
             return False
 
     def ejecutar_migracion_estudiante_egresado(self, datos_form):
         """Ejecutar el proceso de migración estudiante → egresado"""
+        inicio_tiempo = time.time()
+        
         try:
             matricula_estudiante = datos_form['matricula_estudiante']
             matricula_egresado = datos_form['matricula_egresado']
@@ -1954,9 +2842,6 @@ class SistemaMigracionCompleto:
                 f'Usuario migrado de estudiante a egresado. Matrícula: {matricula_estudiante} -> {matricula_egresado}'
             )
             
-            # Registrar migración exitosa
-            estado_migracion.registrar_migracion()
-            
             # Sincronizar cambios con servidor remoto
             status_text.text("🌐 Sincronizando cambios con servidor remoto...")
             progress_bar.progress(90)
@@ -1969,7 +2854,28 @@ class SistemaMigracionCompleto:
             status_text.text("✅ Migración completada")
             progress_bar.progress(100)
             
-            st.success(f"🎉 ¡Migración completada exitosamente!")
+            tiempo_ejecucion = time.time() - inicio_tiempo
+            
+            # Registrar migración exitosa
+            estado_migracion.registrar_migracion(exitoso=True, tiempo_ejecucion=tiempo_ejecucion)
+            
+            # Enviar notificación
+            detalles_notificacion = f"""
+            Migración exitosa: Estudiante → Egresado
+            Matrícula: {matricula_estudiante} → {matricula_egresado}
+            Nombre: {estudiante_data.get('nombre_completo', '')}
+            Tiempo ejecución: {tiempo_ejecucion:.1f} segundos
+            Archivos renombrados: {archivos_renombrados}
+            Usuario: {st.session_state.usuario_actual.get('usuario', 'admin')}
+            """
+            
+            self.notificaciones.enviar_notificacion_migracion(
+                tipo_migracion="ESTUDIANTE → EGRESADO",
+                estado="EXITOSA",
+                detalles=detalles_notificacion
+            )
+            
+            st.success(f"🎉 ¡Migración completada exitosamente en {tiempo_ejecucion:.1f} segundos!")
             st.balloons()
             
             # Mostrar resumen final
@@ -1979,6 +2885,7 @@ class SistemaMigracionCompleto:
             st.success(f"✅ Registro creado en egresados")
             st.success(f"✅ Registro eliminado de estudiantes")
             st.success(f"✅ Cambios sincronizados con servidor remoto")
+            st.success(f"✅ Notificación enviada")
             
             # Limpiar estado de sesión
             if 'estudiante_seleccionado' in st.session_state:
@@ -1988,19 +2895,53 @@ class SistemaMigracionCompleto:
             if 'datos_formulario_estudiante' in st.session_state:
                 del st.session_state.datos_formulario_estudiante
             
+            # Registrar en log de migración
+            logger.log_migration(
+                operation="ESTUDIANTE_A_EGRESADO",
+                status="EXITOSA",
+                details={
+                    'matricula_original': matricula_estudiante,
+                    'matricula_nueva': matricula_egresado,
+                    'tiempo_ejecucion': tiempo_ejecucion,
+                    'archivos_renombrados': archivos_renombrados
+                }
+            )
+            
             # Recargar datos
             time.sleep(2)
             st.rerun()
             return True
                 
         except Exception as e:
-            st.error(f"❌ Error ejecutando la migración: {str(e)}")
-            import traceback
-            st.error(f"Detalles del error: {traceback.format_exc()}")
+            tiempo_ejecucion = time.time() - inicio_tiempo
+            logger.error(f"❌ Error ejecutando la migración: {str(e)}", exc_info=True)
+            
+            # Registrar migración fallida
+            estado_migracion.registrar_migracion(exitoso=False, tiempo_ejecucion=tiempo_ejecucion)
+            
+            # Enviar notificación de error
+            self.notificaciones.enviar_notificacion_migracion(
+                tipo_migracion="ESTUDIANTE → EGRESADO",
+                estado="FALLIDA",
+                detalles=f"Error: {str(e)}\nTiempo transcurrido: {tiempo_ejecucion:.1f}s"
+            )
+            
+            # Registrar en log de migración
+            logger.log_migration(
+                operation="ESTUDIANTE_A_EGRESADO",
+                status="FALLIDA",
+                details={
+                    'error': str(e),
+                    'tiempo_ejecucion': tiempo_ejecucion
+                }
+            )
+            
             return False
 
     def ejecutar_migracion_egresado_contratado(self, datos_form):
         """Ejecutar el proceso de migración egresado → contratado"""
+        inicio_tiempo = time.time()
+        
         try:
             matricula_egresado = datos_form['matricula_egresado']
             matricula_contratado = datos_form['matricula_contratado']
@@ -2079,9 +3020,6 @@ class SistemaMigracionCompleto:
                 f'Usuario migrado de egresado a contratado. Matrícula: {matricula_egresado} -> {matricula_contratado}'
             )
             
-            # Registrar migración exitosa
-            estado_migracion.registrar_migracion()
-            
             # Sincronizar cambios con servidor remoto
             status_text.text("🌐 Sincronizando cambios con servidor remoto...")
             progress_bar.progress(90)
@@ -2094,7 +3032,28 @@ class SistemaMigracionCompleto:
             status_text.text("✅ Migración completada")
             progress_bar.progress(100)
             
-            st.success(f"🎉 ¡Migración completada exitosamente!")
+            tiempo_ejecucion = time.time() - inicio_tiempo
+            
+            # Registrar migración exitosa
+            estado_migracion.registrar_migracion(exitoso=True, tiempo_ejecucion=tiempo_ejecucion)
+            
+            # Enviar notificación
+            detalles_notificacion = f"""
+            Migración exitosa: Egresado → Contratado
+            Matrícula: {matricula_egresado} → {matricula_contratado}
+            Nombre: {egresado_data.get('nombre_completo', '')}
+            Tiempo ejecución: {tiempo_ejecucion:.1f} segundos
+            Archivos renombrados: {archivos_renombrados}
+            Usuario: {st.session_state.usuario_actual.get('usuario', 'admin')}
+            """
+            
+            self.notificaciones.enviar_notificacion_migracion(
+                tipo_migracion="EGRESADO → CONTRATADO",
+                estado="EXITOSA",
+                detalles=detalles_notificacion
+            )
+            
+            st.success(f"🎉 ¡Migración completada exitosamente en {tiempo_ejecucion:.1f} segundos!")
             st.balloons()
             
             # Mostrar resumen final
@@ -2104,6 +3063,7 @@ class SistemaMigracionCompleto:
             st.success(f"✅ Registro creado en contratados")
             st.success(f"✅ Registro eliminado de egresados")
             st.success(f"✅ Cambios sincronizados con servidor remoto")
+            st.success(f"✅ Notificación enviada")
             
             # Limpiar estado de sesión
             if 'egresado_seleccionado' in st.session_state:
@@ -2113,22 +3073,54 @@ class SistemaMigracionCompleto:
             if 'datos_formulario_egresado' in st.session_state:
                 del st.session_state.datos_formulario_egresado
             
+            # Registrar en log de migración
+            logger.log_migration(
+                operation="EGRESADO_A_CONTRATADO",
+                status="EXITOSA",
+                details={
+                    'matricula_original': matricula_egresado,
+                    'matricula_nueva': matricula_contratado,
+                    'tiempo_ejecucion': tiempo_ejecucion,
+                    'archivos_renombrados': archivos_renombrados
+                }
+            )
+            
             # Recargar datos
             time.sleep(2)
             st.rerun()
             return True
                 
         except Exception as e:
-            st.error(f"❌ Error ejecutando la migración: {str(e)}")
-            import traceback
-            st.error(f"Detalles del error: {traceback.format_exc()}")
+            tiempo_ejecucion = time.time() - inicio_tiempo
+            logger.error(f"❌ Error ejecutando la migración: {str(e)}", exc_info=True)
+            
+            # Registrar migración fallida
+            estado_migracion.registrar_migracion(exitoso=False, tiempo_ejecucion=tiempo_ejecucion)
+            
+            # Enviar notificación de error
+            self.notificaciones.enviar_notificacion_migracion(
+                tipo_migracion="EGRESADO → CONTRATADO",
+                estado="FALLIDA",
+                detalles=f"Error: {str(e)}\nTiempo transcurrido: {tiempo_ejecucion:.1f}s"
+            )
+            
+            # Registrar en log de migración
+            logger.log_migration(
+                operation="EGRESADO_A_CONTRATADO",
+                status="FALLIDA",
+                details={
+                    'error': str(e),
+                    'tiempo_ejecucion': tiempo_ejecucion
+                }
+            )
+            
             return False
 
 # Instancia del sistema de migración completo
 migrador = SistemaMigracionCompleto()
 
 # =============================================================================
-# INTERFAZ PRINCIPAL DEL MIGRADOR - CORREGIDA
+# INTERFAZ PRINCIPAL DEL MIGRADOR - MEJORADA CON PAGINACIÓN
 # =============================================================================
 
 def mostrar_login_migracion():
@@ -2137,7 +3129,7 @@ def mostrar_login_migracion():
     st.markdown("---")
     
     # Mostrar estado actual
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         if estado_migracion.esta_inicializada():
@@ -2150,6 +3142,15 @@ def mostrar_login_migracion():
             st.success("✅ SSH Conectado")
         else:
             st.error("❌ SSH Desconectado")
+    
+    with col3:
+        # Verificar espacio en disco
+        temp_dir = tempfile.gettempdir()
+        espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
+        if espacio_ok:
+            st.success(f"💾 Espacio: {espacio_mb:.0f} MB")
+        else:
+            st.warning(f"💾 Espacio: {espacio_mb:.0f} MB")
     
     st.markdown("---")
     
@@ -2200,6 +3201,11 @@ def mostrar_login_migracion():
                 **Credenciales por defecto (después de inicializar):**
                 - 👤 Usuario: **admin**
                 - 🔒 Contraseña: **Admin123!**
+                
+                **Verificación del sistema:**
+                - ✅ SSH debe estar conectado
+                - ✅ Base de datos debe estar inicializada
+                - 💾 Debe haber suficiente espacio en disco
                 """)
 
 def mostrar_interfaz_migracion():
@@ -2219,7 +3225,7 @@ def mostrar_interfaz_migracion():
     
     with col3:
         if st.button("🔄 Recargar Datos", use_container_width=True):
-            migrador.cargar_datos()
+            migrador.cargar_datos_paginados()
             st.rerun()
     
     with col4:
@@ -2253,11 +3259,11 @@ def mostrar_interfaz_migracion():
         mostrar_migracion_egresados()
 
 def mostrar_migracion_inscritos():
-    """Interfaz para migración de inscritos a estudiantes"""
+    """Interfaz para migración de inscritos a estudiantes con paginación"""
     st.header("📝 Migración: Inscrito → Estudiante")
     
     # Si no hay datos, mostrar mensaje informativo
-    if migrador.df_inscritos.empty:
+    if migrador.total_inscritos == 0:
         st.warning("📭 No hay inscritos disponibles para migrar")
         st.info("Los inscritos aparecerán aquí después de que se registren en el sistema principal.")
         
@@ -2265,7 +3271,7 @@ def mostrar_migracion_inscritos():
         if st.button("🔄 Sincronizar con servidor remoto"):
             with st.spinner("Sincronizando..."):
                 if db_migracion.sincronizar_desde_remoto():
-                    migrador.cargar_datos()
+                    migrador.cargar_datos_paginados()
                     st.rerun()
                 else:
                     st.error("❌ Error sincronizando")
@@ -2274,7 +3280,31 @@ def mostrar_migracion_inscritos():
     
     # Mostrar estadísticas
     st.subheader("📊 Inscritos Disponibles para Migración")
-    st.info(f"Total de inscritos: {len(migrador.df_inscritos)}")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Inscritos", migrador.total_inscritos)
+    
+    with col2:
+        st.metric("Página Actual", f"{migrador.current_page_inscritos}/{max(1, migrador.total_pages_inscritos)}")
+    
+    with col3:
+        registros_pagina = len(migrador.df_inscritos)
+        st.metric("En esta página", registros_pagina)
+    
+    # Barra de búsqueda
+    st.subheader("🔍 Buscar Inscrito")
+    search_term = st.text_input(
+        "Buscar por matrícula, nombre o email:", 
+        value=migrador.search_term_inscritos,
+        key="search_inscritos"
+    )
+    
+    if search_term != migrador.search_term_inscritos:
+        migrador.search_term_inscritos = search_term
+        migrador.current_page_inscritos = 1
+        migrador.cargar_datos_paginados()
+        st.rerun()
     
     # Crear una copia para mostrar
     df_mostrar = migrador.df_inscritos.copy()
@@ -2342,20 +3372,65 @@ def mostrar_migracion_inscritos():
                     st.rerun()
     
     else:
-        st.warning("No hay inscritos disponibles para mostrar")
+        st.warning("No hay inscritos disponibles para mostrar con los criterios de búsqueda")
+    
+    # Controles de paginación
+    st.markdown("---")
+    col_prev, col_page, col_next = st.columns([1, 2, 1])
+    
+    with col_prev:
+        if migrador.current_page_inscritos > 1:
+            if st.button("⬅️ Página Anterior", use_container_width=True):
+                migrador.current_page_inscritos -= 1
+                migrador.cargar_datos_paginados()
+                st.rerun()
+    
+    with col_page:
+        st.write(f"**Página {migrador.current_page_inscritos} de {max(1, migrador.total_pages_inscritos)}**")
+    
+    with col_next:
+        if migrador.current_page_inscritos < migrador.total_pages_inscritos:
+            if st.button("Página Siguiente ➡️", use_container_width=True):
+                migrador.current_page_inscritos += 1
+                migrador.cargar_datos_paginados()
+                st.rerun()
 
 def mostrar_migracion_estudiantes():
-    """Interfaz para migración de estudiantes a egresados"""
+    """Interfaz para migración de estudiantes a egresados con paginación"""
     st.header("🎓 Migración: Estudiante → Egresado")
     
-    if migrador.df_estudiantes.empty:
+    if migrador.total_estudiantes == 0:
         st.warning("📭 No hay estudiantes disponibles para migrar")
         st.info("Primero necesitas migrar inscritos a estudiantes.")
         return
     
     # Mostrar estadísticas
     st.subheader("📊 Estudiantes Disponibles para Migración")
-    st.info(f"Total de estudiantes: {len(migrador.df_estudiantes)}")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Estudiantes", migrador.total_estudiantes)
+    
+    with col2:
+        st.metric("Página Actual", f"{migrador.current_page_estudiantes}/{max(1, migrador.total_pages_estudiantes)}")
+    
+    with col3:
+        registros_pagina = len(migrador.df_estudiantes)
+        st.metric("En esta página", registros_pagina)
+    
+    # Barra de búsqueda
+    st.subheader("🔍 Buscar Estudiante")
+    search_term = st.text_input(
+        "Buscar por matrícula, nombre o email:", 
+        value=migrador.search_term_estudiantes,
+        key="search_estudiantes"
+    )
+    
+    if search_term != migrador.search_term_estudiantes:
+        migrador.search_term_estudiantes = search_term
+        migrador.current_page_estudiantes = 1
+        migrador.cargar_datos_paginados()
+        st.rerun()
     
     # Crear una copia para mostrar
     df_mostrar = migrador.df_estudiantes.copy()
@@ -2423,20 +3498,65 @@ def mostrar_migracion_estudiantes():
                     st.rerun()
     
     else:
-        st.warning("No hay estudiantes disponibles para mostrar")
+        st.warning("No hay estudiantes disponibles para mostrar con los criterios de búsqueda")
+    
+    # Controles de paginación
+    st.markdown("---")
+    col_prev, col_page, col_next = st.columns([1, 2, 1])
+    
+    with col_prev:
+        if migrador.current_page_estudiantes > 1:
+            if st.button("⬅️ Página Anterior", use_container_width=True):
+                migrador.current_page_estudiantes -= 1
+                migrador.cargar_datos_paginados()
+                st.rerun()
+    
+    with col_page:
+        st.write(f"**Página {migrador.current_page_estudiantes} de {max(1, migrador.total_pages_estudiantes)}**")
+    
+    with col_next:
+        if migrador.current_page_estudiantes < migrador.total_pages_estudiantes:
+            if st.button("Página Siguiente ➡️", use_container_width=True):
+                migrador.current_page_estudiantes += 1
+                migrador.cargar_datos_paginados()
+                st.rerun()
 
 def mostrar_migracion_egresados():
-    """Interfaz para migración de egresados a contratados"""
+    """Interfaz para migración de egresados a contratados con paginación"""
     st.header("💼 Migración: Egresado → Contratado")
     
-    if migrador.df_egresados.empty:
+    if migrador.total_egresados == 0:
         st.warning("📭 No hay egresados disponibles para migrar")
         st.info("Primero necesitas migrar estudiantes a egresados.")
         return
     
     # Mostrar estadísticas
     st.subheader("📊 Egresados Disponibles para Migración")
-    st.info(f"Total de egresados: {len(migrador.df_egresados)}")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Egresados", migrador.total_egresados)
+    
+    with col2:
+        st.metric("Página Actual", f"{migrador.current_page_egresados}/{max(1, migrador.total_pages_egresados)}")
+    
+    with col3:
+        registros_pagina = len(migrador.df_egresados)
+        st.metric("En esta página", registros_pagina)
+    
+    # Barra de búsqueda
+    st.subheader("🔍 Buscar Egresado")
+    search_term = st.text_input(
+        "Buscar por matrícula, nombre o email:", 
+        value=migrador.search_term_egresados,
+        key="search_egresados"
+    )
+    
+    if search_term != migrador.search_term_egresados:
+        migrador.search_term_egresados = search_term
+        migrador.current_page_egresados = 1
+        migrador.cargar_datos_paginados()
+        st.rerun()
     
     # Crear una copia para mostrar
     df_mostrar = migrador.df_egresados.copy()
@@ -2504,10 +3624,31 @@ def mostrar_migracion_egresados():
                     st.rerun()
     
     else:
-        st.warning("No hay egresados disponibles para mostrar")
+        st.warning("No hay egresados disponibles para mostrar con los criterios de búsqueda")
+    
+    # Controles de paginación
+    st.markdown("---")
+    col_prev, col_page, col_next = st.columns([1, 2, 1])
+    
+    with col_prev:
+        if migrador.current_page_egresados > 1:
+            if st.button("⬅️ Página Anterior", use_container_width=True):
+                migrador.current_page_egresados -= 1
+                migrador.cargar_datos_paginados()
+                st.rerun()
+    
+    with col_page:
+        st.write(f"**Página {migrador.current_page_egresados} de {max(1, migrador.total_pages_egresados)}**")
+    
+    with col_next:
+        if migrador.current_page_egresados < migrador.total_pages_egresados:
+            if st.button("Página Siguiente ➡️", use_container_width=True):
+                migrador.current_page_egresados += 1
+                migrador.cargar_datos_paginados()
+                st.rerun()
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL - CORREGIDA
+# FUNCIÓN PRINCIPAL - MEJORADA CON MANEJO ROBUSTO DE ERRORES
 # =============================================================================
 
 def main():
@@ -2540,6 +3681,16 @@ def main():
             if error_ssh:
                 st.caption(f"⚠️ Error: {error_ssh}")
         
+        # Verificación de espacio en disco
+        st.subheader("💾 Estado del Sistema")
+        temp_dir = tempfile.gettempdir()
+        espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
+        
+        if espacio_ok:
+            st.success(f"Espacio disponible: {espacio_mb:.0f} MB")
+        else:
+            st.warning(f"Espacio bajo: {espacio_mb:.0f} MB")
+        
         # Información del servidor
         with st.expander("📋 Información del Servidor"):
             if gestor_remoto_migracion.config.get('host'):
@@ -2553,8 +3704,16 @@ def main():
         
         # Estadísticas de migración
         st.subheader("📈 Estadísticas")
+        stats = estado_migracion.estado.get('estadisticas_migracion', {})
+        
+        col_stat1, col_stat2 = st.columns(2)
+        with col_stat1:
+            st.metric("Éxitos", stats.get('exitosas', 0))
+        with col_stat2:
+            st.metric("Fallidas", stats.get('fallidas', 0))
+        
         migraciones = estado_migracion.estado.get('migraciones_realizadas', 0)
-        st.metric("Migraciones realizadas", migraciones)
+        st.metric("Total Migraciones", migraciones)
         
         # Última sincronización
         ultima_sync = estado_migracion.estado.get('ultima_sincronizacion')
@@ -2567,6 +3726,33 @@ def main():
         
         st.markdown("---")
         
+        # Sistema de backups
+        st.subheader("💾 Sistema de Backups")
+        backups = migrador.backup_system.listar_backups()
+        
+        if backups:
+            st.success(f"✅ {len(backups)} backups disponibles")
+            with st.expander("📁 Ver Backups"):
+                for backup in backups:
+                    st.write(f"**{backup['nombre']}**")
+                    st.caption(f"Tamaño: {backup['tamaño'] / 1024:.1f} KB | Fecha: {backup['fecha'].strftime('%Y-%m-%d %H:%M')}")
+        else:
+            st.info("ℹ️ No hay backups disponibles")
+        
+        # Botón para crear backup manual
+        if st.button("💾 Crear Backup Manual", use_container_width=True):
+            with st.spinner("Creando backup..."):
+                backup_path = migrador.backup_system.crear_backup_pre_migracion(
+                    "MANUAL",
+                    "Backup manual creado por el administrador"
+                )
+                if backup_path:
+                    st.success(f"✅ Backup creado: {os.path.basename(backup_path)}")
+                else:
+                    st.error("❌ Error creando backup")
+        
+        st.markdown("---")
+        
         # Botones de control - SOLO SI ESTÁ LOGUEADO
         st.subheader("⚙️ Controles")
         
@@ -2574,7 +3760,7 @@ def main():
             if st.button("🔄 Sincronizar Ahora", use_container_width=True):
                 with st.spinner("Sincronizando con servidor remoto..."):
                     if db_migracion.sincronizar_desde_remoto():
-                        migrador.cargar_datos()
+                        migrador.cargar_datos_paginados()
                         st.success("✅ Sincronización exitosa")
                         st.rerun()
                     else:
@@ -2598,7 +3784,9 @@ def main():
                         if tablas:
                             st.success(f"✅ {len(tablas)} tablas encontradas en servidor remoto:")
                             for tabla in tablas:
-                                st.write(f"- {tabla[0]}")
+                                cursor.execute(f"SELECT COUNT(*) FROM {tabla[0]}")
+                                count = cursor.fetchone()[0]
+                                st.write(f"- {tabla[0]} ({count} registros)")
                         else:
                             st.error("❌ No hay tablas en la base de datos remota")
                 except Exception as e:
@@ -2606,37 +3794,128 @@ def main():
         else:
             st.info("ℹ️ Inicia sesión para usar los controles")
     
-    # Inicializar estado de sesión
-    if 'login_exitoso' not in st.session_state:
-        st.session_state.login_exitoso = False
-    if 'usuario_actual' not in st.session_state:
-        st.session_state.usuario_actual = None
-    if 'rol_usuario' not in st.session_state:
-        st.session_state.rol_usuario = None
-    if 'mostrar_confirmacion_inscrito' not in st.session_state:
-        st.session_state.mostrar_confirmacion_inscrito = False
-    if 'datos_formulario_inscrito' not in st.session_state:
-        st.session_state.datos_formulario_inscrito = {}
-    if 'inscrito_seleccionado' not in st.session_state:
-        st.session_state.inscrito_seleccionado = None
-    if 'estudiante_seleccionado' not in st.session_state:
-        st.session_state.estudiante_seleccionado = None
-    if 'egresado_seleccionado' not in st.session_state:
-        st.session_state.egresado_seleccionado = None
-    if 'mostrar_confirmacion_estudiante' not in st.session_state:
-        st.session_state.mostrar_confirmacion_estudiante = False
-    if 'datos_formulario_estudiante' not in st.session_state:
-        st.session_state.datos_formulario_estudiante = {}
-    if 'mostrar_confirmacion_egresado' not in st.session_state:
-        st.session_state.mostrar_confirmacion_egresado = False
-    if 'datos_formulario_egresado' not in st.session_state:
-        st.session_state.datos_formulario_egresado = {}
-    
-    # Mostrar interfaz según estado de login
-    if not st.session_state.login_exitoso:
-        mostrar_login_migracion()
-    else:
-        mostrar_interfaz_migracion()
+    try:
+        # Inicializar estado de sesión con valores por defecto
+        session_defaults = {
+            'login_exitoso': False,
+            'usuario_actual': None,
+            'rol_usuario': None,
+            'mostrar_confirmacion_inscrito': False,
+            'datos_formulario_inscrito': {},
+            'inscrito_seleccionado': None,
+            'estudiante_seleccionado': None,
+            'egresado_seleccionado': None,
+            'mostrar_confirmacion_estudiante': False,
+            'datos_formulario_estudiante': {},
+            'mostrar_confirmacion_egresado': False,
+            'datos_formulario_egresado': {}
+        }
+        
+        for key, default_value in session_defaults.items():
+            if key not in st.session_state:
+                st.session_state[key] = default_value
+        
+        # Verificar configuración SSH
+        if not gestor_remoto_migracion.config.get('host'):
+            st.error("""
+            ❌ **ERROR DE CONFIGURACIÓN**
+            
+            No se encontró configuración SSH en secrets.toml.
+            
+            **Solución:**
+            1. Asegúrate de tener un archivo `.streamlit/secrets.toml`
+            2. Agrega la configuración SSH:
+            ```toml
+            [ssh]
+            host = "tu.servidor.com"
+            port = 22
+            username = "tu_usuario"
+            password = "tu_contraseña"
+            
+            [paths]
+            remote_db_escuela = "/ruta/remota/escuela.db"
+            remote_uploads_path = "/ruta/remota/uploads"
+            ```
+            """)
+            
+            # Mostrar diagnóstico
+            with st.expander("🔍 Diagnóstico del Sistema"):
+                st.write("**Rutas buscadas:**")
+                for ruta in [
+                    ".streamlit/secrets.toml",
+                    "secrets.toml",
+                    "./.streamlit/secrets.toml"
+                ]:
+                    existe = os.path.exists(ruta)
+                    estado = "✅ Existe" if existe else "❌ No existe"
+                    st.write(f"{estado}: `{ruta}`")
+            
+            return
+        
+        # Mostrar interfaz según estado
+        if not st.session_state.login_exitoso:
+            mostrar_login_migracion()
+        else:
+            mostrar_interfaz_migracion()
+            
+    except Exception as e:
+        logger.error(f"Error crítico en main(): {e}", exc_info=True)
+        
+        st.error(f"❌ Error crítico en la aplicación: {str(e)}")
+        
+        # Información de diagnóstico
+        with st.expander("🔧 Información de diagnóstico detallada"):
+            st.write("**Estado persistente:**")
+            st.json(estado_migracion.estado)
+            
+            st.write("**Configuración SSH cargada:**")
+            if gestor_remoto_migracion.config:
+                config_show = gestor_remoto_migracion.config.copy()
+                # Ocultar contraseñas para seguridad
+                if 'password' in config_show:
+                    config_show['password'] = '********'
+                if 'smtp' in config_show and 'email_password' in config_show['smtp']:
+                    config_show['smtp']['email_password'] = '********'
+                st.json(config_show)
+            else:
+                st.write("No hay configuración SSH cargada")
+            
+            st.write("**Archivos de log:**")
+            log_files = []
+            for log_file in ['migracion_detallado.log', 'migration_operations.json']:
+                if os.path.exists(log_file):
+                    size = os.path.getsize(log_file)
+                    log_files.append(f"{log_file} ({size} bytes)")
+                else:
+                    log_files.append(f"{log_file} (no existe)")
+            
+            for log_info in log_files:
+                st.write(f"- {log_info}")
+        
+        # Botón para reinicio seguro
+        col_reset1, col_reset2 = st.columns(2)
+        with col_reset1:
+            if st.button("🔄 Reiniciar Aplicación", type="primary", use_container_width=True):
+                keys_to_keep = ['login_exitoso', 'usuario_actual', 'rol_usuario']
+                keys_to_delete = [k for k in st.session_state.keys() if k not in keys_to_keep]
+                
+                for key in keys_to_delete:
+                    del st.session_state[key]
+                
+                st.success("✅ Estado de sesión limpiado")
+                st.rerun()
+        
+        with col_reset2:
+            if st.button("📋 Ver Logs Recientes", use_container_width=True):
+                try:
+                    if os.path.exists('migracion_detallado.log'):
+                        with open('migracion_detallado.log', 'r') as f:
+                            lines = f.readlines()[-50:]  # Últimas 50 líneas
+                            st.text_area("Últimas líneas del log:", ''.join(lines), height=300)
+                    else:
+                        st.warning("No se encontró archivo de log")
+                except Exception as log_error:
+                    st.error(f"Error leyendo logs: {log_error}")
 
 # =============================================================================
 # EJECUCIÓN PRINCIPAL
@@ -2646,10 +3925,16 @@ if __name__ == "__main__":
     try:
         # Mostrar banner informativo
         st.info("""
-        🔄 **SISTEMA DE MIGRACIÓN EXCLUSIVAMENTE REMOTO**
+        🔄 **SISTEMA DE MIGRACIÓN EXCLUSIVAMENTE REMOTO - VERSIÓN MEJORADA**
         
-        Este sistema trabaja EXCLUSIVAMENTE en modo remoto SSH.
-        Todos los datos se guardan y sincronizan con el servidor configurado.
+        **Mejoras implementadas:**
+        ✅ Timeouts específicos para operaciones de red
+        ✅ Paginación en tablas para mejor rendimiento  
+        ✅ Logs detallados para diagnóstico
+        ✅ Backups automáticos antes de migraciones
+        ✅ Reintentos inteligentes con backoff exponencial
+        ✅ Verificación de espacio en disco
+        ✅ Sistema de notificaciones para migraciones
         
         **Para comenzar:**
         1. Configura secrets.toml con tus credenciales SSH
@@ -2660,32 +3945,14 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"❌ Error crítico en la aplicación de migración: {e}")
-        logger.error(f"Error crítico en migración: {e}", exc_info=True)
+        logger.critical(f"Error crítico en migración: {e}", exc_info=True)
         
-        # Información de diagnóstico
-        with st.expander("🔧 Información de diagnóstico"):
-            st.write("**Estado persistente:**")
-            st.json(estado_migracion.estado)
+        # Información de diagnóstico final
+        with st.expander("🚨 Información de diagnóstico crítico"):
+            st.write("**Traceback completo:**")
+            import traceback
+            st.code(traceback.format_exc())
             
-            st.write("**Configuración SSH cargada:**")
-            if gestor_remoto_migracion.config:
-                st.write(f"Host: {gestor_remoto_migracion.config.get('host', 'No configurado')}")
-                st.write(f"Usuario: {gestor_remoto_migracion.config.get('username', 'No configurado')}")
-            else:
-                st.write("No hay configuración SSH cargada")
-        
-        # Botón de reinicio
-        if st.button("🔄 Reiniciar Sistema", use_container_width=True):
-            try:
-                # Eliminar archivo de estado
-                if os.path.exists(estado_migracion.archivo_estado):
-                    os.remove(estado_migracion.archivo_estado)
-                
-                # Limpiar session_state
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                
-                st.success("✅ Sistema reiniciado")
-                st.rerun()
-            except Exception as e2:
-                st.error(f"❌ Error: {e2}")
+            st.write("**Variables de entorno:**")
+            env_vars = {k: v for k, v in os.environ.items() if 'STREAMLIT' in k or 'PYTHON' in k}
+            st.json(env_vars)
