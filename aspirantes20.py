@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 SISTEMA DE GESTIÓN DE ASPIRANTES - ESCUELA DE ENFERMERÍA
-Versión: 3.0 - CON SSH MEJORADO (igual que escuela20.py)
+Versión: 3.0 - CON SSH MEJORADO (igual que escuela20.py) + OPCIONES ACADÉMICAS
 Autor: Departamento de Tecnología
 Descripción: Sistema completo para gestión de inscritos con base de datos remota SSH
-Mejoras: Timeouts, reintentos, manejo robusto de errores, logging detallado
+Mejoras: Timeouts, reintentos, manejo robusto de errores, logging detallado + Website público
 """
 
 # =============================================================================
@@ -46,6 +46,7 @@ import atexit
 import math
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, List, Tuple
+from PIL import Image
 
 warnings.filterwarnings('ignore')
 
@@ -147,160 +148,281 @@ logger = EnhancedLogger()
 # =============================================================================
 
 st.set_page_config(
-    page_title="Sistema de Gestión de Aspirantes - SSH REMOTO",
+    page_title="Sistema Escuela Enfermería - Modo Inscripción",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS personalizados
-st.markdown("""
-<style>
+# =============================================================================
+# DATOS ESTÁTICOS DE LA INSTITUCIÓN (SOLO INFORMACIÓN PÚBLICA)
+# =============================================================================
+
+def obtener_programas_academicos():
+    """Obtener lista de programas académicos disponibles - SOLO INFORMACIÓN PÚBLICA"""
+    return [
+        {
+            "nombre": "Especialidad en Enfermería Cardiovascular",
+            "duracion": "2 años",
+            "modalidad": "Presencial",
+            "descripcion": "Formación especializada en el cuidado de pacientes con patologías cardiovasculares.",
+            "requisitos": ["Licenciatura en Enfermería", "Cédula profesional", "2 años de experiencia"]
+        },
+        {
+            "nombre": "Licenciatura en Enfermería",
+            "duracion": "4 años",
+            "modalidad": "Presencial",
+            "descripcion": "Formación integral en enfermería con enfoque en cardiología.",
+            "requisitos": ["Bachillerato terminado", "Promedio mínimo 8.0"]
+        },
+        {
+            "nombre": "Diplomado de Cardiología Básica",
+            "duracion": "6 meses",
+            "modalidad": "Híbrida",
+            "descripcion": "Actualización en fundamentos de cardiología para profesionales de la salud.",
+            "requisitos": ["Título profesional en área de la salud"]
+        },
+        {
+            "nombre": "Maestría en Ciencias Cardiológicas",
+            "duracion": "2 años",
+            "modalidad": "Presencial",
+            "descripcion": "Formación de investigadores en el área de ciencias cardiológicas.",
+            "requisitos": ["Licenciatura en áreas afines", "Promedio mínimo 8.5"]
+        }
+    ]
+
+def obtener_testimonios():
+    """Obtener testimonios de estudiantes y egresados - SOLO INFORMACIÓN PÚBLICA"""
+    return [
+        {
+            "nombre": "Dra. Ana Martínez",
+            "programa": "Especialidad en Enfermería Cardiovascular",
+            "testimonio": "La especialidad me dio las herramientas para trabajar en la unidad de cardiología del hospital más importante del país.",
+            "foto": "👩‍⚕️"
+        },
+        {
+            "nombre": "Lic. Carlos Rodríguez",
+            "programa": "Licenciatura en Enfermería",
+            "testimonio": "La formación con enfoque cardiológico me diferenció en el mercado laboral. ¡Altamente recomendable!",
+            "foto": "👨‍⚕️"
+        },
+        {
+            "nombre": "Dr. Miguel Torres",
+            "programa": "Diplomado de Cardiología Básica",
+            "testimonio": "Perfecto para actualizarse sin dejar de trabajar. Los profesores son expertos en su área.",
+            "foto": "🧑‍⚕️"
+        }
+    ]
+
+# =============================================================================
+# SECCIONES DEL WEBSITE PÚBLICO (De aspirantes10.py)
+# =============================================================================
+
+def aplicar_estilos_publicos():
+    """Aplicar estilos CSS para el website público"""
+    st.markdown("""
+    <style>
     .main-header {
-        background-color: #2c3e50;
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
+        font-size: 3.5rem;
+        color: #2E86AB;
         text-align: center;
+        margin-bottom: 2rem;
+        font-weight: bold;
     }
-    
-    .success-box {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        color: #155724;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
+    .sub-header {
+        font-size: 2rem;
+        color: #A23B72;
+        text-align: center;
+        margin-bottom: 1.5rem;
+        font-weight: 600;
     }
-    
-    .error-box {
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        color: #721c24;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
-    }
-    
-    .warning-box {
-        background-color: #fff3cd;
-        border: 1px solid #ffeaa7;
-        color: #856404;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
-    }
-    
-    .info-box {
-        background-color: #d1ecf1;
-        border: 1px solid #bee5eb;
-        color: #0c5460;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
-    }
-    
-    .card {
+    .programa-card {
         background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
+        padding: 1.5rem;
         border-radius: 10px;
-        padding: 20px;
-        margin: 10px 0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-left: 5px solid #2E86AB;
+        margin-bottom: 1rem;
     }
-    
-    .stat-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 20px;
+    .testimonio {
+        background-color: #e8f4f8;
+        padding: 1.5rem;
         border-radius: 10px;
-        text-align: center;
+        margin: 1rem 0;
+        border-left: 4px solid #A23B72;
     }
-    
     .btn-primary {
-        background-color: #3498db;
+        background-color: #2E86AB;
         color: white;
-        padding: 10px 20px;
         border: none;
+        padding: 0.5rem 1rem;
         border-radius: 5px;
         cursor: pointer;
-        font-weight: bold;
     }
-    
-    .btn-success {
-        background-color: #27ae60;
-        color: white;
-        padding: 10px 20px;
-        border: none;
-        border-radius: 5px;
-        cursor: pointer;
-        font-weight: bold;
-    }
-    
-    .btn-danger {
-        background-color: #e74c3c;
-        color: white;
-        padding: 10px 20px;
-        border: none;
-        border-radius: 5px;
-        cursor: pointer;
-        font-weight: bold;
-    }
-    
-    .form-group {
-        margin-bottom: 15px;
-    }
-    
-    .required-field::after {
-        content: " *";
-        color: red;
-    }
-</style>
-""", unsafe_allow_html=True)
+    </style>
+    """, unsafe_allow_html=True)
 
-# =============================================================================
-# FUNCIÓN PARA LEER SECRETS.TOML - VERSIÓN MEJORADA
-# =============================================================================
+def mostrar_header():
+    """Mostrar header del website"""
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown('<div class="main-header">🏥 Escuela de Enfermería</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">Formando Líderes en Salud Cardiovascular</div>', unsafe_allow_html=True)
+    
+    st.markdown("---")
 
-def cargar_configuracion_secrets():
-    """Cargar configuración desde secrets.toml - VERSIÓN MEJORADA"""
-    try:
-        if not HAS_TOMLLIB:
-            logger.error("❌ ERROR: No se puede cargar secrets.toml sin tomllib/tomli")
-            return {}
+def mostrar_hero():
+    """Sección hero principal"""
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("## 🎓 Excelencia Académica en Cardiología")
+        st.markdown("""
+        ### **Forma parte de la institución líder en educación cardiovascular**
         
-        # Buscar el archivo secrets.toml en posibles ubicaciones
-        posibles_rutas = [
-            ".streamlit/secrets.toml",
-            "secrets.toml",
-            "./.streamlit/secrets.toml",
-            "../.streamlit/secrets.toml",
-            "/mount/src/escuelanueva/.streamlit/secrets.toml",
-            "config/secrets.toml",
-            os.path.join(os.path.dirname(__file__), ".streamlit/secrets.toml")
-        ]
+        - 👨‍⚕️ **Claustro docente** de alto nivel
+        - 🏥 **Vinculación hospitalaria** con las mejores instituciones
+        - 🔬 **Investigación** de vanguardia
+        - 💼 **Bolsa de trabajo** exclusiva para egresados
+        - 🌐 **Red de egresados** a nivel nacional
         
-        ruta_encontrada = None
-        for ruta in posibles_rutas:
-            if os.path.exists(ruta):
-                ruta_encontrada = ruta
-                logger.info(f"📁 Archivo secrets.toml encontrado en: {ruta}")
-                break
+        *40 años formando profesionales de excelencia en el cuidado cardiovascular*
+        """)
         
-        if not ruta_encontrada:
-            logger.error("❌ ERROR CRÍTICO: No se encontró secrets.toml en ninguna ubicación")
-            return {}
-        
-        # Leer el archivo
-        with open(ruta_encontrada, 'rb') as f:
-            config = tomllib.load(f)
-            logger.info(f"✅ Configuración cargada desde: {ruta_encontrada}")
-            return config
-        
-    except Exception as e:
-        logger.error(f"❌ Error cargando secrets.toml: {e}", exc_info=True)
-        return {}
+        if st.button("📝 ¡Inscríbete Ahora!", key="hero_inscripcion", use_container_width=True):
+            st.session_state.mostrar_formulario = True
+            st.rerun()
+    
+    with col2:
+        st.info("**🏛️ Instalaciones de Vanguardia**")
+        st.write("""
+        - Laboratorios especializados
+        - Simuladores de alta fidelidad
+        - Biblioteca especializada
+        - Aulas tecnológicas
+        """)
+
+def mostrar_programas_academicos():
+    """Mostrar oferta académica"""
+    st.markdown('<div class="sub-header">📚 Nuestra Oferta Académica</div>', unsafe_allow_html=True)
+    
+    programas = obtener_programas_academicos()
+    
+    for i, programa in enumerate(programas):
+        with st.container():
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.markdown(f'<div class="programa-card">', unsafe_allow_html=True)
+                st.markdown(f"### **{programa['nombre']}**")
+                st.markdown(f"**Duración:** {programa['duracion']} | **Modalidad:** {programa['modalidad']}")
+                st.markdown(f"{programa['descripcion']}")
+                
+                with st.expander("📋 Ver requisitos"):
+                    for requisito in programa['requisitos']:
+                        st.write(f"• {requisito}")
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            with col2:
+                st.write("")  # Espacio
+                if st.button(f"🎯 Solicitar Informes", key=f"info_{i}", use_container_width=True):
+                    st.session_state.programa_seleccionado = programa['nombre']
+                    st.session_state.mostrar_formulario = True
+                    st.rerun()
+
+def mostrar_testimonios():
+    """Mostrar testimonios de estudiantes y egresados"""
+    st.markdown("---")
+    st.markdown('<div class="sub-header">🌟 Testimonios de Nuestra Comunidad</div>', unsafe_allow_html=True)
+    
+    testimonios = obtener_testimonios()
+    cols = st.columns(3)
+    
+    for i, testimonio in enumerate(testimonios):
+        with cols[i]:
+            st.markdown(f'<div class="testimonio">', unsafe_allow_html=True)
+            st.markdown(f"### {testimonio['foto']}")
+            st.markdown(f"**{testimonio['nombre']}**")
+            st.markdown(f"*{testimonio['programa']}*")
+            st.markdown(f"\"{testimonio['testimonio']}\"")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+def mostrar_contacto():
+    """Mostrar información de contacto"""
+    st.markdown("---")
+    st.markdown('<div class="sub-header">📞 Información de Contacto</div>', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### 🏛️ Dirección")
+        st.markdown("""
+        Av. Insurgentes Sur 1234  
+        Col. Nápoles  
+        Ciudad de México, CDMX  
+        C.P. 03810
+        """)
+    
+    with col2:
+        st.markdown("### 📱 Contacto")
+        st.markdown("""
+        **Teléfono:** (55) 1234-5678  
+        **WhatsApp:** (55) 8765-4321  
+        **Email:** admisiones@escuelaenfermeria.edu.mx
+        """)
+    
+    with col3:
+        st.markdown("### 🕒 Horarios")
+        st.markdown("""
+        **Atención a aspirantes:**  
+        Lunes a Viernes: 9:00 - 18:00  
+        Sábados: 9:00 - 13:00  
+        **Proceso de admisión:**  
+        Abierto todo el año
+        """)
+
+def mostrar_footer():
+    """Mostrar footer del website"""
+    st.markdown("---")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown("### 🏥 Instituto")
+        st.markdown("""
+        - Nuestra historia
+        - Misión y visión
+        - Directiva
+        - Instalaciones
+        """)
+    
+    with col2:
+        st.markdown("### 📚 Programas")
+        st.markdown("""
+        - Licenciaturas
+        - Especialidades
+        - Maestrías
+        - Diplomados
+        """)
+    
+    with col3:
+        st.markdown("### 📞 Contacto")
+        st.markdown("""
+        - Tel: 55-1234-5678
+        - Email: admisiones@cardio.edu.mx
+        - Dirección: Av. Instituto 123
+        - Horario: 9:00 - 18:00 hrs
+        """)
+    
+    with col4:
+        st.markdown("### 🔗 Síguenos")
+        st.markdown("""
+        - Facebook
+        - Twitter
+        - Instagram
+        - LinkedIn
+        """)
+    
+    st.markdown("---")
+    st.markdown("<center>© 2024 Instituto Nacional de Cardiología. Todos los derechos reservados.</center>", unsafe_allow_html=True)
 
 # =============================================================================
 # ARCHIVO DE ESTADO PERSISTENTE - MEJORADO
@@ -546,6 +668,49 @@ class ValidadorDatos:
             return False
         # Formato: FOL + fecha + 4 dígitos
         return folio.startswith('FOL') and len(folio) >= 10
+
+# =============================================================================
+# FUNCIÓN PARA LEER SECRETS.TOML - VERSIÓN MEJORADA
+# =============================================================================
+
+def cargar_configuracion_secrets():
+    """Cargar configuración desde secrets.toml - VERSIÓN MEJORADA"""
+    try:
+        if not HAS_TOMLLIB:
+            logger.error("❌ ERROR: No se puede cargar secrets.toml sin tomllib/tomli")
+            return {}
+        
+        # Buscar el archivo secrets.toml en posibles ubicaciones
+        posibles_rutas = [
+            ".streamlit/secrets.toml",
+            "secrets.toml",
+            "./.streamlit/secrets.toml",
+            "../.streamlit/secrets.toml",
+            "/mount/src/escuelanueva/.streamlit/secrets.toml",
+            "config/secrets.toml",
+            os.path.join(os.path.dirname(__file__), ".streamlit/secrets.toml")
+        ]
+        
+        ruta_encontrada = None
+        for ruta in posibles_rutas:
+            if os.path.exists(ruta):
+                ruta_encontrada = ruta
+                logger.info(f"📁 Archivo secrets.toml encontrado en: {ruta}")
+                break
+        
+        if not ruta_encontrada:
+            logger.error("❌ ERROR CRÍTICO: No se encontró secrets.toml en ninguna ubicación")
+            return {}
+        
+        # Leer el archivo
+        with open(ruta_encontrada, 'rb') as f:
+            config = tomllib.load(f)
+            logger.info(f"✅ Configuración cargada desde: {ruta_encontrada}")
+            return config
+        
+    except Exception as e:
+        logger.error(f"❌ Error cargando secrets.toml: {e}", exc_info=True)
+        return {}
 
 # =============================================================================
 # GESTOR DE CONEXIÓN REMOTA VIA SSH - MEJORADO CON TIMEOUTS Y REINTENTOS
@@ -1679,7 +1844,7 @@ class SistemaBaseDatos:
 db = SistemaBaseDatos()
 
 # =============================================================================
-# SISTEMA DE CORREOS
+# SISTEMA DE CORREOS (Mejorado con HTML de aspirantes10.py)
 # =============================================================================
 
 class SistemaCorreos:
@@ -1705,50 +1870,85 @@ class SistemaCorreos:
             self.correos_habilitados = False
     
     def enviar_correo_confirmacion(self, destinatario, nombre_estudiante, matricula, folio, programa):
-        """Enviar correo de confirmación"""
+        """Enviar correo de confirmación de pre-inscripción"""
         if not self.correos_habilitados:
             return False, "Sistema de correos no configurado"
         
         try:
             # Crear mensaje
-            msg = MIMEMultipart('alternative')
-            msg['From'] = self.email_user
-            msg['To'] = destinatario
-            msg['Subject'] = f"Confirmación de Pre-Inscripción - {matricula}"
+            mensaje = MIMEMultipart()
+            mensaje['From'] = self.email_user
+            mensaje['To'] = destinatario
+            mensaje['Subject'] = f"Confirmación de Pre-Inscripción - {matricula}"
             
-            # Cuerpo HTML
-            html = f"""
+            # Cuerpo del correo (HTML mejorado de aspirantes10.py)
+            cuerpo = f"""
             <html>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6;">
-                <h2>🏥 Escuela de Enfermería - Confirmación de Pre-Inscripción</h2>
-                <p>Estimado/a {nombre_estudiante},</p>
-                <p>Hemos recibido exitosamente tu solicitud de pre-inscripción.</p>
-                
-                <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 15px 0;">
-                    <h3>📋 Datos de tu Registro:</h3>
-                    <p><strong>Matrícula:</strong> {matricula}</p>
-                    <p><strong>Folio:</strong> {folio}</p>
-                    <p><strong>Programa:</strong> {programa}</p>
-                    <p><strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
-                    <p><strong>Estatus:</strong> Pre-inscrito</p>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                    <div style="text-align: center; background-color: #2E86AB; color: white; padding: 20px; border-radius: 10px 10px 0 0;">
+                        <h1>🏥 Escuela de Enfermería</h1>
+                        <h2>Confirmación de Pre-Inscripción</h2>
+                    </div>
+                    
+                    <div style="padding: 20px;">
+                        <p>Estimado/a <strong>{nombre_estudiante}</strong>,</p>
+                        
+                        <p>Hemos recibido exitosamente tu solicitud de pre-inscripción. A continuación encontrarás los detalles de tu registro:</p>
+                        
+                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0;">
+                            <h3 style="color: #2E86AB; margin-top: 0;">📋 Datos de tu Registro</h3>
+                            <p><strong>Matrícula:</strong> {matricula}</p>
+                            <p><strong>Folio:</strong> {folio}</p>
+                            <p><strong>Programa:</strong> {programa}</p>
+                            <p><strong>Fecha de registro:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+                            <p><strong>Estatus:</strong> Pre-inscrito</p>
+                        </div>
+                        
+                        <h3 style="color: #2E86AB;">📬 Próximos Pasos</h3>
+                        <ol>
+                            <li><strong>Revisión de documentos</strong> (2-3 días hábiles)</li>
+                            <li><strong>Correo de confirmación</strong> con fecha de examen</li>
+                            <li><strong>Examen de admisión</strong> (presencial/online)</li>
+                            <li><strong>Entrevista personal</strong> (si aplica)</li>
+                            <li><strong>Resultados finales</strong> (5-7 días después del examen)</li>
+                        </ol>
+                        
+                        <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin: 15px 0;">
+                            <h4 style="color: #A23B72; margin-top: 0;">ℹ️ Información Importante</h4>
+                            <p>Guarda esta información, ya que tu matrícula y folio serán necesarios para cualquier consulta sobre tu proceso de admisión.</p>
+                        </div>
+                        
+                        <p>Si tienes alguna pregunta, no dudes en contactarnos:</p>
+                        <ul>
+                            <li>📧 Email: admisiones@escuelaenfermeria.edu.mx</li>
+                            <li>📞 Teléfono: (55) 1234-5678</li>
+                            <li>🕒 Horario: Lunes a Viernes de 9:00 a 18:00 hrs</li>
+                        </ul>
+                        
+                        <p>¡Te deseamos mucho éxito en tu proceso de admisión!</p>
+                        
+                        <p>Atentamente,<br>
+                        <strong>Departamento de Admisiones</strong><br>
+                        Escuela de Enfermería<br>
+                        Formando Líderes en Salud Cardiovascular</p>
+                    </div>
+                    
+                    <div style="text-align: center; background-color: #f1f1f1; padding: 15px; border-radius: 0 0 10px 10px; font-size: 12px; color: #666;">
+                        <p>Este es un correo automático, por favor no respondas a este mensaje.</p>
+                    </div>
                 </div>
-                
-                <p>Te contactaremos próximamente con los siguientes pasos del proceso de admisión.</p>
-                
-                <p>Atentamente,<br>
-                Departamento de Admisiones<br>
-                Escuela de Enfermería</p>
             </body>
             </html>
             """
             
-            msg.attach(MIMEText(html, 'html'))
+            mensaje.attach(MIMEText(cuerpo, 'html'))
             
-            # Enviar correo con timeout
+            # Enviar correo
             with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
                 server.starttls()
                 server.login(self.email_user, self.email_password)
-                server.send_message(msg)
+                server.send_message(mensaje)
             
             logger.info(f"✅ Correo enviado a {destinatario}")
             return True, "Correo enviado exitosamente"
@@ -1982,16 +2182,208 @@ class SistemaInscritos:
 sistema = SistemaInscritos()
 
 # =============================================================================
-# INTERFAZ DE USUARIO STREAMLIT - MEJORADA
+# FUNCIONES PRINCIPALES DEL WEBSITE PÚBLICO
 # =============================================================================
 
-def mostrar_encabezado():
-    """Mostrar encabezado de la aplicación"""
+def mostrar_formulario_inscripcion():
+    """Mostrar formulario de pre-inscripción para inscritos"""
+    st.markdown("---")
+    st.markdown('<div class="sub-header">📝 Formulario de Pre-Inscripción</div>', unsafe_allow_html=True)
+    
+    if 'formulario_enviado' not in st.session_state:
+        st.session_state.formulario_enviado = False
+    
+    if not st.session_state.formulario_enviado:
+        with st.form("formulario_inscripcion", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                nombre_completo = st.text_input("👤 Nombre Completo *", placeholder="Ej: María González López")
+                email = st.text_input("📧 Correo Electrónico *", placeholder="ejemplo@email.com")
+                programa_interes = st.selectbox(
+                    "🎯 Programa de Interés *",
+                    [p['nombre'] for p in obtener_programas_academicos()]
+                )
+            
+            with col2:
+                telefono = st.text_input("📞 Teléfono *", placeholder="5512345678")
+                
+                # FECHA DE NACIMIENTO CON RANGO DESDE 1980
+                fecha_actual = date.today()
+                fecha_minima = date(1980, 1, 1)
+                fecha_maxima = fecha_actual
+                
+                fecha_nacimiento = st.date_input(
+                    "🎂 Fecha de Nacimiento",
+                    min_value=fecha_minima,
+                    max_value=fecha_maxima,
+                    value=None,
+                    format="YYYY-MM-DD"
+                )
+                
+                # OPCIONES PARA "¿CÓMO SE ENTERÓ?"
+                opciones_como_se_entero = ["Redes Sociales", "Google/Buscador", "Recomendación", "Evento", "Otro"]
+                como_se_entero = st.selectbox(
+                    "🔍 ¿Cómo se enteró de nosotros? *",
+                    opciones_como_se_entero
+                )
+            
+            # Documentos requeridos
+            st.markdown("### 📎 Documentos Requeridos")
+            st.info("Por favor, suba los siguientes documentos en formato PDF:")
+            
+            col_doc1, col_doc2 = st.columns(2)
+            
+            with col_doc1:
+                acta_nacimiento = st.file_uploader("📄 Acta de Nacimiento", type=['pdf'], key="acta")
+                curp = st.file_uploader("🆔 CURP", type=['pdf'], key="curp")
+            
+            with col_doc2:
+                certificado = st.file_uploader("🎓 Último Grado de Estudios", type=['pdf'], key="certificado")
+                foto = st.file_uploader("📷 Fotografía", type=['pdf', 'jpg', 'png'], key="foto")
+            
+            # Términos y condiciones
+            acepta_terminos = st.checkbox("✅ Acepto los términos y condiciones del proceso de admisión *")
+            
+            enviado = st.form_submit_button("🚀 Enviar Solicitud de Admisión", use_container_width=True)
+            
+            if enviado:
+                # Validar campos obligatorios
+                if not all([nombre_completo, email, telefono, programa_interes, acepta_terminos]):
+                    st.error("❌ Por favor completa todos los campos obligatorios (*)")
+                    return
+                
+                # Validar que se seleccionó una opción en "¿Cómo se enteró?"
+                if not como_se_entero:
+                    st.error("❌ Por favor selecciona cómo te enteraste de nosotros")
+                    return
+                
+                # Validar documentos requeridos
+                documentos_requeridos = [acta_nacimiento, curp, certificado]
+                nombres_docs = ["Acta de Nacimiento", "CURP", "Certificado de Estudios"]
+                docs_faltantes = [nombres_docs[i] for i, doc in enumerate(documentos_requeridos) if doc is None]
+                
+                if docs_faltantes:
+                    st.error(f"❌ Faltan los siguientes documentos: {', '.join(docs_faltantes)}")
+                    return
+                
+                # Registrar inscripción usando el sistema mejorado
+                datos_formulario = {
+                    'nombre_completo': nombre_completo,
+                    'email': email,
+                    'telefono': telefono,
+                    'programa_interes': programa_interes,
+                    'fecha_nacimiento': fecha_nacimiento.strftime('%Y-%m-%d') if fecha_nacimiento else None,
+                    'como_se_entero': como_se_entero
+                }
+                
+                archivos = {
+                    'acta_nacimiento': acta_nacimiento,
+                    'curp': curp,
+                    'certificado': certificado,
+                    'foto': foto
+                }
+                
+                with st.spinner("Procesando tu solicitud..."):
+                    resultado = sistema.registrar_inscripcion(datos_formulario, archivos)
+                    
+                    if resultado['success']:
+                        st.session_state.formulario_enviado = True
+                        st.session_state.datos_exitosos = {
+                            'folio': resultado['folio'],
+                            'matricula': resultado['matricula'],
+                            'email': resultado['email'],
+                            'telefono': telefono,
+                            'programa': programa_interes,
+                            'documentos': resultado['documentos'],
+                            'nombre': resultado['nombre'],
+                            'correo_enviado': resultado['correo_enviado'],
+                            'mensaje_correo': resultado['mensaje_correo']
+                        }
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Error: {resultado['error']}")
+    
+    else:
+        # Mostrar resultados exitosos
+        datos = st.session_state.datos_exitosos
+        
+        st.success("🎉 ¡Solicitud enviada exitosamente!")
+        
+        col_res1, col_res2 = st.columns(2)
+        with col_res1:
+            st.info(f"**📋 Folio de solicitud:** {datos['folio']}")
+            st.info(f"**🎓 Matrícula de inscrito:** {datos['matricula']}")
+            st.info(f"**📧 Email de contacto:** {datos['email']}")
+        
+        with col_res2:
+            st.info(f"**📞 Teléfono registrado:** {datos['telefono']}")
+            st.info(f"**🎯 Programa de interés:** {datos['programa']}")
+            st.info(f"**📎 Documentos subidos:** {datos['documentos']}/4")
+        
+        st.markdown("---")
+        st.markdown("### 📬 Próximos Pasos")
+        st.markdown("""
+        1. **Revisión de documentos** (2-3 días hábiles)
+        2. **Correo de confirmación** con fecha de examen  
+        3. **Examen de admisión** (presencial/online)
+        4. **Entrevista personal** (si aplica)
+        5. **Resultados finales** (5-7 días después del examen)
+        
+        *Te contactaremos al correo proporcionado para informarte los siguientes pasos.*
+        """)
+        
+        if datos['correo_enviado']:
+            st.info("📧 **Se ha enviado un correo de confirmación a tu dirección de email con todos los detalles de tu registro.**")
+        else:
+            st.warning(f"⚠️ **No se pudo enviar el correo de confirmación:** {datos.get('mensaje_correo', 'Razón desconocida')}")
+        
+        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+        with col_btn2:
+            if st.button("📝 Realizar otra pre-inscripción", use_container_width=True):
+                st.session_state.formulario_enviado = False
+                st.session_state.mostrar_formulario = False
+                st.rerun()
+
+def mostrar_pagina_principal_website():
+    """Página principal del website público"""
+    
+    # Aplicar estilos
+    aplicar_estilos_publicos()
+    
+    # Inicializar variables de sesión
+    if 'mostrar_formulario' not in st.session_state:
+        st.session_state.mostrar_formulario = False
+    
+    # Mostrar header
+    mostrar_header()
+    
+    # Navegación
+    if not st.session_state.mostrar_formulario:
+        # Página principal
+        mostrar_hero()
+        mostrar_programas_academicos()
+        mostrar_testimonios()
+        mostrar_contacto()
+    else:
+        # Formulario de inscripción
+        mostrar_formulario_inscripcion()
+        mostrar_contacto()
+    
+    # Mostrar footer
+    mostrar_footer()
+
+# =============================================================================
+# INTERFAZ DE USUARIO PARA SISTEMA DE ADMINISTRACIÓN
+# =============================================================================
+
+def mostrar_encabezado_administracion():
+    """Mostrar encabezado de la aplicación de administración"""
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
         st.markdown("""
-        <div class="main-header">
+        <div style="background-color: #2c3e50; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center;">
             <h1>🏥 Sistema de Gestión de Aspirantes - SSH REMOTO</h1>
             <h3>Escuela de Enfermería - Versión Mejorada</h3>
         </div>
@@ -2015,7 +2407,7 @@ def mostrar_panel_estadisticas():
         
         with col1:
             st.markdown(f"""
-            <div class="stat-card">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; text-align: center;">
                 <h3>Total Inscritos</h3>
                 <h2>{total_inscritos}</h2>
             </div>
@@ -2033,7 +2425,7 @@ def mostrar_panel_estadisticas():
                 inscritos_mes = 0
             
             st.markdown(f"""
-            <div class="stat-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+            <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 20px; border-radius: 10px; text-align: center;">
                 <h3>Este Mes</h3>
                 <h2>{inscritos_mes}</h2>
             </div>
@@ -2041,7 +2433,7 @@ def mostrar_panel_estadisticas():
         
         with col3:
             st.markdown(f"""
-            <div class="stat-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+            <div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 20px; border-radius: 10px; text-align: center;">
                 <h3>Pre-inscritos</h3>
                 <h2>{total_inscritos}</h2>
             </div>
@@ -2050,380 +2442,17 @@ def mostrar_panel_estadisticas():
         with col4:
             backups = sistema.backup_system.listar_backups()
             st.markdown(f"""
-            <div class="stat-card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+            <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 20px; border-radius: 10px; text-align: center;">
                 <h3>Backups</h3>
                 <h2>{len(backups)}</h2>
             </div>
             """, unsafe_allow_html=True)
         
-        # Estado del sistema
-        st.markdown("### 🔧 Estado del Sistema")
-        
-        col_status1, col_status2, col_status3 = st.columns(3)
-        
-        with col_status1:
-            if estado_sistema.esta_inicializada():
-                st.success("✅ Base de datos inicializada")
-                fecha = estado_sistema.obtener_fecha_inicializacion()
-                if fecha:
-                    st.caption(f"📅 {fecha.strftime('%Y-%m-%d %H:%M')}")
-            else:
-                st.warning("⚠️ Base de datos NO inicializada")
-        
-        with col_status2:
-            if estado_sistema.estado.get('ssh_conectado'):
-                st.success("✅ SSH Conectado")
-                if gestor_remoto.config.get('host'):
-                    st.caption(f"🌐 {gestor_remoto.config['host']}")
-            else:
-                st.error("❌ SSH Desconectado")
-                error_ssh = estado_sistema.estado.get('ssh_error')
-                if error_ssh:
-                    st.caption(f"⚠️ {error_ssh}")
-        
-        with col_status3:
-            # Verificar espacio en disco
-            temp_dir = tempfile.gettempdir()
-            espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-            if espacio_ok:
-                st.success(f"💾 Espacio: {espacio_mb:.0f} MB")
-            else:
-                st.warning(f"💾 Espacio: {espacio_mb:.0f} MB")
-            
     except Exception as e:
         st.error(f"❌ Error cargando estadísticas: {e}")
         logger.error(f"Error en panel de estadísticas: {e}", exc_info=True)
 
-def mostrar_formulario_inscripcion():
-    """Mostrar formulario de inscripción mejorado"""
-    st.markdown("### 📝 Formulario de Pre-Inscripción")
-    
-    with st.form("formulario_inscripcion"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            nombre_completo = st.text_input("Nombre Completo *", placeholder="Ej: Juan Pérez González", 
-                                          help="Ingresa nombre y apellidos completos")
-            email = st.text_input("Correo Electrónico *", placeholder="Ej: juan.perez@email.com",
-                                help="Correo electrónico válido")
-            telefono = st.text_input("Teléfono *", placeholder="Ej: 5551234567",
-                                   help="Mínimo 10 dígitos")
-            fecha_nacimiento = st.date_input("Fecha de Nacimiento", 
-                                           min_value=date(1950, 1, 1), 
-                                           max_value=date.today(),
-                                           help="Debes tener al menos 15 años")
-        
-        with col2:
-            programa_interes = st.selectbox(
-                "Programa de Interés *",
-                ["Enfermería General", "Enfermería Pediátrica", "Enfermería Geriátrica", 
-                 "Enfermería en Cuidados Intensivos", "Licenciatura en Enfermería"],
-                help="Selecciona el programa de tu interés"
-            )
-            
-            como_se_entero = st.selectbox(
-                "¿Cómo se enteró del programa? *",
-                ["Redes Sociales", "Recomendación", "Página Web", "Evento Presencial", 
-                 "Publicidad", "Otros"],
-                help="Selecciona una opción"
-            )
-            
-            observaciones = st.text_area("Observaciones", placeholder="Información adicional...",
-                                       help="Información adicional que consideres importante")
-        
-        st.markdown("### 📄 Documentación Requerida")
-        st.markdown("*Documentos obligatorios*")
-        
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            acta_nacimiento = st.file_uploader("Acta de Nacimiento *", 
-                                              type=['pdf', 'jpg', 'png', 'jpeg'],
-                                              help="Documento oficial de acta de nacimiento")
-            curp = st.file_uploader("CURP *", 
-                                   type=['pdf', 'jpg', 'png', 'jpeg'],
-                                   help="Clave Única de Registro de Población")
-        
-        with col4:
-            certificado = st.file_uploader("Certificado de Estudios *", 
-                                         type=['pdf', 'jpg', 'png', 'jpeg'],
-                                         help="Certificado de estudios anteriores")
-            foto = st.file_uploader("Fotografía (Opcional)", 
-                                   type=['jpg', 'png', 'jpeg'],
-                                   help="Fotografía tamaño credencial")
-        
-        st.markdown("---")
-        
-        # Verificación de conexión antes de enviar
-        if not estado_sistema.estado.get('ssh_conectado'):
-            st.warning("⚠️ **ADVERTENCIA:** No hay conexión SSH activa. Los datos se guardarán localmente hasta que se restaure la conexión.")
-        
-        col_submit1, col_submit2 = st.columns([3, 1])
-        
-        with col_submit1:
-            submit_button = st.form_submit_button("📤 Enviar Pre-Inscripción", 
-                                                type="primary", 
-                                                use_container_width=True,
-                                                disabled=not estado_sistema.esta_inicializada())
-        
-        with col_submit2:
-            if st.form_submit_button("🔄 Verificar Conexión", type="secondary", use_container_width=True):
-                with st.spinner("Verificando conexión SSH..."):
-                    if gestor_remoto.verificar_conexion_ssh():
-                        st.success("✅ Conexión SSH establecida")
-                        st.rerun()
-                    else:
-                        st.error("❌ No se pudo establecer conexión SSH")
-        
-        # Preparar datos del formulario
-        datos_formulario = {
-            'nombre_completo': nombre_completo,
-            'email': email,
-            'telefono': telefono,
-            'fecha_nacimiento': fecha_nacimiento.strftime('%Y-%m-%d') if fecha_nacimiento else None,
-            'programa_interes': programa_interes,
-            'como_se_entero': como_se_entero,
-            'observaciones': observaciones
-        }
-        
-        archivos = {
-            'acta_nacimiento': acta_nacimiento,
-            'curp': curp,
-            'certificado': certificado,
-            'foto': foto
-        }
-        
-        return submit_button, datos_formulario, archivos
-
-def mostrar_resultado_inscripcion(resultado):
-    """Mostrar resultado del proceso de inscripción"""
-    if resultado['success']:
-        st.markdown(f"""
-        <div class="success-box">
-            <h3>✅ ¡Pre-Inscripción Exitosa!</h3>
-            <p>Estimado/a <strong>{resultado['nombre']}</strong>, hemos recibido tu solicitud exitosamente.</p>
-            
-            <div class="card">
-                <h4>📋 Datos de tu Registro:</h4>
-                <p><strong>Matrícula:</strong> {resultado['matricula']}</p>
-                <p><strong>Folio:</strong> {resultado['folio']}</p>
-                <p><strong>Programa:</strong> {resultado['programa']}</p>
-                <p><strong>Correo:</strong> {resultado['email']}</p>
-                <p><strong>Documentos subidos:</strong> {resultado['documentos']}</p>
-                <p><strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
-            </div>
-            
-            <p>{"✅ Correo de confirmación enviado" if resultado['correo_enviado'] else "⚠️ No se pudo enviar correo"}</p>
-            <p><em>Guarda tu matrícula y folio para futuras consultas.</em></p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Botón para generar comprobante
-        if st.button("📄 Generar Comprobante"):
-            generar_comprobante(resultado)
-            
-    else:
-        st.markdown(f"""
-        <div class="error-box">
-            <h3>❌ Error en la Pre-Inscripción</h3>
-            <p>{resultado['error']}</p>
-            <p>Por favor, revisa los datos e intenta nuevamente.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-def generar_comprobante(datos):
-    """Generar comprobante de inscripción"""
-    html = f"""
-    <html>
-    <head>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 40px; }}
-            .header {{ text-align: center; border-bottom: 3px solid #3498db; padding-bottom: 20px; }}
-            .content {{ margin: 30px 0; }}
-            .footer {{ margin-top: 50px; font-size: 12px; color: #666; text-align: center; }}
-            .datos {{ background-color: #f5f5f5; padding: 20px; border-radius: 5px; }}
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <h1>🏥 Escuela de Enfermería</h1>
-            <h2>Comprobante de Pre-Inscripción</h2>
-        </div>
-        
-        <div class="content">
-            <div class="datos">
-                <h3>Datos del Aspirante:</h3>
-                <p><strong>Nombre:</strong> {datos['nombre']}</p>
-                <p><strong>Matrícula:</strong> {datos['matricula']}</p>
-                <p><strong>Folio:</strong> {datos['folio']}</p>
-                <p><strong>Programa:</strong> {datos['programa']}</p>
-                <p><strong>Correo:</strong> {datos['email']}</p>
-                <p><strong>Fecha de Registro:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
-                <p><strong>Estatus:</strong> Pre-inscrito</p>
-            </div>
-            
-            <p>Este documento sirve como comprobante oficial de tu pre-inscripción.</p>
-        </div>
-        
-        <div class="footer">
-            <p>Escuela de Enfermería - Sistema de Gestión de Aspirantes</p>
-            <p>Documento generado automáticamente</p>
-        </div>
-    </body>
-    </html>
-    """
-    
-    # Crear botón de descarga
-    b64 = base64.b64encode(html.encode()).decode()
-    href = f'<a href="data:text/html;base64,{b64}" download="comprobante_inscripcion.html">⬇️ Descargar Comprobante</a>'
-    st.markdown(href, unsafe_allow_html=True)
-
-def mostrar_lista_inscritos():
-    """Mostrar lista de inscritos con paginación"""
-    try:
-        # Sincronizar primero
-        with st.spinner("🔄 Sincronizando datos..."):
-            if not db.sincronizar_desde_remoto():
-                st.warning("⚠️ No se pudo sincronizar completamente con el servidor")
-        
-        inscritos = db.obtener_inscritos()
-        
-        st.markdown("### 📋 Lista de Aspirantes Inscritos")
-        
-        if not inscritos:
-            st.info("📭 No hay aspirantes inscritos aún")
-            return
-        
-        # Crear DataFrame para mostrar
-        datos_tabla = []
-        for inscrito in inscritos:
-            datos_tabla.append({
-                'Matrícula': inscrito['matricula'],
-                'Nombre': inscrito['nombre_completo'],
-                'Email': inscrito['email'],
-                'Programa': inscrito['programa_interes'],
-                'Fecha Registro': inscrito['fecha_registro'][:10] if isinstance(inscrito['fecha_registro'], str) else inscrito['fecha_registro'].strftime('%Y-%m-%d'),
-                'Estatus': inscrito['estatus'],
-                'Documentos': inscrito['documentos_subidos']
-            })
-        
-        df = pd.DataFrame(datos_tabla)
-        
-        # Búsqueda
-        st.subheader("🔍 Búsqueda Avanzada")
-        search_term = st.text_input("Buscar por matrícula, nombre o email:", key="search_inscritos")
-        
-        if search_term:
-            df = df[df.apply(lambda row: row.astype(str).str.contains(search_term, case=False).any(), axis=1)]
-        
-        # Mostrar tabla
-        if not df.empty:
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            # Estadísticas
-            st.markdown(f"**Mostrando {len(df)} de {len(datos_tabla)} registros**")
-            
-            # Opciones de exportación
-            col_export1, col_export2, col_export3 = st.columns(3)
-            
-            with col_export1:
-                if st.button("📊 Exportar a Excel", use_container_width=True):
-                    exportar_a_excel(df)
-            
-            with col_export2:
-                if st.button("📄 Exportar a CSV", use_container_width=True):
-                    exportar_a_csv(df)
-            
-            with col_export3:
-                if st.button("💾 Crear Backup", use_container_width=True):
-                    with st.spinner("Creando backup..."):
-                        backup_path = sistema.backup_system.crear_backup(
-                            "EXPORT_INSCRITOS",
-                            f"Exportación de {len(df)} inscritos"
-                        )
-                        if backup_path:
-                            st.success(f"✅ Backup creado: {os.path.basename(backup_path)}")
-                        else:
-                            st.error("❌ Error creando backup")
-        else:
-            st.info("ℹ️ No hay registros que coincidan con la búsqueda")
-            
-    except Exception as e:
-        st.error(f"❌ Error cargando lista de inscritos: {e}")
-        logger.error(f"Error en lista de inscritos: {e}", exc_info=True)
-
-def exportar_a_excel(df):
-    """Exportar DataFrame a Excel"""
-    try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Inscritos')
-        
-        excel_data = output.getvalue()
-        b64 = base64.b64encode(excel_data).decode()
-        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="inscritos_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx">⬇️ Descargar Excel</a>'
-        st.markdown(href, unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"Error exportando a Excel: {e}")
-
-def exportar_a_csv(df):
-    """Exportar DataFrame a CSV"""
-    try:
-        csv = df.to_csv(index=False).encode('utf-8')
-        b64 = base64.b64encode(csv).decode()
-        href = f'<a href="data:file/csv;base64,{b64}" download="inscritos_{datetime.now().strftime("%Y%m%d_%H%M")}.csv">⬇️ Descargar CSV</a>'
-        st.markdown(href, unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"Error exportando a CSV: {e}")
-
-def mostrar_busqueda_inscrito():
-    """Mostrar búsqueda de inscrito por matrícula"""
-    st.markdown("### 🔍 Consultar Aspirante")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        matricula_buscar = st.text_input("Ingrese la matrícula:", placeholder="Ej: INS2312011234")
-    
-    with col2:
-        st.write("")
-        st.write("")
-        buscar_button = st.button("🔍 Buscar", use_container_width=True)
-    
-    if buscar_button and matricula_buscar:
-        with st.spinner("Buscando..."):
-            # Sincronizar antes de buscar
-            db.sincronizar_desde_remoto()
-            
-            inscrito = db.obtener_inscrito_por_matricula(matricula_buscar)
-            
-            if inscrito:
-                mostrar_detalle_inscrito(inscrito)
-            else:
-                st.warning(f"⚠️ No se encontró ningún aspirante con la matrícula: {matricula_buscar}")
-
-def mostrar_detalle_inscrito(inscrito):
-    """Mostrar detalle de un inscrito"""
-    st.markdown(f"""
-    <div class="card">
-        <h3>👤 Detalles del Aspirante</h3>
-        <div class="form-group">
-            <p><strong>Matrícula:</strong> {inscrito['matricula']}</p>
-            <p><strong>Nombre:</strong> {inscrito['nombre_completo']}</p>
-            <p><strong>Email:</strong> {inscrito['email']}</p>
-            <p><strong>Teléfono:</strong> {inscrito['telefono']}</p>
-            <p><strong>Programa:</strong> {inscrito['programa_interes']}</p>
-            <p><strong>Fecha de Registro:</strong> {inscrito['fecha_registro']}</p>
-            <p><strong>Estatus:</strong> {inscrito['estatus']}</p>
-            <p><strong>Folio:</strong> {inscrito['folio']}</p>
-            <p><strong>Documentos subidos:</strong> {inscrito['documentos_subidos']}</p>
-            <p><strong>Documentos guardados:</strong> {inscrito['documentos_guardados'] or 'Ninguno'}</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-def mostrar_configuracion():
+def mostrar_configuracion_administracion():
     """Mostrar configuración del sistema mejorada"""
     st.markdown("### ⚙️ Configuración del Sistema")
 
@@ -2518,260 +2547,107 @@ def mostrar_configuracion():
             except:
                 pass
 
-    with st.expander("🔧 Configuración SSH"):
-        if gestor_remoto.config:
-            config_show = {
-                'ssh_host': gestor_remoto.config.get('host', 'No configurado'),
-                'ssh_port': gestor_remoto.config.get('port', 22),
-                'ssh_username': gestor_remoto.config.get('username', 'No configurado'),
-                'remote_db': gestor_remoto.config.get('remote_db_aspirantes', 'No configurado'),
-                'remote_uploads': gestor_remoto.config.get('remote_uploads_path', 'No configurado')
-            }
-            st.json(config_show)
+def mostrar_lista_inscritos_administracion():
+    """Mostrar lista de inscritos con paginación"""
+    try:
+        # Sincronizar primero
+        with st.spinner("🔄 Sincronizando datos..."):
+            if not db.sincronizar_desde_remoto():
+                st.warning("⚠️ No se pudo sincronizar completamente con el servidor")
+        
+        inscritos = db.obtener_inscritos()
+        
+        st.markdown("### 📋 Lista de Aspirantes Inscritos")
+        
+        if not inscritos:
+            st.info("📭 No hay aspirantes inscritos aún")
+            return
+        
+        # Crear DataFrame para mostrar
+        datos_tabla = []
+        for inscrito in inscritos:
+            datos_tabla.append({
+                'Matrícula': inscrito['matricula'],
+                'Nombre': inscrito['nombre_completo'],
+                'Email': inscrito['email'],
+                'Programa': inscrito['programa_interes'],
+                'Fecha Registro': inscrito['fecha_registro'][:10] if isinstance(inscrito['fecha_registro'], str) else inscrito['fecha_registro'].strftime('%Y-%m-%d'),
+                'Estatus': inscrito['estatus'],
+                'Documentos': inscrito['documentos_subidos']
+            })
+        
+        df = pd.DataFrame(datos_tabla)
+        
+        # Búsqueda
+        st.subheader("🔍 Búsqueda Avanzada")
+        search_term = st.text_input("Buscar por matrícula, nombre o email:", key="search_inscritos_admin")
+        
+        if search_term:
+            df = df[df.apply(lambda row: row.astype(str).str.contains(search_term, case=False).any(), axis=1)]
+        
+        # Mostrar tabla
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+            # Estadísticas
+            st.markdown(f"**Mostrando {len(df)} de {len(datos_tabla)} registros**")
+            
+            # Opciones de exportación
+            col_export1, col_export2, col_export3 = st.columns(3)
+            
+            with col_export1:
+                if st.button("📊 Exportar a Excel", use_container_width=True):
+                    exportar_a_excel(df)
+            
+            with col_export2:
+                if st.button("📄 Exportar a CSV", use_container_width=True):
+                    exportar_a_csv(df)
+            
+            with col_export3:
+                if st.button("💾 Crear Backup", use_container_width=True):
+                    with st.spinner("Creando backup..."):
+                        backup_path = sistema.backup_system.crear_backup(
+                            "EXPORT_INSCRITOS",
+                            f"Exportación de {len(df)} inscritos"
+                        )
+                        if backup_path:
+                            st.success(f"✅ Backup creado: {os.path.basename(backup_path)}")
+                        else:
+                            st.error("❌ Error creando backup")
         else:
-            st.error("❌ No hay configuración SSH cargada")
+            st.info("ℹ️ No hay registros que coincidan con la búsqueda")
+            
+    except Exception as e:
+        st.error(f"❌ Error cargando lista de inscritos: {e}")
+        logger.error(f"Error en lista de inscritos: {e}", exc_info=True)
 
-        # Información de timeouts
-        st.markdown("**⏱️ Timeouts Configurados:**")
-        timeouts = {
-            'ssh_connect': gestor_remoto.timeouts.get('ssh_connect', 30),
-            'ssh_command': gestor_remoto.timeouts.get('ssh_command', 60),
-            'sftp_transfer': gestor_remoto.timeouts.get('sftp_transfer', 300),
-            'db_download': gestor_remoto.timeouts.get('db_download', 180)
-        }
+def exportar_a_excel(df):
+    """Exportar DataFrame a Excel"""
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Inscritos')
+        
+        excel_data = output.getvalue()
+        b64 = base64.b64encode(excel_data).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="inscritos_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx">⬇️ Descargar Excel</a>'
+        st.markdown(href, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error exportando a Excel: {e}")
 
-        for timeout_name, timeout_value in timeouts.items():
-            st.write(f"- {timeout_name}: {timeout_value} segundos")
+def exportar_a_csv(df):
+    """Exportar DataFrame a CSV"""
+    try:
+        csv = df.to_csv(index=False).encode('utf-8')
+        b64 = base64.b64encode(csv).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="inscritos_{datetime.now().strftime("%Y%m%d_%H%M")}.csv">⬇️ Descargar CSV</a>'
+        st.markdown(href, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error exportando a CSV: {e}")
 
-    with st.expander("📧 Configuración de Correos"):
-        if sistema.sistema_correos.correos_habilitados:
-            st.success("✅ Sistema de correos configurado")
-
-            # Mostrar configuración (sin contraseñas)
-            smtp_config = {
-                'smtp_server': sistema.sistema_correos.smtp_server,
-                'smtp_port': sistema.sistema_correos.smtp_port,
-                'email_user': sistema.sistema_correos.email_user
-            }
-            st.json(smtp_config)
-
-            # Botón para probar correo
-            if st.button("📧 Probar Envío de Correo", use_container_width=True):
-                with st.spinner("Enviando correo de prueba..."):
-                    # Usar el email de configuración como destinatario de prueba
-                    destinatario = sistema.sistema_correos.email_user
-                    exito, mensaje = sistema.sistema_correos.enviar_correo_confirmacion(
-                        destinatario,
-                        "Usuario de Prueba",
-                        "TEST-001",
-                        "TEST-FOL-001",
-                        "Prueba del Sistema"
-                    )
-
-                    if exito:
-                        st.success(f"✅ Correo de prueba enviado a {destinatario}")
-                    else:
-                        st.error(f"❌ Error: {mensaje}")
-        else:
-            st.warning("⚠️ Sistema de correos no configurado")
-            st.info("""
-            Para configurar correos, agrega en secrets.toml:
-            ```toml
-            [smtp]
-            smtp_server = "smtp.gmail.com"
-            smtp_port = 587
-            email_user = "tu_correo@gmail.com"
-            email_password = "tu_contraseña_app"
-            ```
-            """)
-
-    with st.expander("📊 Logs del Sistema"):
-        # Mostrar logs recientes
-        log_file = 'aspirantes_detallado.log'
-
-        if os.path.exists(log_file):
-            file_size = os.path.getsize(log_file)
-            st.info(f"📄 Archivo de log: {log_file} ({file_size:,} bytes)")
-
-            # Opciones para ver logs
-            col_log1, col_log2 = st.columns(2)
-
-            with col_log1:
-                num_lines = st.selectbox("Número de líneas a mostrar:", [50, 100, 200, 500], index=1)
-
-            with col_log2:
-                if st.button("🔄 Actualizar Logs", use_container_width=True):
-                    st.rerun()
-
-            # Leer y mostrar logs
-            try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-
-                # Mostrar últimas N líneas
-                if lines:
-                    last_lines = lines[-num_lines:]
-                    st.text_area("Últimas líneas del log:", ''.join(last_lines), height=300)
-                else:
-                    st.info("ℹ️ El archivo de log está vacío")
-
-            except Exception as e:
-                st.error(f"❌ Error leyendo archivo de log: {e}")
-        else:
-            st.warning("⚠️ No se encontró archivo de log")
-
-        # Operaciones del sistema
-        operations_file = 'aspirantes_operations.json'
-
-        if os.path.exists(operations_file):
-            try:
-                with open(operations_file, 'r') as f:
-                    operations = json.load(f)
-
-                st.markdown("**📋 Últimas Operaciones:**")
-
-                # Mostrar últimas 10 operaciones
-                for op in operations[-10:]:
-                    status_color = "🟢" if op.get('status') == 'EXITOSA' else "🔴"
-                    st.write(f"{status_color} **{op.get('operation', 'N/A')}** - {op.get('timestamp', 'N/A')}")
-
-            except Exception as e:
-                st.error(f"Error cargando operaciones: {e}")
-
-        # Acciones de mantenimiento
-        st.markdown("---")
-        st.markdown("**🧹 Mantenimiento del Sistema:**")
-
-        col_maint1, col_maint2 = st.columns(2)
-
-        with col_maint1:
-            if st.button("🗑️ Limpiar Archivos Temporales", use_container_width=True):
-                try:
-                    temp_dir = tempfile.gettempdir()
-                    pattern = os.path.join(temp_dir, "aspirantes_*.db")
-                    archivos_eliminados = 0
-
-                    for old_file in glob.glob(pattern):
-                        try:
-                            # Eliminar archivos con más de 1 hora
-                            if os.path.getmtime(old_file) < time.time() - 3600:
-                                os.remove(old_file)
-                                archivos_eliminados += 1
-                        except:
-                            pass
-
-                    st.success(f"✅ {archivos_eliminados} archivos temporales eliminados")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error limpiando archivos: {e}")
-
-        with col_maint2:
-            if st.button("🔄 Reiniciar Estado", use_container_width=True):
-                try:
-                    # Eliminar archivo de estado
-                    if os.path.exists(estado_sistema.archivo_estado):
-                        os.remove(estado_sistema.archivo_estado)
-
-                    # Reiniciar estado en memoria
-                    estado_sistema.estado = estado_sistema._estado_por_defecto()
-
-                    st.success("✅ Estado del sistema reiniciado")
-                    st.info("⚠️ La aplicación se reiniciará automáticamente")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error reiniciando estado: {e}")
-
-    with st.expander("🆘 Información de Diagnóstico"):
-        st.markdown("""
-        ### 📋 Diagnóstico del Sistema
-
-        **Comprobaciones automáticas:**
-
-        1. **🔗 Conexión SSH:** Verifica que pueda conectarse al servidor remoto
-        2. **💾 Espacio en Disco:** Comprueba espacio disponible para operaciones
-        3. **📁 Archivos de Configuración:** Valida que secrets.toml esté correcto
-        4. **🔄 Sincronización:** Verifica que la base de datos esté sincronizada
-
-        **Problemas comunes y soluciones:**
-
-        ❌ **SSH Desconectado:**
-        - Verifica credenciales en secrets.toml
-        - Comprueba que el servidor esté accesible
-        - Verifica puerto y firewall
-
-        ⚠️ **Base de Datos No Inicializada:**
-        - Haz clic en "Inicializar Base de Datos" en la página principal
-        - Verifica permisos en el servidor remoto
-
-        📧 **Correos No Funcionan:**
-        - Revisa configuración SMTP en secrets.toml
-        - Usa contraseñas de aplicación para Gmail
-        - Verifica que el puerto 587 esté abierto
-
-        **Comandos útiles para diagnóstico:**
-        ```bash
-        # Verificar conexión SSH manualmente
-        ssh -p 22 usuario@servidor.com
-
-        # Verificar espacio en disco
-        df -h
-
-        # Verificar logs de la aplicación
-        tail -f aspirantes_detallado.log
-        ```
-        """)
-
-        # Botón para diagnóstico completo
-        if st.button("🔍 Ejecutar Diagnóstico Completo", type="primary", use_container_width=True):
-            with st.spinner("Ejecutando diagnóstico..."):
-                resultados = []
-
-                # 1. Verificar secrets.toml
-                if gestor_remoto.config_completa:
-                    resultados.append("✅ secrets.toml cargado correctamente")
-                else:
-                    resultados.append("❌ No se pudo cargar secrets.toml")
-
-                # 2. Verificar configuración SSH
-                if gestor_remoto.config.get('host'):
-                    resultados.append(f"✅ Configuración SSH: {gestor_remoto.config['host']}")
-                else:
-                    resultados.append("❌ No hay configuración SSH")
-
-                # 3. Verificar conexión SSH
-                if gestor_remoto.verificar_conexion_ssh():
-                    resultados.append("✅ Conexión SSH exitosa")
-                else:
-                    resultados.append(f"❌ Conexión SSH fallida: {estado_sistema.estado.get('ssh_error', 'Error desconocido')}")
-
-                # 4. Verificar espacio en disco
-                temp_dir = tempfile.gettempdir()
-                espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-                if espacio_ok:
-                    resultados.append(f"✅ Espacio en disco: {espacio_mb:.0f} MB")
-                else:
-                    resultados.append(f"⚠️ Espacio en disco bajo: {espacio_mb:.0f} MB")
-
-                # 5. Verificar base de datos
-                if estado_sistema.esta_inicializada():
-                    resultados.append("✅ Base de datos inicializada")
-                else:
-                    resultados.append("❌ Base de datos no inicializada")
-
-                # 6. Verificar sistema de correos
-                if sistema.sistema_correos.correos_habilitados:
-                    resultados.append("✅ Sistema de correos configurado")
-                else:
-                    resultados.append("⚠️ Sistema de correos no configurado")
-
-                # Mostrar resultados
-                st.markdown("### 📊 Resultados del Diagnóstico")
-                for resultado in resultados:
-                    st.write(resultado)
-
-def mostrar_pagina_principal():
-    """Página principal del sistema"""
-    mostrar_encabezado()
+def mostrar_pagina_principal_administracion():
+    """Página principal del sistema de administración"""
+    mostrar_encabezado_administracion()
 
     # Verificar estado del sistema
     if not estado_sistema.esta_inicializada():
@@ -2866,26 +2742,17 @@ def mostrar_pagina_principal():
         # Mostrar estadísticas
         mostrar_panel_estadisticas()
 
-        # Búsqueda rápida
-        st.markdown("### 🔍 Búsqueda Rápida")
-        mostrar_busqueda_inscrito()
-
     with tab2:
-        # Formulario de inscripción
-        submit_button, datos_formulario, archivos = mostrar_formulario_inscripcion()
-
-        if submit_button:
-            with st.spinner("Procesando inscripción..."):
-                resultado = sistema.registrar_inscripcion(datos_formulario, archivos)
-                mostrar_resultado_inscripcion(resultado)
+        # Mostrar formulario del website público
+        mostrar_formulario_inscripcion()
 
     with tab3:
         # Lista de inscritos
-        mostrar_lista_inscritos()
+        mostrar_lista_inscritos_administracion()
 
     with tab4:
         # Configuración
-        mostrar_configuracion()
+        mostrar_configuracion_administracion()
 
     # Footer
     st.markdown("---")
@@ -2898,19 +2765,19 @@ def mostrar_pagina_principal():
     """, unsafe_allow_html=True)
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PRINCIPAL - INTEGRACIÓN COMPLETA
 # =============================================================================
 
 def main():
-    """Función principal de la aplicación"""
-
-    # Sidebar con estado del sistema
+    """Función principal de la aplicación integrada"""
+    
+    # Sidebar con estado del sistema y navegación
     with st.sidebar:
-        st.title("🔧 Sistema Aspirantes")
+        st.title("🏥 Sistema de Enfermería")
         st.markdown("---")
-
-        st.subheader("🔗 Estado de Conexión")
-
+        
+        st.subheader("🔗 Estado del Sistema")
+        
         # Estado de inicialización
         if estado_sistema.esta_inicializada():
             st.success("✅ Base de datos remota inicializada")
@@ -2931,30 +2798,22 @@ def main():
             if error_ssh:
                 st.caption(f"⚠️ Error: {error_ssh}")
 
-        # Verificación de espacio en disco
-        st.subheader("💾 Estado del Sistema")
-        temp_dir = tempfile.gettempdir()
-        espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-
-        if espacio_ok:
-            st.success(f"Espacio disponible: {espacio_mb:.0f} MB")
-        else:
-            st.warning(f"Espacio bajo: {espacio_mb:.0f} MB")
-
-        # Información del servidor
-        with st.expander("📋 Información del Servidor"):
-            if gestor_remoto.config.get('host'):
-                st.write(f"**Host:** {gestor_remoto.config['host']}")
-                st.write(f"**Puerto:** {gestor_remoto.config.get('port', 22)}")
-                st.write(f"**Usuario:** {gestor_remoto.config['username']}")
-                st.write(f"**Directorio Remoto:** {gestor_remoto.config.get('remote_dir', '')}")
-                st.write(f"**DB Remota:** {gestor_remoto.config.get('remote_db_aspirantes', '')}")
-
         st.markdown("---")
-
-        # Estadísticas del sistema
+        
+        # Navegación principal
+        st.subheader("📱 Navegación")
+        
+        # Modo de operación
+        modo = st.radio(
+            "Selecciona el modo:",
+            ["🌐 Website Público", "🔧 Administración"],
+            key="modo_navegacion"
+        )
+        
+        st.markdown("---")
+        
+        # Estadísticas rápidas
         st.subheader("📈 Estadísticas")
-
         col_stat1, col_stat2 = st.columns(2)
         with col_stat1:
             total_inscritos = estado_sistema.estado.get('total_inscritos', 0)
@@ -2962,9 +2821,6 @@ def main():
         with col_stat2:
             backups = estado_sistema.estado.get('backups_realizados', 0)
             st.metric("Backups", backups)
-
-        sesiones = estado_sistema.estado.get('sesiones_iniciadas', 0)
-        st.metric("Sesiones", sesiones)
 
         # Última sincronización
         ultima_sync = estado_sistema.estado.get('ultima_sincronizacion')
@@ -2974,12 +2830,12 @@ def main():
                 st.caption(f"🔄 Última sincronización: {fecha_sync.strftime('%H:%M:%S')}")
             except:
                 pass
-
+        
         st.markdown("---")
-
+        
         # Sistema de backups
         st.subheader("💾 Sistema de Backups")
-
+        
         # Botón para crear backup manual
         if st.button("💾 Crear Backup Manual", use_container_width=True):
             with st.spinner("Creando backup..."):
@@ -2991,113 +2847,18 @@ def main():
                     st.success(f"✅ Backup creado: {os.path.basename(backup_path)}")
                 else:
                     st.error("❌ Error creando backup")
-
+        
         st.markdown("---")
-
+        
         # Información de versión
-        st.caption("🏥 Sistema de Aspirantes v3.0")
-        st.caption("🔗 SSH Mejorado con Timeouts")
+        st.caption("🏥 Sistema Integrado v3.0")
+        st.caption("🔗 SSH Mejorado + Website Público")
 
-    try:
-        # Verificar configuración SSH
-        if not gestor_remoto.config.get('host'):
-            st.error("""
-            ❌ **ERROR DE CONFIGURACIÓN SSH**
-
-            No se encontró configuración SSH en secrets.toml.
-
-            **Solución:**
-            1. Crea un archivo `.streamlit/secrets.toml`
-            2. Agrega la configuración SSH:
-            ```toml
-            [ssh]
-            host = "tu.servidor.com"
-            port = 22
-            username = "tu_usuario"
-            password = "tu_contraseña"
-
-            [paths]
-            remote_db_aspirantes = "/ruta/remota/aspirantes.db"
-            remote_uploads_path = "/ruta/remota/uploads"
-
-            [smtp]
-            smtp_server = "smtp.gmail.com"
-            smtp_port = 587
-            email_user = "tu_correo@gmail.com"
-            email_password = "tu_contraseña_app"
-            ```
-            3. Reinicia la aplicación
-            """)
-
-            # Mostrar diagnóstico
-            with st.expander("🔍 Diagnóstico del Sistema"):
-                st.write("**Rutas buscadas:**")
-                for ruta in [
-                    ".streamlit/secrets.toml",
-                    "secrets.toml",
-                    "./.streamlit/secrets.toml"
-                ]:
-                    existe = os.path.exists(ruta)
-                    estado = "✅ Existe" if existe else "❌ No existe"
-                    st.write(f"{estado}: `{ruta}`")
-
-            return
-
-        # Mostrar página principal
-        mostrar_pagina_principal()
-
-    except Exception as e:
-        logger.error(f"Error crítico en main(): {e}", exc_info=True)
-
-        st.error(f"❌ Error crítico en la aplicación: {str(e)}")
-
-        # Información de diagnóstico
-        with st.expander("🔧 Información de diagnóstico detallada"):
-            st.write("**Estado persistente:**")
-            st.json(estado_sistema.estado)
-
-            st.write("**Configuración SSH cargada:**")
-            if gestor_remoto.config:
-                config_show = gestor_remoto.config.copy()
-                # Ocultar contraseñas para seguridad
-                if 'password' in config_show:
-                    config_show['password'] = '********'
-                if 'smtp' in config_show and 'email_password' in config_show['smtp']:
-                    config_show['smtp']['email_password'] = '********'
-                st.json(config_show)
-            else:
-                st.write("No hay configuración SSH cargada")
-
-            st.write("**Archivos de log:**")
-            log_files = []
-            for log_file in ['aspirantes_detallado.log', 'aspirantes_operations.json']:
-                if os.path.exists(log_file):
-                    size = os.path.getsize(log_file)
-                    log_files.append(f"{log_file} ({size} bytes)")
-                else:
-                    log_files.append(f"{log_file} (no existe)")
-
-            for log_info in log_files:
-                st.write(f"- {log_info}")
-
-        # Botón para reinicio seguro
-        col_reset1, col_reset2 = st.columns(2)
-        with col_reset1:
-            if st.button("🔄 Reiniciar Aplicación", type="primary", use_container_width=True):
-                st.success("✅ Reiniciando...")
-                st.rerun()
-
-        with col_reset2:
-            if st.button("📋 Ver Logs Recientes", use_container_width=True):
-                try:
-                    if os.path.exists('aspirantes_detallado.log'):
-                        with open('aspirantes_detallado.log', 'r') as f:
-                            lines = f.readlines()[-50:]  # Últimas 50 líneas
-                            st.text_area("Últimas líneas del log:", ''.join(lines), height=300)
-                    else:
-                        st.warning("No se encontró archivo de log")
-                except Exception as log_error:
-                    st.error(f"Error leyendo logs: {log_error}")
+    # Mostrar la interfaz correspondiente al modo seleccionado
+    if st.session_state.get('modo_navegacion') == "🌐 Website Público":
+        mostrar_pagina_principal_website()
+    else:
+        mostrar_pagina_principal_administracion()
 
 # =============================================================================
 # EJECUCIÓN PRINCIPAL
@@ -3107,9 +2868,9 @@ if __name__ == "__main__":
     try:
         # Mostrar banner informativo
         st.info("""
-        🏥 **SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN MEJORADA CON SSH**
+        🏥 **SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN MEJORADA CON SSH + WEBSITE PÚBLICO**
 
-        **Mejoras implementadas (igual que escuela20.py):**
+        **Mejoras implementadas:**
         ✅ Timeouts específicos para operaciones de red (conexión, comandos, transferencia)
         ✅ Reintentos inteligentes con backoff exponencial (3 intentos por defecto)
         ✅ Verificación de espacio en disco antes de operaciones
@@ -3118,6 +2879,9 @@ if __name__ == "__main__":
         ✅ Manejo robusto de errores con información específica
         ✅ Notificaciones por email para operaciones importantes
         ✅ Verificación de integridad de base de datos
+        ✅ **NUEVO:** Website público con información institucional
+        ✅ **NUEVO:** Opciones académicas mejoradas
+        ✅ **NUEVO:** Testimonios de estudiantes y egresados
 
         **Para comenzar:**
         1. Configura secrets.toml con tus credenciales SSH
@@ -3129,6 +2893,8 @@ if __name__ == "__main__":
         📊 Panel de estadísticas en tiempo real
         💾 Sistema automático de backups con retención de 10 backups
         📧 Envío automático de correos de confirmación a aspirantes
+        🌐 Website público con información institucional
+        🎓 Catálogo completo de programas académicos
         """)
 
         main()
@@ -3142,6 +2908,6 @@ if __name__ == "__main__":
             import traceback
             st.code(traceback.format_exc())
 
-            st.write("**Variables de entorno relevantes:**")
+            st.write("**Variables de entorno relevantas:**")
             env_vars = {k: v for k, v in os.environ.items() if 'STREAMLIT' in k or 'PYTHON' in k}
             st.json(env_vars)
