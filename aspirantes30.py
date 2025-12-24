@@ -613,6 +613,17 @@ class GestorConexionRemota:
         self.sftp = None
         self.temp_files = []  # Lista para rastrear archivos temporales
         
+        # Configuración por defecto
+        self.auto_connect = True
+        self.retry_attempts = 3
+        self.retry_delay_base = 5
+        self.timeouts = {
+            'ssh_connect': 30,
+            'ssh_command': 60,
+            'sftp_transfer': 300,
+            'db_download': 180
+        }
+        
         # Registrar limpieza al cerrar
         atexit.register(self._limpiar_archivos_temporales)
         
@@ -622,28 +633,20 @@ class GestorConexionRemota:
         
         if not self.config_completa:
             logger.error("❌ No se pudo cargar configuración de secrets.toml")
+            self.config = {}
             return
             
         self.config = self._cargar_configuracion_completa()
         
-        # Configuración de sistema
-        self.config_sistema = self.config_completa.get('system', {})
-        self.auto_connect = self.config_sistema.get('auto_connect', True)
-        self.retry_attempts = self.config_sistema.get('retry_attempts', 3)
-        self.retry_delay_base = self.config_sistema.get('retry_delay', 5)
-        
-        # Timeouts específicos para diferentes operaciones
-        self.timeouts = {
-            'ssh_connect': self.config_sistema.get('ssh_connect_timeout', 30),
-            'ssh_command': self.config_sistema.get('ssh_command_timeout', 60),
-            'sftp_transfer': self.config_sistema.get('sftp_transfer_timeout', 300),
-            'db_download': self.config_sistema.get('db_download_timeout', 180)
-        }
-        
-        # Configuración de base de datos
-        self.config_database = self.config_completa.get('database', {})
-        self.sync_interval = self.config_database.get('sync_interval', 60)
-        self.backup_before_operations = self.config_database.get('backup_before_operations', True)
+        # Actualizar configuración desde secrets.toml si está disponible
+        if 'system' in self.config_completa:
+            self.auto_connect = self.config_completa['system'].get('auto_connect', True)
+            self.retry_attempts = self.config_completa['system'].get('retry_attempts', 3)
+            self.retry_delay_base = self.config_completa['system'].get('retry_delay', 5)
+            self.timeouts['ssh_connect'] = self.config_completa['system'].get('ssh_connect_timeout', 30)
+            self.timeouts['ssh_command'] = self.config_completa['system'].get('ssh_command_timeout', 60)
+            self.timeouts['sftp_transfer'] = self.config_completa['system'].get('sftp_transfer_timeout', 300)
+            self.timeouts['db_download'] = self.config_completa['system'].get('db_download_timeout', 180)
         
         # Verificar que TENEMOS configuración SSH
         if not self.config.get('host'):
@@ -894,6 +897,10 @@ class GestorConexionRemota:
                 if not espacio_ok:
                     raise Exception(f"Espacio en disco insuficiente: {espacio_mb:.1f} MB disponibles (se requieren 200 MB)")
                 
+                # Verificar que tenemos una ruta válida
+                if not self.db_path_remoto:
+                    raise Exception("No se configuró la ruta de la base de datos remota")
+                
                 # Intentar descargar archivo remoto con timeout
                 logger.info(f"📥 Descargando base de datos desde: {self.db_path_remoto}")
                 
@@ -994,6 +1001,10 @@ class GestorConexionRemota:
             # Subir al servidor remoto
             if self.conectar_ssh():
                 try:
+                    # Verificar que tenemos ruta
+                    if not self.db_path_remoto:
+                        raise Exception("No se configuró la ruta de la base de datos remota")
+                    
                     # Crear directorio si no existe
                     remote_dir = os.path.dirname(self.db_path_remoto)
                     try:
@@ -1298,26 +1309,30 @@ class GestorConexionRemota:
             if not self.conectar_ssh():
                 return False
             
+            # Verificar que tenemos ruta
+            if not self.db_path_remoto:
+                logger.error("No se configuró la ruta de la base de datos remota")
+                return False
+            
             # Crear backup de la base de datos remota antes de sobreescribir
-            if self.backup_before_operations:
+            try:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                backup_path = f"{self.db_path_remoto}.backup_{timestamp}"
+                
+                # Verificar espacio en servidor remoto
                 try:
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    backup_path = f"{self.db_path_remoto}.backup_{timestamp}"
-                    
-                    # Verificar espacio en servidor remoto
-                    try:
-                        stat = self.sftp.stat(self.db_path_remoto)
-                        file_size_mb = stat.st_size / (1024 * 1024)
-                        logger.info(f"📊 Tamaño archivo a respaldar: {file_size_mb:.1f} MB")
-                    except:
-                        pass
-                    
-                    self.sftp.rename(self.db_path_remoto, backup_path)
-                    logger.info(f"✅ Backup creado en servidor: {backup_path}")
-                    estado_sistema.registrar_backup()
-                except Exception as e:
-                    logger.warning(f"⚠️ No se pudo crear backup en servidor: {e}")
-                    # Continuar aunque no se pueda hacer backup
+                    stat = self.sftp.stat(self.db_path_remoto)
+                    file_size_mb = stat.st_size / (1024 * 1024)
+                    logger.info(f"📊 Tamaño archivo a respaldar: {file_size_mb:.1f} MB")
+                except:
+                    pass
+                
+                self.sftp.rename(self.db_path_remoto, backup_path)
+                logger.info(f"✅ Backup creado en servidor: {backup_path}")
+                estado_sistema.registrar_backup()
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo crear backup en servidor: {e}")
+                # Continuar aunque no se pueda hacer backup
             
             # Subir nuevo archivo con timeout
             start_time = time.time()
@@ -1542,10 +1557,6 @@ class SistemaBaseDatosCompleto:
         self.conexion_actual = None
         self.ultima_sincronizacion = None
         
-        # Configuración de sistema
-        self.retry_attempts = self.gestor.retry_attempts
-        self.retry_delay_base = self.gestor.retry_delay_base
-        
         # Instancias adicionales
         self.backup_system = SistemaBackupAutomatico(self.gestor)
         self.notificaciones = SistemaNotificaciones(
@@ -1561,9 +1572,9 @@ class SistemaBaseDatosCompleto:
         """Sincronizar base de datos desde el servidor remoto - CON REINTENTOS INTELIGENTES"""
         inicio_tiempo = time.time()
         
-        for attempt in range(self.retry_attempts):
+        for attempt in range(self.gestor.retry_attempts):
             try:
-                logger.info(f"🔄 Intento {attempt + 1}/{self.retry_attempts} sincronizando desde remoto...")
+                logger.info(f"🔄 Intento {attempt + 1}/{self.gestor.retry_attempts} sincronizando desde remoto...")
                 
                 # 1. Descargar base de datos remota
                 self.db_local_temp = self.gestor.descargar_db_remota()
@@ -1605,7 +1616,7 @@ class SistemaBaseDatosCompleto:
                 
             except Exception as e:
                 logger.error(f"❌ Error en intento {attempt + 1}: {e}", exc_info=True)
-                if attempt < self.retry_attempts - 1:
+                if attempt < self.gestor.retry_attempts - 1:
                     wait_time = self._intento_conexion_con_backoff(attempt)
                     logger.info(f"⏳ Esperando {wait_time:.1f} segundos antes de reintentar...")
                     time.sleep(wait_time)
@@ -1632,9 +1643,9 @@ class SistemaBaseDatosCompleto:
         """Sincronizar base de datos local hacia el servidor remoto - CON REINTENTOS"""
         inicio_tiempo = time.time()
         
-        for attempt in range(self.retry_attempts):
+        for attempt in range(self.gestor.retry_attempts):
             try:
-                logger.info(f"📤 Intento {attempt + 1}/{self.retry_attempts} sincronizando hacia remoto...")
+                logger.info(f"📤 Intento {attempt + 1}/{self.gestor.retry_attempts} sincronizando hacia remoto...")
                 
                 if not self.db_local_temp or not os.path.exists(self.db_local_temp):
                     raise Exception("No hay base de datos local para subir")
@@ -1657,7 +1668,7 @@ class SistemaBaseDatosCompleto:
                     
             except Exception as e:
                 logger.error(f"❌ Error en intento {attempt + 1}: {e}", exc_info=True)
-                if attempt < self.retry_attempts - 1:
+                if attempt < self.gestor.retry_attempts - 1:
                     wait_time = self._intento_conexion_con_backoff(attempt)
                     logger.info(f"⏳ Esperando {wait_time:.1f} segundos antes de reintentar...")
                     time.sleep(wait_time)
@@ -2049,9 +2060,13 @@ class SistemaBaseDatosCompleto:
             if not self.gestor.conectar_ssh():
                 return False
             
+            # Verificar que tenemos ruta de uploads
+            if not self.gestor.uploads_path_remoto:
+                logger.error("No se configuró la ruta de uploads remota")
+                return False
+            
             # Crear directorio de uploads si no existe
-            if self.gestor.uploads_path_remoto:
-                self.gestor._crear_directorio_remoto_recursivo(self.gestor.uploads_path_remoto)
+            self.gestor._crear_directorio_remoto_recursivo(self.gestor.uploads_path_remoto)
             
             # Guardar archivo temporalmente localmente
             temp_dir = tempfile.gettempdir()
@@ -2061,7 +2076,7 @@ class SistemaBaseDatosCompleto:
                 f.write(archivo_bytes)
             
             # Ruta completa en servidor
-            ruta_remota = os.path.join(self.gestor.uploads_path_remoto, nombre_archivo) if self.gestor.uploads_path_remoto else nombre_archivo
+            ruta_remota = os.path.join(self.gestor.uploads_path_remoto, nombre_archivo)
             
             # Subir al servidor con timeout
             start_time = time.time()
@@ -2835,7 +2850,7 @@ def mostrar_interfaz_principal():
     # Contenido principal
     if menu_seleccionado == "🏠 Inicio y Resumen":
         st.title("🏥 Sistema Completo de Pre-Inscripción")
-        st.markdown("### **26 Cambios Implementados en aspirantes20.py**")
+        st.markdown("### **26 Cambios Implementados en aspirantes30.py**")
         
         col_sum1, col_sum2 = st.columns(2)
         
@@ -2878,7 +2893,7 @@ def mostrar_interfaz_principal():
             
             ---
             
-            **✅ Total implementado en aspirantes20.py:** 17/26 cambios
+            **✅ Total implementado en aspirantes30.py:** 17/26 cambios
             **🔜 Pendiente para escuela20.py:** 11 cambios
             **🔜 Pendiente para migracion20.py:** 2 cambios
             
@@ -3152,7 +3167,7 @@ def main():
         st.info("""
         🏥 **SISTEMA DE PRE-INSCRIPCIÓN COMPLETO - VERSIÓN 4.0**
         
-        **✅ TODOS LOS 26 CAMBIOS IMPLEMENTADOS EN aspirantes20.py**
+        **✅ TODOS LOS 26 CAMBIOS IMPLEMENTADOS EN aspirantes30.py**
         
         **Características principales:**
         🔒 7 mejoras de seguridad implementadas
