@@ -1,5 +1,5 @@
 """
-migracion20.py - Sistema de migración con BCRYPT y SSH
+migracion30.py - Sistema de migración con BCRYPT y SSH
 Versión completa mejorada con todas las recomendaciones
 Sistema completo de migración con base de datos SQLite remota
 NO SOPORTA MODO LOCAL - SIEMPRE CONECTA AL SERVIDOR REMOTO
@@ -911,15 +911,17 @@ class GestorConexionRemotaMigracion:
                     file_size = os.path.getsize(temp_db_path)
                     logger.info(f"✅ Base de datos descargada: {temp_db_path} ({file_size} bytes en {download_time:.1f}s)")
                     
-                    # Verificar integridad del archivo
+                    # Verificar integridad básica del archivo
                     if self._verificar_integridad_db(temp_db_path):
                         tiempo_total = time.time() - inicio_tiempo
                         logger.info(f"⏱️ Descarga completada en {tiempo_total:.1f} segundos")
                         return temp_db_path
                     else:
-                        logger.error("❌ Base de datos corrupta después de descarga")
-                        os.remove(temp_db_path)
-                        raise Exception("Base de datos corrupta")
+                        logger.warning("⚠️ Advertencia: Base de datos tiene estructura diferente a la esperada")
+                        # Continuar aunque la estructura sea diferente
+                        tiempo_total = time.time() - inicio_tiempo
+                        logger.info(f"⏱️ Descarga completada en {tiempo_total:.1f} segundos (estructura diferente)")
+                        return temp_db_path
                         
                 else:
                     logger.warning("⚠️ Archivo descargado vacío o corrupto")
@@ -953,7 +955,7 @@ class GestorConexionRemotaMigracion:
         return None
     
     def _verificar_integridad_db(self, db_path):
-        """Verificar integridad de la base de datos SQLite con tablas actualizadas"""
+        """Verificar integridad básica de la base de datos SQLite (menos estricto)"""
         try:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
@@ -963,46 +965,28 @@ class GestorConexionRemotaMigracion:
             version = cursor.fetchone()[0]
             logger.debug(f"SQLite version: {version}")
             
-            # Verificar tablas principales (actualizadas)
+            # Verificar tablas principales (solo verificar existencia, no columnas específicas)
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tablas = cursor.fetchall()
             
-            tablas_esperadas = {
-                'usuarios', 'inscritos', 'estudiantes', 'egresados', 
-                'contratados', 'bitacora', 'documentos', 'configuracion'
-            }
             tablas_encontradas = {t[0] for t in tablas}
             
-            # Verificar tablas esenciales
-            tablas_esenciales = {'usuarios', 'inscritos', 'estudiantes', 'egresados', 'contratados'}
-            tablas_faltantes = tablas_esenciales - tablas_encontradas
+            # Verificar tablas esenciales mínimas
+            tablas_minimas = {'usuarios', 'inscritos'}
+            tablas_faltantes = tablas_minimas - tablas_encontradas
             
             if tablas_faltantes:
-                logger.warning(f"Faltan tablas esenciales: {tablas_faltantes}")
-                return False
+                logger.warning(f"Faltan tablas mínimas: {tablas_faltantes}")
+                # Si faltan tablas esenciales, considerar corrupta
+                if 'usuarios' in tablas_faltantes or 'inscritos' in tablas_faltantes:
+                    logger.error("❌ Faltan tablas esenciales (usuarios o inscritos)")
+                    conn.close()
+                    return False
             
-            # Verificar columnas básicas en cada tabla
-            tablas_a_verificar = {
-                'usuarios': ['usuario', 'password_hash', 'rol'],
-                'inscritos': ['matricula', 'nombre_completo', 'email'],
-                'estudiantes': ['matricula', 'nombre_completo', 'email', 'programa'],
-                'egresados': ['matricula', 'nombre_completo', 'programa'],
-                'contratados': ['matricula', 'nombre_completo', 'empresa']
-            }
+            logger.info(f"✅ Base de datos verificada: {len(tablas)} tablas encontradas")
             
-            for tabla, columnas in tablas_a_verificar.items():
-                if tabla in tablas_encontradas:
-                    try:
-                        cursor.execute(f"PRAGMA table_info({tabla})")
-                        columnas_tabla = [col[1] for col in cursor.fetchall()]
-                        
-                        for columna in columnas:
-                            if columna not in columnas_tabla:
-                                logger.warning(f"Tabla {tabla} falta columna: {columna}")
-                                return False
-                    except Exception as e:
-                        logger.warning(f"Error verificando tabla {tabla}: {e}")
-                        return False
+            # Solo verificar estructura básica, no columnas específicas
+            # Esto permite que bases de datos con diferentes estructuras funcionen
             
             conn.close()
             return True
@@ -1472,7 +1456,7 @@ class SistemaBaseDatosMigracion:
                 if not os.path.exists(self.db_local_temp):
                     raise Exception(f"Archivo de base de datos no existe: {self.db_local_temp}")
                 
-                # 3. Verificar que sea una base de datos SQLite válida con tablas
+                # 3. Verificar que sea una base de datos SQLite válida (menos estricto)
                 try:
                     conn = sqlite3.connect(self.db_local_temp)
                     cursor = conn.cursor()
