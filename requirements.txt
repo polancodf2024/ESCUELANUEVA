@@ -9,3 +9,4 @@ paramiko>=3.3.0
 cryptography>=41.0.0
 pycparser>=2.21
 psutil==5.9.0  # <-- AÑADE ESTA LÍNEA
+streamlit-authenticator==0.2.2
