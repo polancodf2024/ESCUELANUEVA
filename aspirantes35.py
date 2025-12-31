@@ -3117,7 +3117,6 @@ class SistemaInscritosCompleto:
 # ============================================================================
 # CAPA 13: PÁGINAS/VISTAS PRINCIPALES
 # ============================================================================
-
 class PaginaPrincipal:
     """Página principal del sistema"""
     
@@ -3152,7 +3151,12 @@ class PaginaPrincipal:
             """)
         
         with col2:
-            st.markdown("""
+            # CORREGIR ESTA SECCIÓN:
+            ssh_conectado = "✅ Sí" if estado_sistema.estado.get('ssh_conectado', False) else "❌ No"
+            archivos_remotos = estado_sistema.estado.get('archivos_subidos_remoto', 0)
+            backups = estado_sistema.estado.get('backups_realizados', 0)
+            
+            st.markdown(f"""
             #### 🌐 **TRABAJO REMOTO COMPLETO**
             
             16. **Base de datos en servidor remoto**
@@ -3167,23 +3171,13 @@ class PaginaPrincipal:
             
             ---
             
-            **🔗 Conexión SSH:** {estado_sistema.estado.get('ssh_conectado', False)}
-            **📁 Archivos remotos:** {estado_sistema.estado.get('archivos_subidos_remoto', 0)}
-            **💾 Backups:** {estado_sistema.estado.get('backups_realizados', 0)}
-            """.format(
-                estado_sistema=estado_sistema
-            ))
+            **🔗 Conexión SSH:** {ssh_conectado}
+            **📁 Archivos remotos:** {archivos_remotos}
+            **💾 Backups:** {backups}
+            """)
         
         st.markdown("---")
 
-class PaginaInscripcion:
-    """Página de inscripción completa"""
-    
-    def __init__(self):
-        self.sistema = SistemaInscritosCompleto()
-    
-    def mostrar(self):
-        self.sistema.mostrar_formulario_completo_interactivo()
 
 class PaginaConsulta:
     """Página de consulta de inscritos - CON MANEJO DE ERRORES MEJORADO"""
