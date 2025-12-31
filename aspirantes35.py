@@ -2022,22 +2022,24 @@ class ComponentesUI:
             
             # Definir opciones de menú según autenticación
             if sistema_auth and st.session_state.autenticado:
+                # Para usuarios autenticados: solo mostrar opciones principales
                 opciones_menu = [
                     "🏠 Inicio y Resumen",
                     "📝 Nueva Pre-Inscripción",
                     "📋 Consultar Inscritos",
-                    "📁 Gestionar Documentos",
                     "⚙️ Configuración",
                     "📊 Reportes y Backups"
                 ]
             else:
+                # Para usuarios no autenticados: opciones básicas
                 opciones_menu = [
                     "🏠 Inicio y Resumen",
                     "📝 Nueva Pre-Inscripción",
                     "🔐 Acceso Administrativo"
                 ]
             
-            menu_seleccionado = st.selectbox("Selecciona una opción:", opciones_menu)
+            # Usar selectbox en lugar de tabs para evitar las pestañas rojas
+            menu_seleccionado = st.selectbox("Selecciona una opción:", opciones_menu, key="menu_principal")
             
             st.markdown("---")
             st.caption(f"🔄 Última sincronización: {estado_sistema.estado.get('ultima_sincronizacion', 'Nunca')}")
@@ -3115,99 +3117,6 @@ class PaginaConsulta:
         except Exception as e:
             st.error(f"❌ Error cargando inscritos: {e}")
 
-class PaginaGestionDocumentos:
-    """Página para gestionar documentos subidos"""
-    
-    @staticmethod
-    def mostrar():
-        ComponentesUI.mostrar_header("📁 Gestión de Documentos")
-        
-        st.info("""
-        **Funcionalidades disponibles:**
-        
-        1. **Ver documentos subidos** por cada inscrito
-        2. **Descargar documentos** individualmente
-        3. **Validar documentos** subidos
-        4. **Generar reportes** de documentos faltantes
-        """)
-        
-        try:
-            # Obtener todos los inscritos
-            inscritos = db_completa.obtener_inscritos()
-            
-            if not inscritos:
-                st.info("ℹ️ No hay inscritos registrados")
-                return
-            
-            # Seleccionar inscrito
-            inscritos_opciones = [f"{ins['matricula']} - {ins['nombre_completo']}" for ins in inscritos]
-            seleccion = st.selectbox("Seleccionar inscrito:", inscritos_opciones)
-            
-            if seleccion:
-                matricula = seleccion.split(" - ")[0]
-                
-                # Obtener información del inscrito
-                inscrito = next((ins for ins in inscritos if ins['matricula'] == matricula), None)
-                
-                if inscrito:
-                    col_info1, col_info2 = st.columns(2)
-                    
-                    with col_info1:
-                        st.markdown(f"**Matrícula:** `{inscrito['matricula']}`")
-                        st.markdown(f"**Nombre:** {inscrito['nombre_completo']}")
-                        st.markdown(f"**Programa:** {inscrito['programa_interes']}")
-                    
-                    with col_info2:
-                        st.markdown(f"**Folio:** `{inscrito['folio_unico']}`")
-                        st.markdown(f"**Documentos subidos:** {inscrito['documentos_subidos']}")
-                        st.markdown(f"**Estatus:** {inscrito['estatus']}")
-                    
-                    st.markdown("---")
-                    
-                    # Mostrar documentos subidos (simulación - en una implementación real se obtendrían de la tabla documentos_subidos)
-                    if inscrito['documentos_subidos'] > 0:
-                        st.subheader("📄 Documentos Registrados")
-                        
-                        documentos = inscrito['documentos_guardados'].split(', ') if inscrito['documentos_guardados'] else []
-                        
-                        for doc in documentos:
-                            col_doc1, col_doc2, col_doc3 = st.columns([3, 1, 1])
-                            with col_doc1:
-                                st.markdown(f"• **{doc}**")
-                            with col_doc2:
-                                st.info("✅ Subido")
-                            with col_doc3:
-                                # Botón simulado para descargar
-                                st.button("📥 Descargar", key=f"desc_{doc}", disabled=True)
-                    
-                    # Mostrar documentos faltantes
-                    if inscrito['documentos_faltantes']:
-                        st.subheader("⚠️ Documentos Faltantes")
-                        faltantes = inscrito['documentos_faltantes'].split(', ') if inscrito['documentos_faltantes'] else []
-                        for doc in faltantes:
-                            st.markdown(f"• **{doc}**")
-                    
-                    # Botón para marcar como completado
-                    if inscrito['documentos_subidos'] >= 8:  # Umbral para considerar completo
-                        if inscrito['completado'] == 0:
-                            if st.button("✅ Marcar como Completado", type="primary", use_container_width=True):
-                                with st.spinner("Actualizando estatus..."):
-                                    try:
-                                        with db_completa.get_connection() as conn:
-                                            cursor = conn.cursor()
-                                            cursor.execute(
-                                                "UPDATE inscritos SET completado = 1, estatus = 'Documentación completa' WHERE matricula = ?",
-                                                (matricula,)
-                                            )
-                                            conn.commit()
-                                        st.success("✅ Inscrito marcado como completado")
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"❌ Error actualizando: {e}")
-        
-        except Exception as e:
-            st.error(f"❌ Error cargando documentos: {e}")
-
 class PaginaConfiguracion:
     """Página de configuración del sistema"""
     
@@ -3381,18 +3290,16 @@ class ControladorPrincipal:
             "inicio": PaginaPrincipal(),
             "inscripcion": PaginaInscripcion(),
             "consulta": PaginaConsulta(),
-            "gestion_documentos": PaginaGestionDocumentos(),
             "configuracion": PaginaConfiguracion(),
             "reportes": PaginaReportes(),
             "login": self.sistema_auth
         }
         
-        # Mapeo de menú según autenticación
+        # Mapeo de menú simplificado
         self.mapeo_menu_autenticado = {
             "🏠 Inicio y Resumen": "inicio",
             "📝 Nueva Pre-Inscripción": "inscripcion",
             "📋 Consultar Inscritos": "consulta",
-            "📁 Gestionar Documentos": "gestion_documentos",
             "⚙️ Configuración": "configuracion",
             "📊 Reportes y Backups": "reportes"
         }
@@ -3430,7 +3337,7 @@ class ControladorPrincipal:
         pagina_seleccionada = mapeo_menu.get(seleccion_menu, "inicio")
         
         # Verificar autenticación para páginas administrativas
-        if pagina_seleccionada in ["consulta", "gestion_documentos", "configuracion", "reportes"]:
+        if pagina_seleccionada in ["consulta", "configuracion", "reportes"]:
             if not self.sistema_auth.verificar_autenticacion(rol_requerido="admin"):
                 # Redirigir a login si no está autenticado
                 pagina_seleccionada = "login"
