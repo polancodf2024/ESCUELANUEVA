@@ -1719,10 +1719,10 @@ class SistemaCorreosCompleto:
         try:
             smtp_config = gestor_remoto.config.get('smtp', {})
             
-            self.smtp_server = smtp_config.get("smtp_server", "")
-            self.smtp_port = int(smtp_config.get("smtp_port", 587))
-            self.email_user = smtp_config.get("email_user", "")
-            self.email_password = smtp_config.get("email_password", "")
+            self.smtp_server = smtp_config.get("smtp_server", ""),
+            self.smtp_port = int(smtp_config.get("smtp_port", 587)),
+            self.email_user = smtp_config.get("email_user", ""),
+            self.email_password = smtp_config.get("email_password", ""),
             self.correos_habilitados = bool(self.smtp_server and self.email_user)
             
             if self.correos_habilitados:
@@ -1981,7 +1981,7 @@ class ComponentesUI:
     
     @staticmethod
     def crear_sidebar(sistema_auth):
-        """Crear sidebar con autenticación"""
+        """Crear sidebar con autenticación - SIN PESTAÑAS, solo selectbox"""
         with st.sidebar:
             st.title("🏥 Sistema de Pre-Inscripción")
             st.markdown(f"**Versión {APP_CONFIG['version']}**")
@@ -2022,7 +2022,7 @@ class ComponentesUI:
             
             # Definir opciones de menú según autenticación
             if sistema_auth and st.session_state.autenticado:
-                # Para usuarios autenticados: solo mostrar opciones principales
+                # Para usuarios autenticados (administradores)
                 opciones_menu = [
                     "🏠 Inicio y Resumen",
                     "📝 Nueva Pre-Inscripción",
@@ -2031,18 +2031,32 @@ class ComponentesUI:
                     "📊 Reportes y Backups"
                 ]
             else:
-                # Para usuarios no autenticados: opciones básicas
+                # Para usuarios no autenticados
                 opciones_menu = [
                     "🏠 Inicio y Resumen",
                     "📝 Nueva Pre-Inscripción",
                     "🔐 Acceso Administrativo"
                 ]
             
-            # Usar selectbox en lugar de tabs para evitar las pestañas rojas
-            menu_seleccionado = st.selectbox("Selecciona una opción:", opciones_menu, key="menu_principal")
+            # Usar selectbox simple para la navegación (sin pestañas)
+            menu_seleccionado = st.selectbox(
+                "Selecciona una opción:",
+                opciones_menu,
+                key="menu_principal_select"
+            )
             
             st.markdown("---")
-            st.caption(f"🔄 Última sincronización: {estado_sistema.estado.get('ultima_sincronizacion', 'Nunca')}")
+            
+            # Información del sistema
+            ultima_sinc = estado_sistema.estado.get('ultima_sincronizacion', 'Nunca')
+            if ultima_sinc != 'Nunca':
+                try:
+                    fecha_sinc = datetime.fromisoformat(ultima_sinc.replace('Z', '+00:00'))
+                    ultima_sinc = fecha_sinc.strftime('%Y-%m-%d %H:%M')
+                except:
+                    pass
+            
+            st.caption(f"🔄 Última sincronización: {ultima_sinc}")
             st.caption(f"💾 Backups: {estado_sistema.estado.get('backups_realizados', 0)}")
             
             # Botón de cerrar sesión si está autenticado
