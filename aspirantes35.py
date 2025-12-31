@@ -3014,18 +3014,6 @@ class PaginaPrincipal:
         
         st.markdown("---")
         
-        col_btn1, col_btn2 = st.columns(2)
-        
-        with col_btn1:
-            if ComponentesUI.crear_boton_accion("📝 Iniciar Nueva Pre-Inscripción", "primary"):
-                st.session_state.pagina_actual = "inscripcion"
-                st.rerun()
-        
-        with col_btn2:
-            if ComponentesUI.crear_boton_accion("📋 Consultar Inscritos"):
-                st.session_state.pagina_actual = "consulta"
-                st.rerun()
-        
         if not estado_sistema.esta_inicializada():
             st.warning("""
             ⚠️ **Base de datos no inicializada**
@@ -3034,14 +3022,6 @@ class PaginaPrincipal:
             1. Configura secrets.toml con credenciales SSH
             2. Inicializa la base de datos
             """)
-            
-            if ComponentesUI.crear_boton_accion("🔄 Inicializar Base de Datos"):
-                with st.spinner("Inicializando base de datos en servidor remoto..."):
-                    if db_completa.sincronizar_desde_remoto():
-                        st.success("✅ Base de datos inicializada exitosamente")
-                        st.rerun()
-                    else:
-                        st.error("❌ Error inicializando base de datos")
 
 class PaginaInscripcion:
     """Página de inscripción completa"""
