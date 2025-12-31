@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 3.7 (CON LOGIN CORREGIDO)
-Sistema completo con autenticación funcionando, carga de documentos, SSH y base de datos remota
+SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 3.8 (TRABAJO REMOTO COMPLETO)
+Sistema completo que trabaja directamente en el servidor remoto
 """
 
 # ============================================================================
@@ -67,13 +67,13 @@ except ImportError:
 # Configuración de la aplicación
 APP_CONFIG = {
     'app_name': 'Sistema Escuela Enfermería',
-    'version': '3.7',
+    'version': '3.8',
     'page_title': 'Sistema Escuela Enfermería - Pre-Inscripción',
     'page_icon': '🏥',
     'layout': 'wide',
     'sidebar_state': 'expanded',
     'backup_dir': 'backups_aspirantes',
-    'uploads_dir': 'uploads',  # CAMBIADO: De 'uploads_documentos' a 'uploads'
+    'uploads_dir': 'uploads',
     'max_backups': 10,
     'estado_file': 'estado_aspirantes.json',
     'session_timeout': 60  # minutos
@@ -220,7 +220,8 @@ class EstadoPersistente:
             'total_inscritos': 0,
             'recordatorios_enviados': 0,
             'duplicados_eliminados': 0,
-            'registros_incompletos_eliminados': 0
+            'registros_incompletos_eliminados': 0,
+            'archivos_subidos_remoto': 0
         }
     
     def guardar_estado(self):
@@ -274,6 +275,10 @@ class EstadoPersistente:
     
     def registrar_backup(self):
         self.estado['backups_realizados'] = self.estado.get('backups_realizados', 0) + 1
+        self.guardar_estado()
+    
+    def registrar_archivo_subido_remoto(self, cantidad=1):
+        self.estado['archivos_subidos_remoto'] = self.estado.get('archivos_subidos_remoto', 0) + cantidad
         self.guardar_estado()
     
     def esta_inicializada(self):
@@ -426,11 +431,11 @@ def cargar_configuracion_secrets():
         return {}
 
 # ============================================================================
-# CAPA 5: GESTIÓN DE CONEXIÓN SSH COMPLETA
+# CAPA 5: GESTIÓN DE CONEXIÓN SSH COMPLETA CON SUBIDA DE ARCHIVOS
 # ============================================================================
 
 class GestorConexionRemota:
-    """Gestor de conexión SSH al servidor remoto"""
+    """Gestor de conexión SSH al servidor remoto con gestión completa de archivos"""
     
     def __init__(self):
         self.ssh = None
@@ -471,8 +476,11 @@ class GestorConexionRemota:
         
         self.db_path_remoto = self.config.get('remote_db_aspirantes')
         self.uploads_path_remoto = self.config.get('remote_uploads_path')
+        self.uploads_inscritos_remoto = self.config.get('remote_uploads_inscritos')
         
         logger.info(f"🔗 Configuración SSH cargada para {self.config.get('host', 'No configurado')}")
+        logger.info(f"📁 Ruta remota uploads: {self.uploads_path_remoto}")
+        logger.info(f"📁 Ruta remota inscritos: {self.uploads_inscritos_remoto}")
         
         if self.auto_connect and self.config.get('host'):
             self.probar_conexion_inicial()
@@ -496,6 +504,10 @@ class GestorConexionRemota:
             config.update({
                 'remote_db_aspirantes': paths_config.get('remote_db_aspirantes', ''),
                 'remote_uploads_path': paths_config.get('remote_uploads_path', ''),
+                'remote_uploads_inscritos': paths_config.get('remote_uploads_inscritos', ''),
+                'remote_uploads_estudiantes': paths_config.get('remote_uploads_estudiantes', ''),
+                'remote_uploads_egresados': paths_config.get('remote_uploads_egresados', ''),
+                'remote_uploads_contratados': paths_config.get('remote_uploads_contratados', ''),
                 'db_local_path': paths_config.get('db_aspirantes', ''),
                 'uploads_path_local': paths_config.get('uploads_path', '')
             })
@@ -571,10 +583,17 @@ class GestorConexionRemota:
                 look_for_keys=False
             )
             
-            stdin, stdout, stderr = ssh_test.exec_command('pwd', timeout=self.timeouts['ssh_command'])
+            # Verificar estructura de directorios remotos
+            stdin, stdout, stderr = ssh_test.exec_command(f'ls -la "{self.uploads_path_remoto}"', timeout=self.timeouts['ssh_command'])
             output = stdout.read().decode().strip()
+            error = stderr.read().decode().strip()
             
             ssh_test.close()
+            
+            if error and "No such file" in error:
+                logger.warning(f"⚠️ Directorio remoto no encontrado: {self.uploads_path_remoto}")
+            else:
+                logger.info(f"✅ Directorio remoto accesible: {self.uploads_path_remoto}")
             
             logger.info(f"✅ Conexión SSH exitosa a {self.config['host']}")
             estado_sistema.set_ssh_conectado(True, None)
@@ -609,11 +628,6 @@ class GestorConexionRemota:
             
             port = self.config.get('port', 22)
             timeout = self.timeouts['ssh_connect']
-            
-            temp_dir = tempfile.gettempdir()
-            espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-            if not espacio_ok:
-                logger.warning(f"⚠️ Espacio en disco bajo: {espacio_mb:.1f} MB disponible en {temp_dir}")
             
             self.ssh.connect(
                 hostname=self.config['host'],
@@ -658,6 +672,113 @@ class GestorConexionRemota:
             logger.debug("🔌 Conexión SSH cerrada")
         except Exception as e:
             logger.warning(f"⚠️ Error cerrando conexión SSH: {e}")
+    
+    def _crear_directorio_remoto_recursivo(self, remote_path):
+        """Crear directorio remoto recursivamente"""
+        try:
+            self.sftp.stat(remote_path)
+            logger.info(f"📁 Directorio remoto ya existe: {remote_path}")
+            return True
+        except FileNotFoundError:
+            try:
+                parent_dir = os.path.dirname(remote_path)
+                if parent_dir and parent_dir != '/':
+                    self._crear_directorio_remoto_recursivo(parent_dir)
+                self.sftp.mkdir(remote_path)
+                logger.info(f"✅ Directorio remoto creado: {remote_path}")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Error creando directorio remoto {remote_path}: {e}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Error verificando directorio remoto {remote_path}: {e}")
+            return False
+    
+    def crear_estructura_directorios_remota(self):
+        """Crear estructura completa de directorios en el servidor remoto"""
+        try:
+            if not self.conectar_ssh():
+                return False
+            
+            # Directorios a crear
+            directorios = [
+                self.uploads_path_remoto,
+                self.uploads_inscritos_remoto,
+                os.path.join(self.uploads_path_remoto, 'estudiantes'),
+                os.path.join(self.uploads_path_remoto, 'egresados'),
+                os.path.join(self.uploads_path_remoto, 'contratados')
+            ]
+            
+            for directorio in directorios:
+                if directorio:
+                    self._crear_directorio_remoto_recursivo(directorio)
+            
+            logger.info("✅ Estructura de directorios remota creada/verificada")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error creando estructura de directorios remota: {e}")
+            return False
+        finally:
+            if self.ssh:
+                self.desconectar_ssh()
+    
+    def subir_archivo_remoto(self, archivo_local, ruta_remota):
+        """Subir un archivo directamente al servidor remoto"""
+        try:
+            if not self.conectar_ssh():
+                return False
+            
+            # Crear directorio remoto si no existe
+            remote_dir = os.path.dirname(ruta_remota)
+            self._crear_directorio_remoto_recursivo(remote_dir)
+            
+            # Subir archivo
+            self.sftp.put(archivo_local, ruta_remota)
+            logger.info(f"✅ Archivo subido a remoto: {ruta_remota}")
+            estado_sistema.registrar_archivo_subido_remoto()
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error subiendo archivo a remoto: {e}")
+            return False
+        finally:
+            if self.ssh:
+                self.desconectar_ssh()
+    
+    def subir_buffer_remoto(self, buffer_archivo, nombre_archivo, ruta_remota):
+        """Subir un archivo desde buffer (Streamlit uploaded file) al servidor remoto"""
+        try:
+            if not self.conectar_ssh():
+                return False
+            
+            # Crear directorio remoto si no existe
+            remote_dir = os.path.dirname(ruta_remota)
+            self._crear_directorio_remoto_recursivo(remote_dir)
+            
+            # Guardar temporalmente el archivo
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, nombre_archivo)
+            
+            with open(temp_path, 'wb') as f:
+                f.write(buffer_archivo)
+            
+            # Subir archivo
+            self.sftp.put(temp_path, ruta_remota)
+            
+            # Eliminar temporal
+            os.remove(temp_path)
+            
+            logger.info(f"✅ Buffer subido a remoto: {ruta_remota}")
+            estado_sistema.registrar_archivo_subido_remoto()
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error subiendo buffer a remoto: {e}")
+            return False
+        finally:
+            if self.ssh:
+                self.desconectar_ssh()
     
     def descargar_db_remota(self):
         inicio_tiempo = time.time()
@@ -776,10 +897,7 @@ class GestorConexionRemota:
                         raise Exception("No se configuró la ruta de la base de datos remota")
                     
                     remote_dir = os.path.dirname(self.db_path_remoto)
-                    try:
-                        self.sftp.stat(remote_dir)
-                    except:
-                        self._crear_directorio_remoto_recursivo(remote_dir)
+                    self._crear_directorio_remoto_recursivo(remote_dir)
                     
                     start_time = time.time()
                     self.sftp.put(temp_db_path, self.db_path_remoto)
@@ -794,21 +912,6 @@ class GestorConexionRemota:
         except Exception as e:
             logger.error(f"❌ Error creando nueva base de datos remota: {e}", exc_info=True)
             raise
-    
-    def _crear_directorio_remoto_recursivo(self, remote_path):
-        try:
-            self.sftp.stat(remote_path)
-            logger.info(f"📁 Directorio remoto ya existe: {remote_path}")
-        except:
-            try:
-                self.sftp.mkdir(remote_path)
-                logger.info(f"✅ Directorio remoto creado: {remote_path}")
-            except:
-                parent_dir = os.path.dirname(remote_path)
-                if parent_dir and parent_dir != '/':
-                    self._crear_directorio_remoto_recursivo(parent_dir)
-                self.sftp.mkdir(remote_path)
-                logger.info(f"✅ Directorio remoto creado recursivamente: {remote_path}")
     
     def _inicializar_db_estructura_completa(self, db_path):
         try:
@@ -1021,14 +1124,158 @@ class GestorConexionRemota:
 gestor_remoto = GestorConexionRemota()
 
 # ============================================================================
-# CAPA 6: SISTEMA DE BASE DE DATOS COMPLETO (CON LOGIN CORREGIDO)
+# CAPA 6: SISTEMA DE GESTIÓN DE ARCHIVOS REMOTOS
 # ============================================================================
 
-class SistemaBaseDatosCompleto:
-    """Sistema de base de datos SQLite COMPLETO con login corregido"""
+class SistemaGestionArchivosRemotos:
+    """Sistema para gestionar la subida y almacenamiento de documentos directamente en el servidor remoto"""
     
     def __init__(self):
         self.gestor = gestor_remoto
+        self.crear_estructura_directorios()
+    
+    def crear_estructura_directorios(self):
+        """Crear estructura de directorios en el servidor remoto"""
+        try:
+            if not self.gestor.crear_estructura_directorios_remota():
+                logger.warning("⚠️ No se pudo crear/verificar estructura de directorios remota")
+        except Exception as e:
+            logger.error(f"❌ Error creando estructura de directorios: {e}")
+    
+    def subir_documento_remoto(self, archivo, nombre_documento, matricula):
+        """Subir documento directamente al servidor remoto"""
+        try:
+            if archivo is None:
+                return None
+            
+            # Generar nombre seguro para el archivo
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            nombre_original = archivo.name
+            extension = nombre_original.split('.')[-1] if '.' in nombre_original else 'pdf'
+            
+            # Nombre seguro
+            nombre_doc_simple = re.sub(r'[^\w\s-]', '', nombre_documento)
+            nombre_doc_simple = re.sub(r'[-\s]+', '_', nombre_doc_simple)
+            
+            nombre_seguro = f"{nombre_doc_simple}_{timestamp}.{extension}"
+            
+            # Construir ruta remota
+            ruta_remota = os.path.join(
+                self.gestor.uploads_inscritos_remoto,
+                matricula,
+                nombre_seguro
+            )
+            
+            # Subir archivo directamente al servidor remoto
+            if self.gestor.subir_buffer_remoto(archivo.getbuffer(), nombre_seguro, ruta_remota):
+                tamano_bytes = len(archivo.getbuffer())
+                
+                logger.info(f"✅ Documento subido a remoto: {matricula}/{nombre_seguro} ({tamano_bytes} bytes)")
+                
+                return {
+                    'nombre_documento': nombre_documento,
+                    'nombre_archivo': nombre_seguro,
+                    'ruta_archivo': ruta_remota,  # Ruta remota
+                    'tamano_bytes': tamano_bytes,
+                    'tipo_archivo': extension,
+                    'matricula': matricula
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error subiendo documento remoto: {e}")
+            return None
+    
+    def obtener_ruta_archivo_remoto(self, nombre_archivo, matricula):
+        """Obtener ruta remota completa de un archivo"""
+        return os.path.join(
+            self.gestor.uploads_inscritos_remoto,
+            matricula,
+            nombre_archivo
+        )
+    
+    def listar_documentos_remotos(self, matricula):
+        """Listar documentos de un usuario en el servidor remoto"""
+        try:
+            if not self.gestor.conectar_ssh():
+                return []
+            
+            ruta_carpeta = os.path.join(self.gestor.uploads_inscritos_remoto, matricula)
+            
+            try:
+                archivos = self.gestor.sftp.listdir(ruta_carpeta)
+                
+                documentos = []
+                for archivo in archivos:
+                    ruta_completa = os.path.join(ruta_carpeta, archivo)
+                    stat = self.gestor.sftp.stat(ruta_completa)
+                    
+                    documentos.append({
+                        'nombre': archivo,
+                        'ruta': ruta_completa,
+                        'tamaño': stat.st_size,
+                        'fecha': datetime.fromtimestamp(stat.st_mtime)
+                    })
+                
+                return documentos
+                
+            except FileNotFoundError:
+                logger.info(f"📁 Carpeta remota no encontrada: {ruta_carpeta}")
+                return []
+            finally:
+                self.gestor.desconectar_ssh()
+                
+        except Exception as e:
+            logger.error(f"❌ Error listando documentos remotos: {e}")
+            return []
+    
+    def eliminar_documentos_usuario_remoto(self, matricula):
+        """Eliminar todos los documentos de un usuario en el servidor remoto"""
+        try:
+            if not self.gestor.conectar_ssh():
+                return False
+            
+            ruta_carpeta = os.path.join(self.gestor.uploads_inscritos_remoto, matricula)
+            
+            try:
+                # Listar archivos
+                archivos = self.gestor.sftp.listdir(ruta_carpeta)
+                
+                # Eliminar cada archivo
+                for archivo in archivos:
+                    ruta_archivo = os.path.join(ruta_carpeta, archivo)
+                    self.gestor.sftp.remove(ruta_archivo)
+                
+                # Eliminar carpeta
+                self.gestor.sftp.rmdir(ruta_carpeta)
+                
+                logger.info(f"✅ Carpeta remota eliminada: {matricula}")
+                return True
+                
+            except FileNotFoundError:
+                logger.info(f"📁 Carpeta remota no encontrada: {ruta_carpeta}")
+                return False
+            except Exception as e:
+                logger.error(f"❌ Error eliminando documentos remotos: {e}")
+                return False
+            finally:
+                self.gestor.desconectar_ssh()
+                
+        except Exception as e:
+            logger.error(f"❌ Error conectando para eliminar documentos: {e}")
+            return False
+
+# ============================================================================
+# CAPA 7: SISTEMA DE BASE DE DATOS COMPLETO (CON LOGIN CORREGIDO)
+# ============================================================================
+
+class SistemaBaseDatosCompleto:
+    """Sistema de base de datos SQLite COMPLETO que trabaja directamente en el servidor remoto"""
+    
+    def __init__(self):
+        self.gestor = gestor_remoto
+        self.gestor_archivos = SistemaGestionArchivosRemotos()
         self.db_local_temp = None
         self.conexion_actual = None
         self.ultima_sincronizacion = None
@@ -1302,13 +1549,14 @@ class SistemaBaseDatosCompleto:
             if datos_inscrito.get('estudio_socioeconomico_detallado'):
                 self.guardar_estudio_socioeconomico(inscrito_id, datos_inscrito['estudio_socioeconomico_detallado'])
             
+            # Subir archivos al servidor remoto y guardar en BD
             if datos_inscrito.get('archivos_subidos'):
                 for archivo_info in datos_inscrito['archivos_subidos']:
                     self.guardar_documento_subido(
                         inscrito_id, 
                         archivo_info['nombre_documento'],
                         archivo_info['nombre_archivo'],
-                        archivo_info['ruta_archivo'],
+                        archivo_info['ruta_archivo'],  # Esta ya es la ruta remota
                         archivo_info['tamano_bytes'],
                         archivo_info['tipo_archivo']
                     )
@@ -1533,11 +1781,11 @@ class SistemaBaseDatosCompleto:
 db_completa = SistemaBaseDatosCompleto()
 
 # ============================================================================
-# CAPA 7: SISTEMA DE BACKUPS, DOCUMENTOS Y CORREOS
+# CAPA 8: SISTEMA DE BACKUPS, CORREOS Y GESTIÓN REMOTA
 # ============================================================================
 
 class SistemaBackupAutomatico:
-    """Sistema de backup automático"""
+    """Sistema de backup automático remoto"""
     
     def __init__(self, gestor_ssh):
         self.gestor_ssh = gestor_ssh
@@ -1628,113 +1876,6 @@ class SistemaBackupAutomatico:
         except Exception as e:
             logger.error(f"Error listando backups: {e}")
             return []
-
-class SistemaGestionDocumentos:
-    """Sistema para gestionar la subida y almacenamiento de documentos"""
-    
-    def __init__(self):
-        self.uploads_dir = APP_CONFIG['uploads_dir']
-        self.inscritos_dir = os.path.join(self.uploads_dir, "inscritos")
-        self.crear_directorio_uploads()
-    
-    def crear_directorio_uploads(self):
-        """Crear directorio base"""
-        try:
-            if not os.path.exists(self.uploads_dir):
-                os.makedirs(self.uploads_dir)
-                logger.info(f"✅ Directorio base de uploads creado: {self.uploads_dir}")
-            
-            if not os.path.exists(self.inscritos_dir):
-                os.makedirs(self.inscritos_dir)
-                logger.info(f"✅ Directorio de inscritos creado: {self.inscritos_dir}")
-                    
-        except Exception as e:
-            logger.error(f"❌ Error creando directorio de uploads: {e}")
-    
-    def subir_documento(self, archivo, nombre_documento, matricula):
-        """Subir documento organizado por matrícula"""
-        try:
-            if archivo is None:
-                return None
-            
-            # Crear directorio para esta matrícula
-            usuario_dir = os.path.join(self.inscritos_dir, matricula)
-            if not os.path.exists(usuario_dir):
-                os.makedirs(usuario_dir)
-                logger.info(f"✅ Carpeta creada para matrícula: {matricula}")
-            
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            nombre_original = archivo.name
-            extension = nombre_original.split('.')[-1] if '.' in nombre_original else 'pdf'
-            
-            # Nombre seguro
-            nombre_doc_simple = re.sub(r'[^\w\s-]', '', nombre_documento)
-            nombre_doc_simple = re.sub(r'[-\s]+', '_', nombre_doc_simple)
-            
-            nombre_seguro = f"{nombre_doc_simple}_{timestamp}.{extension}"
-            ruta_completa = os.path.join(usuario_dir, nombre_seguro)
-            
-            with open(ruta_completa, "wb") as f:
-                f.write(archivo.getbuffer())
-            
-            tamano_bytes = os.path.getsize(ruta_completa)
-            
-            logger.info(f"✅ Documento subido: {matricula}/{nombre_seguro} ({tamano_bytes} bytes)")
-            
-            return {
-                'nombre_documento': nombre_documento,
-                'nombre_archivo': nombre_seguro,
-                'ruta_archivo': ruta_completa,
-                'tamano_bytes': tamano_bytes,
-                'tipo_archivo': extension
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Error subiendo documento: {e}")
-            return None
-    
-    def _obtener_directorio_documento(self, nombre_documento, matricula):
-        """Todos los documentos de un usuario van a su propia carpeta"""
-        usuario_dir = os.path.join(self.inscritos_dir, matricula)
-        if not os.path.exists(usuario_dir):
-            os.makedirs(usuario_dir)
-        return usuario_dir
-    
-    def obtener_documentos_usuario(self, matricula):
-        """Obtener todos los documentos de un usuario por matrícula"""
-        try:
-            usuario_dir = os.path.join(self.inscritos_dir, matricula)
-            if not os.path.exists(usuario_dir):
-                return []
-            
-            documentos = []
-            for archivo in os.listdir(usuario_dir):
-                ruta_archivo = os.path.join(usuario_dir, archivo)
-                if os.path.isfile(ruta_archivo):
-                    documentos.append({
-                        'nombre': archivo,
-                        'ruta': ruta_archivo,
-                        'tamaño': os.path.getsize(ruta_archivo),
-                        'fecha': datetime.fromtimestamp(os.path.getmtime(ruta_archivo))
-                    })
-            
-            return documentos
-        except Exception as e:
-            logger.error(f"❌ Error obteniendo documentos del usuario: {e}")
-            return []
-    
-    def eliminar_documentos_usuario(self, matricula):
-        """Eliminar todos los documentos de un usuario (para limpieza)"""
-        try:
-            usuario_dir = os.path.join(self.inscritos_dir, matricula)
-            if os.path.exists(usuario_dir):
-                shutil.rmtree(usuario_dir)
-                logger.info(f"✅ Carpeta eliminada para matrícula: {matricula}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error eliminando documentos del usuario: {e}")
-            return False
 
 class SistemaCorreosCompleto:
     """Sistema de envío de correos completo"""
@@ -1848,7 +1989,7 @@ class SistemaCorreosCompleto:
             return False, f"Error: {str(e)}"
 
 # ============================================================================
-# CAPA 8: SISTEMA DE AUTENTICACIÓN CORREGIDO
+# CAPA 9: SISTEMA DE AUTENTICACIÓN CORREGIDO
 # ============================================================================
 
 class SistemaAutenticacion:
@@ -1957,7 +2098,7 @@ class SistemaAutenticacion:
                     self.cerrar_sesion()
 
 # ============================================================================
-# CAPA 9: COMPONENTES UI REUTILIZABLES
+# CAPA 10: COMPONENTES UI REUTILIZABLES
 # ============================================================================
 
 class ComponentesUI:
@@ -2018,7 +2159,6 @@ class ComponentesUI:
                 st.markdown("---")
             
             st.subheader("🔍 Estado del Sistema")
-            # CORREGIDO: Solo una columna en lugar de dos columnas mal formadas
             
             if estado_sistema.estado.get('ssh_conectado'):
                 st.success("✅ SSH Conectado")
@@ -2070,12 +2210,13 @@ class ComponentesUI:
             if ultima_sinc != 'Nunca':
                 try:
                     fecha_sinc = datetime.fromisoformat(ultima_sinc.replace('Z', '+00:00'))
-                    ultima_sinc = fecha_sinc.strftime('%Y-%m-%d %H:%M')
+                    ultima_sinc = fecha_sinc.strftime('%Y-%m-d %H:%M')
                 except:
                     pass
             
             st.caption(f"🔄 Última sincronización: {ultima_sinc}")
             st.caption(f"💾 Backups: {estado_sistema.estado.get('backups_realizados', 0)}")
+            st.caption(f"📁 Archivos remotos: {estado_sistema.estado.get('archivos_subidos_remoto', 0)}")
             
             # Botón de cerrar sesión si está autenticado
             if sistema_auth and st.session_state.autenticado:
@@ -2112,7 +2253,7 @@ class ComponentesUI:
         return st.button(texto, type=tipo, use_container_width=container)
 
 # ============================================================================
-# CAPA 10: SERVICIOS DE DATOS Y LÓGICA
+# CAPA 11: SERVICIOS DE DATOS Y LÓGICA
 # ============================================================================
 
 class ServicioProgramas:
@@ -2349,11 +2490,11 @@ class ServicioValidacionCompleto(ValidadorDatos):
         return True, ""
 
 # ============================================================================
-# CAPA 11: SISTEMA DE INSCRITOS COMPLETO
+# CAPA 12: SISTEMA DE INSCRITOS COMPLETO TRABAJANDO EN REMOTO
 # ============================================================================
 
 class SistemaInscritosCompleto:
-    """Sistema principal de gestión de inscritos COMPLETO"""
+    """Sistema principal de gestión de inscritos COMPLETO que trabaja en remoto"""
     
     def __init__(self):
         self.base_datos = db_completa
@@ -2362,9 +2503,9 @@ class SistemaInscritosCompleto:
         self.generadores = ServicioGeneradores()
         self.servicio_programas = ServicioProgramas()
         self.backup_system = SistemaBackupAutomatico(gestor_remoto)
-        self.gestor_documentos = SistemaGestionDocumentos()
+        self.gestor_archivos = SistemaGestionArchivosRemotos()
         
-        logger.info("🚀 Sistema de inscritos COMPLETO inicializado")
+        logger.info("🚀 Sistema de inscritos COMPLETO (remoto) inicializado")
     
     def mostrar_formulario_completo_interactivo(self):
         ComponentesUI.mostrar_header("📝 Formulario Completo de Pre-Inscripción", 
@@ -2512,7 +2653,7 @@ class SistemaInscritosCompleto:
                     
                     st.markdown("---")
                     
-                    # PASO 3: Documentación (AHORA CON SUBIDA DE ARCHIVOS)
+                    # PASO 3: Documentación (SUBIDA DIRECTA AL SERVIDOR REMOTO)
                     documentos = self._mostrar_paso_documentacion_completa(
                         seleccion_programa["tipo_programa"], 
                         datos_personales.get("matricula_generada", "")
@@ -2601,12 +2742,11 @@ class SistemaInscritosCompleto:
         }
     
     def _mostrar_paso_documentacion_completa(self, tipo_programa, matricula):
-        st.markdown("### 📄 **SUBA SUS DOCUMENTOS**")
-        st.info(f"**Matrícula:** `{matricula}` - Los documentos se guardarán en la carpeta de tu matrícula")
+        st.markdown("### 📄 **SUBA SUS DOCUMENTOS (DIRECTO AL SERVIDOR REMOTO)**")
+        st.info(f"**Matrícula:** `{matricula}` - Los documentos se subirán DIRECTAMENTE al servidor remoto")
         
         documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(tipo_programa)
         
-        documentos_subidos = []
         archivos_subidos_info = []
         
         # Dividir documentos en grupos para mejor organización
@@ -2621,16 +2761,14 @@ class SistemaInscritosCompleto:
                     archivo = st.file_uploader(
                         f"Subir {doc}",
                         type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
-                        key=f"file_{doc.replace(' ', '_')}"
+                        key=f"file_{doc.replace(' ', '_')}_{matricula}"
                     )
                     
                     if archivo is not None:
-                        documentos_subidos.append(doc)
-                        
                         # Mostrar información del archivo
-                        st.success(f"✅ **{archivo.name}** subido ({archivo.size} bytes)")
+                        st.success(f"✅ **{archivo.name}** listo para subir ({archivo.size} bytes)")
                         
-                        # Guardar información del archivo
+                        # Guardar información del archivo (sin subir aún)
                         archivos_subidos_info.append({
                             'nombre_documento': doc,
                             'archivo': archivo
@@ -2642,36 +2780,33 @@ class SistemaInscritosCompleto:
                     archivo = st.file_uploader(
                         f"Subir {doc}",
                         type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
-                        key=f"file2_{doc.replace(' ', '_')}"
+                        key=f"file2_{doc.replace(' ', '_')}_{matricula}"
                     )
                     
                     if archivo is not None:
-                        documentos_subidos.append(doc)
-                        
                         # Mostrar información del archivo
-                        st.success(f"✅ **{archivo.name}** subido ({archivo.size} bytes)")
+                        st.success(f"✅ **{archivo.name}** listo para subir ({archivo.size} bytes)")
                         
-                        # Guardar información del archivo
+                        # Guardar información del archivo (sin subir aún)
                         archivos_subidos_info.append({
                             'nombre_documento': doc,
                             'archivo': archivo
                         })
         
         # Mostrar resumen
-        if documentos_subidos:
-            st.success(f"✅ **{len(documentos_subidos)} documentos listos para subir**")
+        if archivos_subidos_info:
+            st.success(f"✅ **{len(archivos_subidos_info)} documentos listos para subir al servidor remoto**")
             
             with st.expander("📋 Ver documentos listos", expanded=False):
-                for doc in documentos_subidos:
-                    st.markdown(f"• {doc}")
+                for info in archivos_subidos_info:
+                    st.markdown(f"• {info['nombre_documento']}: {info['archivo'].name}")
         else:
-            st.warning("⚠️ **No has subido ningún documento aún.**")
+            st.warning("⚠️ **No has seleccionado ningún documento aún.**")
         
         return {
             "documentos_requeridos": documentos_requeridos,
-            "documentos_subidos": documentos_subidos,
             "archivos_subidos_info": archivos_subidos_info,
-            "total_subidos": len(documentos_subidos)
+            "total_subidos": len(archivos_subidos_info)
         }
     
     def _mostrar_paso_estudio_socioeconomico(self):
@@ -2812,7 +2947,7 @@ class SistemaInscritosCompleto:
             errores.append("❌ Teléfono debe tener al menos 10 dígitos")
         
         valido, mensaje = self.validador.validar_documentos_minimos(
-            documentos["documentos_subidos"],
+            documentos["archivos_subidos_info"],
             programa["tipo_programa"]
         )
         if not valido:
@@ -2835,16 +2970,19 @@ class SistemaInscritosCompleto:
                 if backup_path:
                     logger.info(f"✅ Backup creado antes de operación: {os.path.basename(backup_path)}")
                 
-                # Subir archivos primero
+                # Subir archivos directamente al servidor remoto
                 archivos_subidos = []
+                documentos_subidos_nombres = []
+                
                 for archivo_info in documentos.get("archivos_subidos_info", []):
-                    archivo_subido = self.gestor_documentos.subir_documento(
+                    archivo_subido = self.gestor_archivos.subir_documento_remoto(
                         archivo_info['archivo'],
                         archivo_info['nombre_documento'],
                         datos['matricula_generada']
                     )
                     if archivo_subido:
                         archivos_subidos.append(archivo_subido)
+                        documentos_subidos_nombres.append(archivo_info['nombre_documento'])
                 
                 datos_completos = {
                     'matricula': datos['matricula_generada'],
@@ -2868,8 +3006,8 @@ class SistemaInscritosCompleto:
                     'archivos_subidos': archivos_subidos
                 }
                 
-                datos_completos['documentos_subidos'] = documentos['total_subidos']
-                datos_completos['documentos_guardados'] = ', '.join(documentos['documentos_subidos']) if documentos['documentos_subidos'] else ''
+                datos_completos['documentos_subidos'] = len(archivos_subidos)
+                datos_completos['documentos_guardados'] = ', '.join(documentos_subidos_nombres) if documentos_subidos_nombres else ''
                 
                 inscrito_id, folio_unico = self.base_datos.agregar_inscrito_completo(datos_completos)
                 
@@ -2887,11 +3025,11 @@ class SistemaInscritosCompleto:
                             'categoria': programa['categoria'],
                             'duracion': programa.get('duracion', ''),
                             'modalidad': programa.get('modalidad', ''),
-                            'documentos': documentos['total_subidos'],
+                            'documentos': len(archivos_subidos),
                             'estudio_socioeconomico': 'Sí' if any(estudio.values()) else 'No',
                             'examen_psicometrico': 'Sí' if examen else 'No',
                             'archivos_subidos': len(archivos_subidos),
-                            'carpeta_documentos': f"uploads/inscritos/{datos['matricula_generada']}/"
+                            'carpeta_documentos': f"{gestor_remoto.uploads_inscritos_remoto}/{datos['matricula_generada']}/"
                         }
                         
                         correo_enviado = False
@@ -2942,9 +3080,9 @@ class SistemaInscritosCompleto:
             st.info(f"**⏱️ Duración:**\n\n{datos.get('duracion', 'No especificada')}")
             st.info(f"**🏫 Modalidad:**\n\n{datos.get('modalidad', 'No especificada')}")
         
-        # Información sobre la carpeta de documentos
+        # Información sobre la carpeta de documentos en el servidor remoto
         if 'carpeta_documentos' in datos:
-            st.info(f"**📁 Carpeta de documentos:**\n\n`{datos['carpeta_documentos']}`")
+            st.info(f"**📁 Carpeta de documentos en servidor remoto:**\n\n`{datos['carpeta_documentos']}`")
         
         st.markdown(f"""
         <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; margin: 15px 0;">
@@ -2956,7 +3094,8 @@ class SistemaInscritosCompleto:
         2. **📋 Anonimato:** No se mostrarán nombres completos en la publicación de resultados
         3. **💾 Guarda este folio:** Es tu identificador único para consultar resultados
         4. **📧 Verificación:** Recibirás un correo de confirmación en {datos['email_gmail']}
-        5. **📄 Documentos subidos:** Has subido {datos.get('archivos_subidos', 0)} documento(s)
+        5. **📄 Documentos subidos:** Has subido {datos.get('archivos_subidos', 0)} documento(s) **DIRECTAMENTE AL SERVIDOR REMOTO**
+        6. **🌐 Acceso remoto:** Tus documentos están almacenados en el servidor seguro
         
         **Fecha límite para completar documentos:** {(datetime.now() + timedelta(days=14)).strftime('%d/%m/%Y')}
         </div>
@@ -2976,7 +3115,7 @@ class SistemaInscritosCompleto:
             st.rerun()
 
 # ============================================================================
-# CAPA 12: PÁGINAS/VISTAS PRINCIPALES
+# CAPA 13: PÁGINAS/VISTAS PRINCIPALES
 # ============================================================================
 
 class PaginaPrincipal:
@@ -3014,26 +3153,26 @@ class PaginaPrincipal:
         
         with col2:
             st.markdown("""
-            #### 📚 **GESTIÓN ACADÉMICA**
+            #### 🌐 **TRABAJO REMOTO COMPLETO**
             
-            16. **Descargar bases de datos**
-            17. **Calificaciones estadísticas**
-            18. **Control completo de alumno**
-            19. **Matrícula UNAM**
-            20. **Ficha médica**
-            21. **Control servicio social**
-            22. **Sistema de minutas**
-            23. **Cartas compromiso**
-            24. **Evaluación jefes servicio**
-            25. **4 categorías académicas**
-            26. **Calendario salones**
+            16. **Base de datos en servidor remoto**
+            17. **Archivos subidos directamente al servidor**
+            18. **Sincronización automática**
+            19. **Backup automático remoto**
+            20. **Conexión SSH permanente**
+            21. **Gestión centralizada**
+            22. **Acceso desde cualquier lugar**
+            23. **Seguridad mejorada**
+            24. **Rendimiento optimizado**
             
             ---
             
-            **Base de datos:** Estructura completa
-            **Seguridad:** Mejoras implementadas
-            **Performance:** Optimizado
-            """)
+            **🔗 Conexión SSH:** {estado_sistema.estado.get('ssh_conectado', False)}
+            **📁 Archivos remotos:** {estado_sistema.estado.get('archivos_subidos_remoto', 0)}
+            **💾 Backups:** {estado_sistema.estado.get('backups_realizados', 0)}
+            """.format(
+                estado_sistema=estado_sistema
+            ))
         
         st.markdown("---")
 
@@ -3056,7 +3195,7 @@ class PaginaConsulta:
         try:
             with st.spinner("🔄 Sincronizando con servidor remoto..."):
                 if db_completa.sincronizar_desde_remoto():
-                    st.success("✅ Base de datos sincronizada")
+                    st.success("✅ Base de datos sincronizada desde servidor remoto")
                 else:
                     st.warning("⚠️ No se pudo sincronizar completamente")
             
@@ -3153,7 +3292,7 @@ class PaginaConfiguracion:
     def mostrar():
         ComponentesUI.mostrar_header("⚙️ Configuración del Sistema")
         
-        with st.expander("🔗 Estado de Conexión", expanded=True):
+        with st.expander("🔗 Estado de Conexión Remota", expanded=True):
             col_conf1, col_conf2 = st.columns(2)
             
             with col_conf1:
@@ -3180,6 +3319,19 @@ class PaginaConfiguracion:
                         st.rerun()
                     else:
                         st.error("❌ Conexión SSH fallida")
+        
+        with st.expander("🌐 Gestión de Archivos Remotos", expanded=True):
+            st.info("Los archivos se suben directamente al servidor remoto:")
+            st.caption(f"📁 Ruta base: {gestor_remoto.uploads_path_remoto}")
+            st.caption(f"📁 Ruta inscritos: {gestor_remoto.uploads_inscritos_remoto}")
+            
+            if ComponentesUI.crear_boton_accion("🔄 Crear/Verificar Directorios Remotos"):
+                with st.spinner("Creando/verificando estructura de directorios..."):
+                    if gestor_remoto.crear_estructura_directorios_remota():
+                        st.success("✅ Estructura de directorios remota verificada/creada")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error creando estructura de directorios remota")
         
         with st.expander("🔄 Mantenimiento del Sistema", expanded=True):
             col_mant1, col_mant2 = st.columns(2)
@@ -3236,8 +3388,8 @@ class PaginaReportes:
             st.metric("Duplicados Eliminados", duplicados)
         
         with col_rep4:
-            incompletos = estado_sistema.estado.get('registros_incompletos_eliminados', 0)
-            st.metric("Incompletos Eliminados", incompletos)
+            archivos_remotos = estado_sistema.estado.get('archivos_subidos_remoto', 0)
+            st.metric("Archivos Remotos", archivos_remotos)
         
         backup_system = SistemaBackupAutomatico(gestor_remoto)
         backups = backup_system.listar_backups()
@@ -3267,7 +3419,7 @@ class PaginaReportes:
                     with st.spinner("Creando backup..."):
                         backup_path = backup_system.crear_backup(
                             "REPORTE_MENSUAL",
-                            "Backup mensual del sistema"
+                            "Backup mensual del sistema remoto"
                         )
                         if backup_path:
                             st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
@@ -3298,14 +3450,14 @@ class PaginaReportes:
                 with st.spinner("Creando primer backup..."):
                     backup_path = backup_system.crear_backup(
                         "PRIMER_BACKUP",
-                        "Primer backup del sistema"
+                        "Primer backup del sistema remoto"
                     )
                     if backup_path:
                         st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
                         st.rerun()
 
 # ============================================================================
-# CAPA 13: CONTROLADOR PRINCIPAL
+# CAPA 14: CONTROLADOR PRINCIPAL
 # ============================================================================
 
 class ControladorPrincipal:
@@ -3389,7 +3541,7 @@ class ControladorPrincipal:
             self.paginas["inicio"].mostrar()
 
 # ============================================================================
-# CAPA 14: PUNTO DE ENTRADA PRINCIPAL
+# CAPA 15: PUNTO DE ENTRADA PRINCIPAL
 # ============================================================================
 
 def main():
@@ -3402,10 +3554,10 @@ def main():
         st.markdown(f"""
         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 20px; 
                     border-left: 5px solid #2E86AB;">
-            <h3 style="margin: 0; color: #2E86AB;">🏥 Sistema de Pre-Inscripción</h3>
+            <h3 style="margin: 0; color: #2E86AB;">🏥 Sistema de Pre-Inscripción (REMOTO)</h3>
             <p style="margin: 5px 0; color: #666;">Escuela de Enfermería - Versión {APP_CONFIG['version']}</p>
             <p style="margin: 0; font-size: 0.9em; color: #888;">
-                📅 Convocatoria Febrero 2026 | 🔄 Conexión SSH Remota | 💾 Backup Automático
+                🌐 Trabajo 100% en Servidor Remoto | 📁 Archivos Directos al SSH | 🔄 Sincronización Automática
             </p>
         </div>
         """, unsafe_allow_html=True)
