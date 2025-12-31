@@ -1719,10 +1719,10 @@ class SistemaCorreosCompleto:
         try:
             smtp_config = gestor_remoto.config.get('smtp', {})
             
-            self.smtp_server = smtp_config.get("smtp_server", ""),
-            self.smtp_port = int(smtp_config.get("smtp_port", 587)),
-            self.email_user = smtp_config.get("email_user", ""),
-            self.email_password = smtp_config.get("email_password", ""),
+            self.smtp_server = smtp_config.get("smtp_server", "")
+            self.smtp_port = int(smtp_config.get("smtp_port", 587))
+            self.email_user = smtp_config.get("email_user", "")
+            self.email_password = smtp_config.get("email_password", "")
             self.correos_habilitados = bool(self.smtp_server and self.email_user)
             
             if self.correos_habilitados:
@@ -1994,18 +1994,16 @@ class ComponentesUI:
                 st.markdown("---")
             
             st.subheader("🔍 Estado del Sistema")
-            col_est1 = st.columns(1)
-            with col_est1:
-              #  if estado_sistema.esta_inicializada():
-              #      st.success("✅ BD Inicializada")
-              #  else:
-              #      st.error("❌ BD No Inic.")
+            # CORREGIDO: Solo una columna en lugar de dos columnas mal formadas
+            if estado_sistema.esta_inicializada():
+                st.success("✅ BD Inicializada")
+            else:
+                st.error("❌ BD No Inic.")
             
-          #  with col_est2:
-                if estado_sistema.estado.get('ssh_conectado'):
-                    st.success("✅ SSH Conectado")
-                else:
-                    st.error("❌ SSH Descon.")
+            if estado_sistema.estado.get('ssh_conectado'):
+                st.success("✅ SSH Conectado")
+            else:
+                st.error("❌ SSH Descon.")
             
             st.subheader("📊 Estadísticas")
             col_stat1, col_stat2 = st.columns(2)
@@ -3014,14 +3012,10 @@ class PaginaPrincipal:
         
         st.markdown("---")
         
- #       if not estado_sistema.esta_inicializada():
- #           st.warning("""
- #           ⚠️ **Base de datos no inicializada**
- #           
- #           Para comenzar a usar el sistema:
- #           1. Configura secrets.toml con credenciales SSH
- #           2. Inicializa la base de datos
- #           """)
+        # Comentario: Ahora no se muestra el mensaje de BD no inicializada
+        # para evitar mensajes confusos al usuario
+        # if not estado_sistema.esta_inicializada():
+        #     st.warning("⚠️ **Base de datos no inicializada** ...")
 
 class PaginaInscripcion:
     """Página de inscripción completa"""
