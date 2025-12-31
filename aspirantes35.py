@@ -73,7 +73,7 @@ APP_CONFIG = {
     'layout': 'wide',
     'sidebar_state': 'expanded',
     'backup_dir': 'backups_aspirantes',
-    'uploads_dir': 'uploads_documentos',
+    'uploads_dir': 'uploads',  # CAMBIADO: De 'uploads_documentos' a 'uploads'
     'max_backups': 10,
     'estado_file': 'estado_aspirantes.json',
     'session_timeout': 60  # minutos
@@ -1634,46 +1634,52 @@ class SistemaGestionDocumentos:
     
     def __init__(self):
         self.uploads_dir = APP_CONFIG['uploads_dir']
+        self.inscritos_dir = os.path.join(self.uploads_dir, "inscritos")
         self.crear_directorio_uploads()
     
     def crear_directorio_uploads(self):
-        """Crear directorio para almacenar documentos subidos"""
+        """Crear directorio base"""
         try:
             if not os.path.exists(self.uploads_dir):
                 os.makedirs(self.uploads_dir)
-                logger.info(f"✅ Directorio de uploads creado: {self.uploads_dir}")
+                logger.info(f"✅ Directorio base de uploads creado: {self.uploads_dir}")
             
-            subdirs = ['actas_nacimiento', 'curps', 'certificados', 'identificaciones', 
-                      'comprobantes', 'fotografias', 'titulos', 'cedulas', 'cartas']
-            for subdir in subdirs:
-                subdir_path = os.path.join(self.uploads_dir, subdir)
-                if not os.path.exists(subdir_path):
-                    os.makedirs(subdir_path)
+            if not os.path.exists(self.inscritos_dir):
+                os.makedirs(self.inscritos_dir)
+                logger.info(f"✅ Directorio de inscritos creado: {self.inscritos_dir}")
                     
         except Exception as e:
             logger.error(f"❌ Error creando directorio de uploads: {e}")
     
     def subir_documento(self, archivo, nombre_documento, matricula):
-        """Subir un documento al servidor"""
+        """Subir documento organizado por matrícula"""
         try:
             if archivo is None:
                 return None
+            
+            # Crear directorio para esta matrícula
+            usuario_dir = os.path.join(self.inscritos_dir, matricula)
+            if not os.path.exists(usuario_dir):
+                os.makedirs(usuario_dir)
+                logger.info(f"✅ Carpeta creada para matrícula: {matricula}")
             
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             nombre_original = archivo.name
             extension = nombre_original.split('.')[-1] if '.' in nombre_original else 'pdf'
             
-            nombre_seguro = f"{matricula}_{nombre_documento.replace(' ', '_')}_{timestamp}.{extension}"
+            # Nombre seguro
+            nombre_doc_simple = re.sub(r'[^\w\s-]', '', nombre_documento)
+            nombre_doc_simple = re.sub(r'[-\s]+', '_', nombre_doc_simple)
             
-            directorio_destino = self._obtener_directorio_documento(nombre_documento)
-            ruta_completa = os.path.join(directorio_destino, nombre_seguro)
+            nombre_seguro = f"{nombre_doc_simple}_{timestamp}.{extension}"
+            ruta_completa = os.path.join(usuario_dir, nombre_seguro)
             
             with open(ruta_completa, "wb") as f:
                 f.write(archivo.getbuffer())
             
             tamano_bytes = os.path.getsize(ruta_completa)
             
-            logger.info(f"✅ Documento subido: {nombre_original} -> {ruta_completa} ({tamano_bytes} bytes)")
+            logger.info(f"✅ Documento subido: {matricula}/{nombre_seguro} ({tamano_bytes} bytes)")
             
             return {
                 'nombre_documento': nombre_documento,
@@ -1687,30 +1693,48 @@ class SistemaGestionDocumentos:
             logger.error(f"❌ Error subiendo documento: {e}")
             return None
     
-    def _obtener_directorio_documento(self, nombre_documento):
-        """Obtener el directorio adecuado según el tipo de documento"""
-        nombre_doc_lower = nombre_documento.lower()
-        
-        if 'acta' in nombre_doc_lower or 'nacimiento' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'actas_nacimiento')
-        elif 'curp' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'curps')
-        elif 'certificado' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'certificados')
-        elif 'ine' in nombre_doc_lower or 'identificacion' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'identificaciones')
-        elif 'comprobante' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'comprobantes')
-        elif 'foto' in nombre_doc_lower or 'fotografía' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'fotografias')
-        elif 'titulo' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'titulos')
-        elif 'cedula' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'cedulas')
-        elif 'carta' in nombre_doc_lower:
-            return os.path.join(self.uploads_dir, 'cartas')
-        else:
-            return self.uploads_dir
+    def _obtener_directorio_documento(self, nombre_documento, matricula):
+        """Todos los documentos de un usuario van a su propia carpeta"""
+        usuario_dir = os.path.join(self.inscritos_dir, matricula)
+        if not os.path.exists(usuario_dir):
+            os.makedirs(usuario_dir)
+        return usuario_dir
+    
+    def obtener_documentos_usuario(self, matricula):
+        """Obtener todos los documentos de un usuario por matrícula"""
+        try:
+            usuario_dir = os.path.join(self.inscritos_dir, matricula)
+            if not os.path.exists(usuario_dir):
+                return []
+            
+            documentos = []
+            for archivo in os.listdir(usuario_dir):
+                ruta_archivo = os.path.join(usuario_dir, archivo)
+                if os.path.isfile(ruta_archivo):
+                    documentos.append({
+                        'nombre': archivo,
+                        'ruta': ruta_archivo,
+                        'tamaño': os.path.getsize(ruta_archivo),
+                        'fecha': datetime.fromtimestamp(os.path.getmtime(ruta_archivo))
+                    })
+            
+            return documentos
+        except Exception as e:
+            logger.error(f"❌ Error obteniendo documentos del usuario: {e}")
+            return []
+    
+    def eliminar_documentos_usuario(self, matricula):
+        """Eliminar todos los documentos de un usuario (para limpieza)"""
+        try:
+            usuario_dir = os.path.join(self.inscritos_dir, matricula)
+            if os.path.exists(usuario_dir):
+                shutil.rmtree(usuario_dir)
+                logger.info(f"✅ Carpeta eliminada para matrícula: {matricula}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error eliminando documentos del usuario: {e}")
+            return False
 
 class SistemaCorreosCompleto:
     """Sistema de envío de correos completo"""
@@ -1995,10 +2019,10 @@ class ComponentesUI:
             
             st.subheader("🔍 Estado del Sistema")
             # CORREGIDO: Solo una columna en lugar de dos columnas mal formadas
-          #  if estado_sistema.esta_inicializada():
-          #      st.success("✅ BD Inicializada")
-          #  else:
-          #      st.error("❌ BD No Inic.")
+            if estado_sistema.esta_inicializada():
+                st.success("✅ BD Inicializada")
+            else:
+                st.error("❌ BD No Inic.")
             
             if estado_sistema.estado.get('ssh_conectado'):
                 st.success("✅ SSH Conectado")
@@ -2582,7 +2606,7 @@ class SistemaInscritosCompleto:
     
     def _mostrar_paso_documentacion_completa(self, tipo_programa, matricula):
         st.markdown("### 📄 **SUBA SUS DOCUMENTOS**")
-        st.info(f"**Matrícula:** `{matricula}` - Usa esta matrícula para nombrar tus archivos si es necesario")
+        st.info(f"**Matrícula:** `{matricula}` - Los documentos se guardarán en la carpeta de tu matrícula")
         
         documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(tipo_programa)
         
@@ -2870,7 +2894,8 @@ class SistemaInscritosCompleto:
                             'documentos': documentos['total_subidos'],
                             'estudio_socioeconomico': 'Sí' if any(estudio.values()) else 'No',
                             'examen_psicometrico': 'Sí' if examen else 'No',
-                            'archivos_subidos': len(archivos_subidos)
+                            'archivos_subidos': len(archivos_subidos),
+                            'carpeta_documentos': f"uploads/inscritos/{datos['matricula_generada']}/"
                         }
                         
                         correo_enviado = False
@@ -2920,6 +2945,10 @@ class SistemaInscritosCompleto:
             st.info(f"**📄 Categoría:**\n\n{datos['categoria']}")
             st.info(f"**⏱️ Duración:**\n\n{datos.get('duracion', 'No especificada')}")
             st.info(f"**🏫 Modalidad:**\n\n{datos.get('modalidad', 'No especificada')}")
+        
+        # Información sobre la carpeta de documentos
+        if 'carpeta_documentos' in datos:
+            st.info(f"**📁 Carpeta de documentos:**\n\n`{datos['carpeta_documentos']}`")
         
         st.markdown(f"""
         <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; margin: 15px 0;">
@@ -3011,11 +3040,6 @@ class PaginaPrincipal:
             """)
         
         st.markdown("---")
-        
-        # Comentario: Ahora no se muestra el mensaje de BD no inicializada
-        # para evitar mensajes confusos al usuario
-        # if not estado_sistema.esta_inicializada():
-        #     st.warning("⚠️ **Base de datos no inicializada** ...")
 
 class PaginaInscripcion:
     """Página de inscripción completa"""
