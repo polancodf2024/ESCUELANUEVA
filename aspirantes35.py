@@ -3117,6 +3117,19 @@ class SistemaInscritosCompleto:
 # ============================================================================
 # CAPA 13: PÁGINAS/VISTAS PRINCIPALES
 # ============================================================================
+
+
+class PaginaInscripcion:
+    """Página para nueva pre-inscripción"""
+
+    def __init__(self):
+        self.sistema_inscritos = SistemaInscritosCompleto()
+
+    def mostrar(self):
+        """Mostrar formulario de pre-inscripción"""
+        self.sistema_inscritos.mostrar_formulario_completo_interactivo()
+
+
 class PaginaPrincipal:
     """Página principal del sistema"""
     
