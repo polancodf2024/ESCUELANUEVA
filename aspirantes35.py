@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN SEGURA 4.1
-Sistema completo con seguridad por roles, autenticación y separación de vistas
+SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 3.7 (CON LOGIN CORREGIDO)
+Sistema completo con autenticación funcionando, carga de documentos, SSH y base de datos remota
 """
 
 # ============================================================================
@@ -10,7 +10,6 @@ Sistema completo con seguridad por roles, autenticación y separación de vistas
 # ============================================================================
 
 import streamlit as st
-import streamlit_authenticator as stauth
 import pandas as pd
 import numpy as np
 import sqlite3
@@ -44,9 +43,7 @@ import atexit
 import math
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, List, Tuple
-import yaml
-from yaml.loader import SafeLoader
-import bcrypt
+import shutil
 
 warnings.filterwarnings('ignore')
 
@@ -60,8 +57,8 @@ except ImportError:
         HAS_TOMLLIB = True
     except ImportError:
         HAS_TOMLLIB = False
-        st.error("❌ ERROR CRÍTICO: Instalar tomli: pip install tomli")
-        st.stop()
+        st.warning("⚠️ Instalar tomli: pip install tomli")
+        # Continuar sin tomllib
 
 # ============================================================================
 # CAPA 2: CONSTANTES, CONFIGURACIÓN Y DATOS ESTÁTICOS
@@ -69,17 +66,17 @@ except ImportError:
 
 # Configuración de la aplicación
 APP_CONFIG = {
-    'app_name': 'Sistema Seguro Escuela Enfermería',
-    'version': '4.1',
-    'page_title': 'Sistema Escuela Enfermería - Seguro',
+    'app_name': 'Sistema Escuela Enfermería',
+    'version': '3.7',
+    'page_title': 'Sistema Escuela Enfermería - Pre-Inscripción',
     'page_icon': '🏥',
     'layout': 'wide',
-    'sidebar_state': 'collapsed',  # Controlado por autenticación
-    'backup_dir': 'backups_aspirantes_secure',
+    'sidebar_state': 'expanded',
+    'backup_dir': 'backups_aspirantes',
+    'uploads_dir': 'uploads_documentos',
     'max_backups': 10,
-    'estado_file': 'estado_aspirantes_secure.json',
-    'session_timeout_minutes': 60,
-    'max_login_attempts': 3
+    'estado_file': 'estado_aspirantes.json',
+    'session_timeout': 60  # minutos
 }
 
 # Constantes de tiempo
@@ -94,11 +91,10 @@ TIME_CONFIG = {
     'retry_delay_base': 5
 }
 
-# Categorías académicas
+# Categorías académicas CORREGIDAS (solo 3 categorías sin redundancia)
 CATEGORIAS_ACADEMICAS = [
-    {"id": "pregrado", "nombre": "Pregrado", "descripcion": "Programas técnicos y profesional asociado"},
+    {"id": "pregrado", "nombre": "Pregrado", "descripcion": "Programas técnicos y profesional asociado (incluye licenciaturas)"},
     {"id": "posgrado", "nombre": "Posgrado", "descripcion": "Especialidades, maestrías y doctorados"},
-    {"id": "licenciatura", "nombre": "Licenciatura", "descripcion": "Programas de licenciatura"},
     {"id": "educacion_continua", "nombre": "Educación Continua", "descripcion": "Diplomados, cursos y talleres"}
 ]
 
@@ -134,7 +130,7 @@ TESTIMONIOS = [
 ]
 
 # ============================================================================
-# CAPA 3: LOGGING Y MANEJO DE ESTADO SEGURO
+# CAPA 3: LOGGING Y MANEJO DE ESTADO
 # ============================================================================
 
 class EnhancedLogger:
@@ -177,13 +173,12 @@ class EnhancedLogger:
 
 logger = EnhancedLogger()
 
-class EstadoPersistenteSeguro:
-    """Maneja el estado persistente para el sistema de aspirantes con seguridad"""
+class EstadoPersistente:
+    """Maneja el estado persistente para el sistema de aspirantes"""
     
-    def __init__(self, archivo_estado="estado_aspirantes_secure.json"):
+    def __init__(self, archivo_estado="estado_aspirantes.json"):
         self.archivo_estado = archivo_estado
         self.estado = self._cargar_estado()
-        self._limpiar_sesiones_expiradas()
     
     def _cargar_estado(self):
         try:
@@ -197,9 +192,6 @@ class EstadoPersistenteSeguro:
                             'registros': 0,
                             'total_tiempo': 0
                         }
-                    
-                    if 'sesiones_activas' not in estado:
-                        estado['sesiones_activas'] = {}
                     
                     return estado
             else:
@@ -215,7 +207,6 @@ class EstadoPersistenteSeguro:
             'ultima_sincronizacion': None,
             'modo_operacion': 'remoto',
             'sesiones_iniciadas': 0,
-            'sesiones_activas': {},
             'ultima_sesion': None,
             'ssh_conectado': False,
             'ssh_error': None,
@@ -223,15 +214,13 @@ class EstadoPersistenteSeguro:
             'estadisticas_sistema': {
                 'sesiones': 0,
                 'registros': 0,
-                'total_tiempo': 0,
-                'intentos_fallidos': 0
+                'total_tiempo': 0
             },
             'backups_realizados': 0,
             'total_inscritos': 0,
             'recordatorios_enviados': 0,
             'duplicados_eliminados': 0,
-            'registros_incompletos_eliminados': 0,
-            'usuarios_bloqueados': {}
+            'registros_incompletos_eliminados': 0
         }
     
     def guardar_estado(self):
@@ -241,147 +230,6 @@ class EstadoPersistenteSeguro:
             logger.debug(f"Estado guardado en {self.archivo_estado}")
         except Exception as e:
             logger.error(f"❌ Error guardando estado: {e}")
-    
-    def _limpiar_sesiones_expiradas(self):
-        """Eliminar sesiones expiradas"""
-        try:
-            sesiones_activas = self.estado.get('sesiones_activas', {})
-            ahora = datetime.now().timestamp()
-            
-            sesiones_limpias = {}
-            for session_id, session_data in sesiones_activas.items():
-                expiracion = session_data.get('expiracion', 0)
-                if expiracion > ahora:
-                    sesiones_limpias[session_id] = session_data
-            
-            self.estado['sesiones_activas'] = sesiones_limpias
-            self.guardar_estado()
-            
-        except Exception as e:
-            logger.warning(f"Error limpiando sesiones expiradas: {e}")
-    
-    def registrar_sesion(self, username, user_ip, exitosa=True, tiempo_ejecucion=0):
-        """Registrar sesión con información de seguridad"""
-        self.estado['sesiones_iniciadas'] = self.estado.get('sesiones_iniciadas', 0) + 1
-        self.estado['ultima_sesion'] = datetime.now().isoformat()
-        
-        if exitosa:
-            self.estado['estadisticas_sistema']['sesiones'] += 1
-            
-            # Registrar sesión activa
-            session_id = hashlib.sha256(f"{username}{time.time()}".encode()).hexdigest()[:16]
-            expiracion = datetime.now().timestamp() + (APP_CONFIG['session_timeout_minutes'] * 60)
-            
-            self.estado['sesiones_activas'][session_id] = {
-                'username': username,
-                'inicio': datetime.now().isoformat(),
-                'expiracion': expiracion,
-                'ip': user_ip
-            }
-            
-            # Mantener máximo 100 sesiones activas
-            if len(self.estado['sesiones_activas']) > 100:
-                # Eliminar las más antiguas
-                sesiones_ordenadas = sorted(
-                    self.estado['sesiones_activas'].items(),
-                    key=lambda x: x[1].get('inicio', '')
-                )
-                for i in range(len(sesiones_ordenadas) - 100):
-                    del self.estado['sesiones_activas'][sesiones_ordenadas[i][0]]
-        else:
-            self.estado['estadisticas_sistema']['intentos_fallidos'] += 1
-        
-        self.estado['estadisticas_sistema']['total_tiempo'] += tiempo_ejecucion
-        self.guardar_estado()
-        
-        return session_id if exitosa else None
-    
-    def verificar_usuario_bloqueado(self, username, user_ip):
-        """Verificar si usuario está bloqueado por intentos fallidos"""
-        bloqueados = self.estado.get('usuarios_bloqueados', {})
-        
-        # Verificar por usuario
-        if username in bloqueados:
-            bloqueo_data = bloqueados[username]
-            if bloqueo_data.get('hasta', 0) > time.time():
-                minutos_restantes = int((bloqueo_data['hasta'] - time.time()) / 60)
-                return True, f"Usuario bloqueado. Intente nuevamente en {minutos_restantes} minutos"
-        
-        # Verificar por IP
-        for user_data in bloqueados.values():
-            if user_data.get('ip') == user_ip and user_data.get('hasta', 0) > time.time():
-                minutos_restantes = int((user_data['hasta'] - time.time()) / 60)
-                return True, f"IP bloqueada. Intente nuevamente en {minutos_restantes} minutos"
-        
-        return False, ""
-    
-    def registrar_intento_fallido(self, username, user_ip):
-        """Registrar intento fallido y bloquear si es necesario"""
-        if 'intentos_recientes' not in self.estado:
-            self.estado['intentos_recientes'] = {}
-        
-        key = f"{username}_{user_ip}"
-        
-        if key not in self.estado['intentos_recientes']:
-            self.estado['intentos_recientes'][key] = {
-                'intentos': 1,
-                'primer_intento': time.time(),
-                'ultimo_intento': time.time()
-            }
-        else:
-            self.estado['intentos_recientes'][key]['intentos'] += 1
-            self.estado['intentos_recientes'][key]['ultimo_intento'] = time.time()
-        
-        # Bloquear si hay más de 3 intentos en 5 minutos
-        intentos_data = self.estado['intentos_recientes'][key]
-        if intentos_data['intentos'] >= APP_CONFIG['max_login_attempts']:
-            tiempo_transcurrido = time.time() - intentos_data['primer_intento']
-            if tiempo_transcurrido <= 300:  # 5 minutos
-                # Bloquear por 15 minutos
-                bloqueo_hasta = time.time() + (15 * 60)
-                
-                if 'usuarios_bloqueados' not in self.estado:
-                    self.estado['usuarios_bloqueados'] = {}
-                
-                self.estado['usuarios_bloqueados'][username] = {
-                    'hasta': bloqueo_hasta,
-                    'razon': 'demasiados_intentos',
-                    'ip': user_ip,
-                    'timestamp': datetime.now().isoformat()
-                }
-                
-                logger.warning(f"Usuario {username} bloqueado desde IP {user_ip}")
-        
-        self.guardar_estado()
-    
-    def limpiar_intentos_fallidos(self):
-        """Limpiar intentos fallidos antiguos"""
-        try:
-            if 'intentos_recientes' not in self.estado:
-                return
-            
-            ahora = time.time()
-            intentos_limpiados = {}
-            
-            for key, data in self.estado['intentos_recientes'].items():
-                if ahora - data['ultimo_intento'] <= 300:  # Mantener solo últimos 5 minutos
-                    intentos_limpiados[key] = data
-            
-            self.estado['intentos_recientes'] = intentos_limpiados
-            
-            # Limpiar bloqueos expirados
-            if 'usuarios_bloqueados' in self.estado:
-                bloqueos_limpiados = {}
-                for username, bloqueo_data in self.estado['usuarios_bloqueados'].items():
-                    if bloqueo_data.get('hasta', 0) > ahora:
-                        bloqueos_limpiados[username] = bloqueo_data
-                
-                self.estado['usuarios_bloqueados'] = bloqueos_limpiados
-            
-            self.guardar_estado()
-            
-        except Exception as e:
-            logger.warning(f"Error limpiando intentos fallidos: {e}")
     
     def marcar_db_inicializada(self):
         self.estado['db_inicializada'] = True
@@ -414,6 +262,16 @@ class EstadoPersistenteSeguro:
         self.estado['ultima_sincronizacion'] = datetime.now().isoformat()
         self.guardar_estado()
     
+    def registrar_sesion(self, exitosa=True, tiempo_ejecucion=0):
+        self.estado['sesiones_iniciadas'] = self.estado.get('sesiones_iniciadas', 0) + 1
+        self.estado['ultima_sesion'] = datetime.now().isoformat()
+        
+        if exitosa:
+            self.estado['estadisticas_sistema']['sesiones'] += 1
+        
+        self.estado['estadisticas_sistema']['total_tiempo'] += tiempo_ejecucion
+        self.guardar_estado()
+    
     def registrar_backup(self):
         self.estado['backups_realizados'] = self.estado.get('backups_realizados', 0) + 1
         self.guardar_estado()
@@ -430,226 +288,14 @@ class EstadoPersistenteSeguro:
                 return None
         return None
 
-estado_sistema = EstadoPersistenteSeguro()
+estado_sistema = EstadoPersistente()
 
 # ============================================================================
-# CAPA 4: SISTEMA DE SEGURIDAD Y AUTENTICACIÓN
+# CAPA 4: UTILIDADES Y SERVICIOS BASE
 # ============================================================================
 
-class SecurityManager:
-    """Gestor de seguridad completo para el sistema"""
-    
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.auth_config = self._load_auth_config()
-        self.authenticator = None
-        
-    def _load_auth_config(self) -> Dict:
-        """Cargar configuración de autenticación"""
-        cookie_key = st.secrets.get("COOKIE_KEY", "default-cookie-key-change-in-production")
-        
-        # Verificar que la clave tenga al menos 32 caracteres
-        if len(cookie_key) < 32:
-            logger.warning("⚠️ Cookie key demasiado corta. Recomendado: mínimo 32 caracteres")
-            # Generar una clave temporal más segura
-            cookie_key = hashlib.sha256(cookie_key.encode()).hexdigest()[:32]
-        
-        return {
-            'credentials': {
-                'usernames': {}  # Se poblará desde DB
-            },
-            'cookie': {
-                'expiry_days': 1,
-                'key': cookie_key,
-                'name': 'enfermeria_auth_secure'
-            },
-            'preauthorized': {
-                'emails': st.secrets.get("PREAUTHORIZED_EMAILS", [])
-            }
-        }
-    
-    def initialize_admin_user(self):
-        """Inicializar usuario admin encriptado"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Verificar si admin ya existe
-            cursor.execute("SELECT usuario, password FROM usuarios WHERE usuario = 'admin'")
-            admin_data = cursor.fetchone()
-            
-            if admin_data:
-                usuario, password_hash = admin_data
-                # Si el password está en texto plano, actualizarlo
-                if password_hash == 'admin123' or password_hash == 'Admin123!':
-                    # Encriptar con bcrypt
-                    hashed_password = bcrypt.hashpw('Admin123!'.encode(), bcrypt.gensalt()).decode()
-                    cursor.execute(
-                        "UPDATE usuarios SET password = ?, fecha_actualizacion = ? WHERE usuario = 'admin'",
-                        (hashed_password, datetime.now().isoformat())
-                    )
-                    conn.commit()
-                    logger.info("✅ Password de admin actualizado y encriptado")
-            else:
-                # Crear admin con password encriptado
-                hashed_password = bcrypt.hashpw('Admin123!'.encode(), bcrypt.gensalt()).decode()
-                cursor.execute(
-                    """INSERT INTO usuarios 
-                       (usuario, password, rol, nombre_completo, email, activo, fecha_creacion) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    ('admin', hashed_password, 'admin', 'Administrador Sistema', 
-                     'admin@enfermeria.edu', 1, datetime.now().isoformat())
-                )
-                conn.commit()
-                logger.info("✅ Usuario admin creado con password encriptado")
-            
-            conn.close()
-            
-        except Exception as e:
-            logger.error(f"❌ Error inicializando admin: {e}")
-    
-    def load_users_from_db(self):
-        """Cargar usuarios desde base de datos"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT usuario, password, rol, nombre_completo, email 
-                FROM usuarios 
-                WHERE activo = 1
-            """)
-            usuarios = cursor.fetchall()
-            
-            # Convertir a formato para streamlit-authenticator
-            for usuario in usuarios:
-                # Solo agregar si el password parece estar hasheado
-                password_hash = usuario['password']
-                if password_hash and len(password_hash) > 20:  # Hash mínimo
-                    self.auth_config['credentials']['usernames'][usuario['usuario']] = {
-                        'name': usuario['nombre_completo'] or usuario['usuario'],
-                        'email': usuario['email'] or f"{usuario['usuario']}@enfermeria.edu",
-                        'password': password_hash,
-                        'rol': usuario['rol'] or 'inscrito'
-                    }
-                else:
-                    logger.warning(f"⚠️ Password inseguro para usuario {usuario['usuario']}")
-            
-            conn.close()
-            logger.info(f"✅ Cargados {len(usuarios)} usuarios desde DB")
-            return len(usuarios) > 0
-            
-        except Exception as e:
-            logger.error(f"❌ Error cargando usuarios: {e}")
-            return False
-    
-    def create_authenticator(self):
-        """Crear instancia del autenticador"""
-        if not self.auth_config['credentials']['usernames']:
-            self.load_users_from_db()
-        
-        self.authenticator = stauth.Authenticate(
-            self.auth_config['credentials'],
-            self.auth_config['cookie']['name'],
-            self.auth_config['cookie']['key'],
-            self.auth_config['cookie']['expiry_days'],
-            self.auth_config['preauthorized']
-        )
-        return self.authenticator
-    
-    def register_new_user(self, username: str, password: str, name: str, email: str, role: str = 'inscrito'):
-        """Registrar nuevo usuario (para inscripción pública)"""
-        try:
-            # Validaciones
-            if len(password) < 8:
-                raise ValueError("La contraseña debe tener al menos 8 caracteres")
-            
-            if not re.match(r'^[a-zA-Z0-9_]+$', username):
-                raise ValueError("El nombre de usuario solo puede contener letras, números y guiones bajos")
-            
-            # Verificar si usuario ya existe
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT usuario FROM usuarios WHERE usuario = ?", (username,))
-            if cursor.fetchone():
-                conn.close()
-                raise ValueError("El nombre de usuario ya existe")
-            
-            # Verificar si email ya existe
-            cursor.execute("SELECT email FROM usuarios WHERE email = ?", (email,))
-            if cursor.fetchone():
-                conn.close()
-                raise ValueError("El email ya está registrado")
-            
-            # Encriptar password con bcrypt
-            hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-            
-            # Generar matrícula única
-            matricula = self._generar_matricula()
-            
-            # Guardar en base de datos
-            cursor.execute(
-                """INSERT INTO usuarios 
-                   (usuario, password, rol, nombre_completo, email, matricula, activo, fecha_creacion) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (username, hashed_password, role, name, email, matricula, 1, datetime.now().isoformat())
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            # Actualizar configuración en memoria
-            self.auth_config['credentials']['usernames'][username] = {
-                'name': name,
-                'email': email,
-                'password': hashed_password,
-                'rol': role
-            }
-            
-            # Recrear autenticador
-            self.create_authenticator()
-            
-            logger.info(f"✅ Nuevo usuario registrado: {username} ({role})")
-            return True, matricula
-            
-        except ValueError as ve:
-            raise ve
-        except Exception as e:
-            logger.error(f"❌ Error registrando usuario: {e}")
-            raise ValueError(f"Error al registrar usuario: {str(e)}")
-    
-    def _generar_matricula(self):
-        """Generar matrícula única"""
-        fecha = datetime.now().strftime('%y%m%d')
-        random_num = ''.join(random.choices(string.digits, k=4))
-        return f"USR{fecha}{random_num}"
-    
-    def verify_password_strength(self, password):
-        """Verificar fortaleza de contraseña"""
-        if len(password) < 8:
-            return False, "La contraseña debe tener al menos 8 caracteres"
-        
-        if not re.search(r'[A-Z]', password):
-            return False, "Debe contener al menos una mayúscula"
-        
-        if not re.search(r'[a-z]', password):
-            return False, "Debe contener al menos una minúscula"
-        
-        if not re.search(r'[0-9]', password):
-            return False, "Debe contener al menos un número"
-        
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
-            return False, "Debe contener al menos un carácter especial"
-        
-        return True, "Contraseña segura"
-
-# ============================================================================
-# CAPA 5: UTILIDADES Y SERVICIOS BASE SEGUROS
-# ============================================================================
-
-class UtilidadesSistemaSeguro:
-    """Utilidades para verificación de disco y red con seguridad"""
+class UtilidadesSistema:
+    """Utilidades para verificación de disco y red"""
     
     @staticmethod
     def verificar_espacio_disco(ruta, espacio_minimo_mb=100):
@@ -678,48 +324,16 @@ class UtilidadesSistemaSeguro:
         except Exception as e:
             logger.warning(f"Sin conectividad de red: {e}")
             return False
-    
-    @staticmethod
-    def obtener_ip_usuario():
-        """Obtener IP del usuario (simplificado para Streamlit)"""
-        try:
-            # En Streamlit Cloud, esto obtiene la IP real
-            query_params = st.experimental_get_query_params()
-            client_ip = query_params.get('client_ip', ['unknown'])[0]
-            
-            # Si no está disponible, usar placeholder
-            if client_ip == 'unknown':
-                # Intentar obtener de headers (no siempre disponible)
-                try:
-                    import requests
-                    response = requests.get('https://api.ipify.org?format=json', timeout=2)
-                    if response.status_code == 200:
-                        client_ip = response.json()['ip']
-                    else:
-                        client_ip = '127.0.0.1'
-                except:
-                    client_ip = '127.0.0.1'
-            
-            return client_ip
-        except Exception as e:
-            logger.warning(f"No se pudo obtener IP: {e}")
-            return '127.0.0.1'
 
-class ValidadorDatosSeguro:
-    """Clase para validaciones de datos mejoradas con seguridad"""
+class ValidadorDatos:
+    """Clase para validaciones de datos mejoradas"""
     
     @staticmethod
     def validar_email(email):
         if not email:
             return False
         
-        # Patrón básico de email
         pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        
-        # Verificar que no tenga caracteres peligrosos
-        if re.search(r'[<>\"\'();]', email):
-            return False
-        
         return bool(re.match(pattern, email))
     
     @staticmethod
@@ -727,82 +341,23 @@ class ValidadorDatosSeguro:
         if not email:
             return False
         
-        # Validar que sea Gmail y tenga formato seguro
         pattern = r'^[a-zA-Z0-9._%+-]+@gmail\.com$'
-        
-        # Verificar longitud máxima
-        if len(email) > 100:
-            return False
-        
-        # Verificar caracteres peligrosos
-        if re.search(r'[<>\"\'();]', email):
-            return False
-        
         return bool(re.match(pattern, email))
-    
-    @staticmethod
-    def sanitizar_input(texto, max_length=500):
-        """Sanitizar entrada de texto para prevenir XSS"""
-        if not texto:
-            return ""
-        
-        # Truncar si es muy largo
-        if len(texto) > max_length:
-            texto = texto[:max_length]
-        
-        # Eliminar caracteres peligrosos
-        texto = re.sub(r'[<>\"\'();]', '', texto)
-        
-        # Escapar caracteres HTML
-        texto = (texto.replace('&', '&amp;')
-                      .replace('<', '&lt;')
-                      .replace('>', '&gt;')
-                      .replace('"', '&quot;')
-                      .replace("'", '&#x27;'))
-        
-        return texto
     
     @staticmethod
     def validar_telefono(telefono):
         if not telefono:
             return True
         
-        # Eliminar espacios y caracteres no numéricos
         digitos = ''.join(filter(str.isdigit, telefono))
-        
-        # Verificar longitud (México: 10 dígitos)
-        if len(digitos) != 10:
-            return False
-        
-        # Verificar que sea un número válido (no todos ceros, etc.)
-        if digitos == '0' * 10:
-            return False
-        
-        return True
+        return len(digitos) >= 10
     
     @staticmethod
     def validar_nombre_completo(nombre):
         if not nombre:
             return False
-        
-        # Sanitizar nombre
-        nombre = ValidadorDatosSeguro.sanitizar_input(nombre, 100)
-        
-        # Verificar longitud mínima
-        if len(nombre.strip()) < 5:
-            return False
-        
-        # Verificar que tenga al menos 2 palabras
         palabras = nombre.strip().split()
-        if len(palabras) < 2:
-            return False
-        
-        # Verificar que cada palabra tenga al menos 2 caracteres
-        for palabra in palabras:
-            if len(palabra) < 2:
-                return False
-        
-        return True
+        return len(palabras) >= 2
     
     @staticmethod
     def validar_fecha_nacimiento(fecha_str):
@@ -810,20 +365,14 @@ class ValidadorDatosSeguro:
             if not fecha_str:
                 return True
             
-            # Verificar formato
             fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
             hoy = date.today()
             
-            # Verificar que no sea futura
             if fecha > hoy:
                 return False
             
-            # Calcular edad
             edad = hoy.year - fecha.year - ((hoy.month, hoy.day) < (fecha.month, fecha.day))
-            
-            # Rango de edad razonable para estudiantes (15-70 años)
-            return 15 <= edad <= 70
-            
+            return edad >= 15
         except:
             return False
     
@@ -831,22 +380,12 @@ class ValidadorDatosSeguro:
     def validar_matricula(matricula):
         if not matricula:
             return False
-        
-        # Sanitizar
-        matricula = ValidadorDatosSeguro.sanitizar_input(matricula, 20)
-        
-        # Verificar formato básico
         return matricula.startswith('INS') and len(matricula) >= 10
     
     @staticmethod
     def validar_folio(folio):
         if not folio:
             return False
-        
-        # Sanitizar
-        folio = ValidadorDatosSeguro.sanitizar_input(folio, 20)
-        
-        # Verificar formato básico
         return folio.startswith('FOL') and len(folio) >= 10
 
 def cargar_configuracion_secrets():
@@ -887,11 +426,11 @@ def cargar_configuracion_secrets():
         return {}
 
 # ============================================================================
-# CAPA 6: GESTIÓN DE CONEXIÓN SSH SEGURA
+# CAPA 5: GESTIÓN DE CONEXIÓN SSH COMPLETA
 # ============================================================================
 
-class GestorConexionRemotaSeguro:
-    """Gestor de conexión SSH al servidor remoto con seguridad mejorada"""
+class GestorConexionRemota:
+    """Gestor de conexión SSH al servidor remoto"""
     
     def __init__(self):
         self.ssh = None
@@ -989,7 +528,6 @@ class GestorConexionRemotaSeguro:
             except Exception as e:
                 logger.warning(f"⚠️ No se pudo eliminar {temp_file}: {e}")
         
-        # Limpiar archivos temporales antiguos (> 1 hora)
         temp_dir = tempfile.gettempdir()
         pattern = os.path.join(temp_dir, "aspirantes_*.db")
         for old_file in glob.glob(pattern):
@@ -1012,7 +550,7 @@ class GestorConexionRemotaSeguro:
                 
             logger.info(f"🔍 Probando conexión SSH a {self.config['host']}...")
             
-            if not UtilidadesSistemaSeguro.verificar_conectividad_red():
+            if not UtilidadesSistema.verificar_conectividad_red():
                 logger.warning("⚠️ No hay conectividad de red")
                 return False
             
@@ -1073,7 +611,7 @@ class GestorConexionRemotaSeguro:
             timeout = self.timeouts['ssh_connect']
             
             temp_dir = tempfile.gettempdir()
-            espacio_ok, espacio_mb = UtilidadesSistemaSeguro.verificar_espacio_disco(temp_dir)
+            espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
             if not espacio_ok:
                 logger.warning(f"⚠️ Espacio en disco bajo: {espacio_mb:.1f} MB disponible en {temp_dir}")
             
@@ -1143,7 +681,7 @@ class GestorConexionRemotaSeguro:
                 temp_db_path = os.path.join(temp_dir, f"aspirantes_temp_{timestamp}.db")
                 self.temp_files.append(temp_db_path)
                 
-                espacio_ok, espacio_mb = UtilidadesSistemaSeguro.verificar_espacio_disco(temp_dir, espacio_minimo_mb=200)
+                espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir, espacio_minimo_mb=200)
                 if not espacio_ok:
                     raise Exception(f"Espacio en disco insuficiente: {espacio_mb:.1f} MB disponibles")
                 
@@ -1213,15 +751,6 @@ class GestorConexionRemotaSeguro:
                 logger.info("⚠️ Base de datos vacía, se inicializará estructura")
                 return True
             
-            # Verificar que existan tablas esenciales
-            tablas_esenciales = ['usuarios', 'inscritos', 'documentos_programa']
-            tablas_encontradas = [t[0] for t in tablas]
-            
-            for tabla in tablas_esenciales:
-                if tabla not in tablas_encontradas:
-                    logger.warning(f"⚠️ Falta tabla esencial: {tabla}")
-                    return False
-            
             conn.close()
             return True
             
@@ -1239,7 +768,7 @@ class GestorConexionRemotaSeguro:
             self.temp_files.append(temp_db_path)
             
             logger.info(f"📝 Creando nueva base de datos en: {temp_db_path}")
-            self._inicializar_db_estructura_completa_segura(temp_db_path)
+            self._inicializar_db_estructura_completa(temp_db_path)
             
             if self.conectar_ssh():
                 try:
@@ -1281,13 +810,12 @@ class GestorConexionRemotaSeguro:
                 self.sftp.mkdir(remote_path)
                 logger.info(f"✅ Directorio remoto creado recursivamente: {remote_path}")
     
-    def _inicializar_db_estructura_completa_segura(self, db_path):
+    def _inicializar_db_estructura_completa(self, db_path):
         try:
-            logger.info(f"📝 Inicializando estructura COMPLETA SEGURA en: {db_path}")
+            logger.info(f"📝 Inicializando estructura COMPLETA en: {db_path}")
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
-            # Tabla de usuarios con campos de seguridad
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS usuarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1299,19 +827,13 @@ class GestorConexionRemotaSeguro:
                     matricula TEXT UNIQUE,
                     activo INTEGER DEFAULT 1,
                     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    ultimo_acceso TIMESTAMP,
                     categoria_academica TEXT,
                     tipo_programa TEXT,
                     acepto_privacidad INTEGER DEFAULT 0,
-                    acepto_convocatoria INTEGER DEFAULT 0,
-                    intentos_fallidos INTEGER DEFAULT 0,
-                    bloqueado_hasta TIMESTAMP,
-                    CHECK (rol IN ('admin', 'secretaria', 'inscrito', 'publico'))
+                    acepto_convocatoria INTEGER DEFAULT 0
                 )
             ''')
             
-            # Tabla de inscritos
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS inscritos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1350,7 +872,6 @@ class GestorConexionRemotaSeguro:
                 )
             ''')
             
-            # Tabla de documentos
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS documentos_programa (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1362,7 +883,6 @@ class GestorConexionRemotaSeguro:
                 )
             ''')
             
-            # Tabla de estudios socioeconómicos
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS estudios_socioeconomicos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1380,21 +900,22 @@ class GestorConexionRemotaSeguro:
                 )
             ''')
             
-            # Tabla de logs de seguridad
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS logs_seguridad (
+                CREATE TABLE IF NOT EXISTS documentos_subidos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    usuario TEXT,
-                    accion TEXT,
-                    recurso TEXT,
-                    ip TEXT,
-                    exito INTEGER,
-                    detalles TEXT
+                    inscrito_id INTEGER NOT NULL,
+                    nombre_documento TEXT NOT NULL,
+                    nombre_archivo TEXT NOT NULL,
+                    ruta_archivo TEXT NOT NULL,
+                    fecha_subida TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    tamano_bytes INTEGER,
+                    tipo_archivo TEXT,
+                    verificado INTEGER DEFAULT 0,
+                    observaciones TEXT,
+                    FOREIGN KEY (inscrito_id) REFERENCES inscritos (id)
                 )
             ''')
             
-            # Insertar documentos
             documentos_licenciatura = [
                 ("LICENCIATURA", "Certificado preparatoria (promedio ≥ 8.0)", 1, "Certificado de bachillerato original", 1),
                 ("LICENCIATURA", "Acta nacimiento (≤ 3 meses)", 1, "Acta de nacimiento actualizada", 2),
@@ -1435,23 +956,25 @@ class GestorConexionRemotaSeguro:
                     VALUES (?, ?, ?, ?, ?)
                 ''', doc)
             
-            # Crear usuario admin con password encriptado
-            admin_password = bcrypt.hashpw('Admin123!'.encode(), bcrypt.gensalt()).decode()
-            cursor.execute('''
-                INSERT OR IGNORE INTO usuarios 
-                (usuario, password, rol, nombre_completo, email, matricula, activo)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', ('admin', admin_password, 'admin', 'Administrador Sistema', 
-                  'admin@enfermeria.edu', 'ADMIN-001', 1))
+            try:
+                # Insertar admin con password seguro (hash) - CORREGIDO
+                password_hash = hashlib.sha256("Admin123!".encode()).hexdigest()
+                cursor.execute(
+                    "INSERT OR IGNORE INTO usuarios (usuario, password, rol, nombre_completo, email, matricula, activo) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ('admin', password_hash, 'admin', 'Administrador', 'admin@enfermeria.edu', 'ADMIN-001', 1)
+                )
+                logger.info("✅ Usuario admin creado con password hasheado: Admin123!")
+            except Exception as e:
+                logger.warning(f"⚠️ Error insertando admin: {e}")
             
             conn.commit()
             conn.close()
-            logger.info(f"✅ Estructura de base de datos COMPLETA SEGURA inicializada en {db_path}")
+            logger.info(f"✅ Estructura de base de datos COMPLETA inicializada en {db_path}")
             
             estado_sistema.marcar_db_inicializada()
             
         except Exception as e:
-            logger.error(f"❌ Error inicializando estructura segura: {e}", exc_info=True)
+            logger.error(f"❌ Error inicializando estructura completa: {e}", exc_info=True)
             raise
     
     def subir_db_remota(self, ruta_local):
@@ -1465,7 +988,6 @@ class GestorConexionRemotaSeguro:
                 logger.error("No se configuró la ruta de la base de datos remota")
                 return False
             
-            # Crear backup en servidor
             try:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 backup_path = f"{self.db_path_remoto}.backup_{timestamp}"
@@ -1475,7 +997,6 @@ class GestorConexionRemotaSeguro:
             except Exception as e:
                 logger.warning(f"⚠️ No se pudo crear backup en servidor: {e}")
             
-            # Subir nueva base de datos
             start_time = time.time()
             self.sftp.put(ruta_local, self.db_path_remoto)
             upload_time = time.time() - start_time
@@ -1497,27 +1018,21 @@ class GestorConexionRemotaSeguro:
     def verificar_conexion_ssh(self):
         return self.probar_conexion_inicial()
 
-# Inicializar gestor remoto seguro
-gestor_remoto = GestorConexionRemotaSeguro()
+gestor_remoto = GestorConexionRemota()
 
 # ============================================================================
-# CAPA 7: SISTEMA DE BASE DE DATOS SEGURO
+# CAPA 6: SISTEMA DE BASE DE DATOS COMPLETO (CON LOGIN CORREGIDO)
 # ============================================================================
 
-class SistemaBaseDatosSeguro:
-    """Sistema de base de datos SQLite SEGURO con todos los cambios"""
+class SistemaBaseDatosCompleto:
+    """Sistema de base de datos SQLite COMPLETO con login corregido"""
     
     def __init__(self):
         self.gestor = gestor_remoto
         self.db_local_temp = None
         self.conexion_actual = None
         self.ultima_sincronizacion = None
-        self.validador = ValidadorDatosSeguro()
-        self.security_manager = None
-    
-    def set_security_manager(self, security_manager):
-        """Establecer el gestor de seguridad"""
-        self.security_manager = security_manager
+        self.validador = ValidadorDatos()
     
     def _intento_conexion_con_backoff(self, attempt):
         return self.gestor._intento_conexion_con_backoff(attempt)
@@ -1537,7 +1052,6 @@ class SistemaBaseDatosSeguro:
                 if not os.path.exists(self.db_local_temp):
                     raise Exception(f"Archivo de base de datos no existe: {self.db_local_temp}")
                 
-                # Verificar integridad
                 try:
                     conn = sqlite3.connect(self.db_local_temp)
                     cursor = conn.cursor()
@@ -1548,8 +1062,8 @@ class SistemaBaseDatosSeguro:
                     logger.info(f"✅ Base de datos verificada: {len(tablas)} tablas")
                     
                     if len(tablas) == 0:
-                        logger.warning("⚠️ Base de datos vacía, inicializando estructura completa segura...")
-                        self._inicializar_estructura_db_segura()
+                        logger.warning("⚠️ Base de datos vacía, inicializando estructura completa...")
+                        self._inicializar_estructura_db_completa()
                 except Exception as e:
                     logger.error(f"❌ Base de datos corrupta: {e}")
                     raise Exception(f"Base de datos corrupta: {e}")
@@ -1559,12 +1073,6 @@ class SistemaBaseDatosSeguro:
                 
                 logger.info(f"✅ Sincronización exitosa en {tiempo_total:.1f}s: {self.db_local_temp}")
                 estado_sistema.marcar_sincronizacion()
-                
-                # Inicializar gestor de seguridad con la base de datos
-                if self.security_manager is None:
-                    self.security_manager = SecurityManager(self.db_local_temp)
-                    self.security_manager.initialize_admin_user()
-                    self.security_manager.load_users_from_db()
                 
                 return True
                 
@@ -1580,16 +1088,16 @@ class SistemaBaseDatosSeguro:
                     logger.error(f"❌ Sincronización fallida después de {tiempo_total:.1f}s")
                     return False
     
-    def _inicializar_estructura_db_segura(self):
+    def _inicializar_estructura_db_completa(self):
         try:
             if not self.db_local_temp:
                 logger.error("❌ No hay ruta de base de datos para inicializar")
                 return
             
-            self.gestor._inicializar_db_estructura_completa_segura(self.db_local_temp)
+            self.gestor._inicializar_db_estructura_completa(self.db_local_temp)
             
         except Exception as e:
-            logger.error(f"❌ Error inicializando estructura segura: {e}", exc_info=True)
+            logger.error(f"❌ Error inicializando estructura: {e}", exc_info=True)
             raise
     
     def sincronizar_hacia_remoto(self):
@@ -1628,7 +1136,7 @@ class SistemaBaseDatosSeguro:
                     return False
     
     @contextmanager
-    def get_connection(self, user_role='publico'):
+    def get_connection(self):
         conn = None
         try:
             if not self.db_local_temp or not os.path.exists(self.db_local_temp):
@@ -1638,9 +1146,7 @@ class SistemaBaseDatosSeguro:
             conn = sqlite3.connect(self.db_local_temp)
             conn.row_factory = sqlite3.Row
             
-            # Configurar timeout y journal mode
             conn.execute("PRAGMA busy_timeout = 5000")
-            conn.execute("PRAGMA journal_mode = WAL")
             
             yield conn
             
@@ -1657,101 +1163,95 @@ class SistemaBaseDatosSeguro:
                 conn.close()
                 self.conexion_actual = None
     
-    def ejecutar_query_segura(self, query, params=(), user_role='publico', username=None):
-        """Ejecutar query con validaciones de seguridad por rol"""
+    def ejecutar_query(self, query, params=()):
         try:
-            # Validar query según rol
-            if user_role in ['publico', 'inscrito']:
-                # Usuarios públicos solo pueden hacer SELECT de sus propios datos
-                query_upper = query.strip().upper()
-                if query_upper.startswith(('INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE')):
-                    raise PermissionError(f"Rol '{user_role}' no tiene permisos para esta operación")
-            
-            # Sanitizar parámetros
-            params_sanitizados = []
-            for param in params:
-                if isinstance(param, str):
-                    param = ValidadorDatosSeguro.sanitizar_input(param)
-                params_sanitizados.append(param)
-            
-            with self.get_connection(user_role) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(query, params_sanitizados)
+                cursor.execute(query, params)
                 
                 if query.strip().upper().startswith('SELECT'):
                     resultados = cursor.fetchall()
-                    # Filtrar resultados según rol
-                    if user_role in ['publico', 'inscrito'] and username:
-                        resultados = self._filtrar_resultados_por_usuario(resultados, username, query)
-                    
                     resultados = [dict(row) for row in resultados]
                     return resultados
                 else:
                     ultimo_id = cursor.lastrowid
                     return ultimo_id
                     
-        except PermissionError as pe:
-            logger.warning(f"⛔ Intento de acceso no autorizado: {pe}")
-            raise
         except Exception as e:
-            logger.error(f"❌ Error ejecutando query segura: {e} - Query: {query[:100]}...")
+            logger.error(f"❌ Error ejecutando query: {e} - Query: {query}")
             return None
     
-    def _filtrar_resultados_por_usuario(self, resultados, username, query):
-        """Filtrar resultados para que usuarios solo vean sus datos"""
-        if not resultados:
-            return resultados
-        
-        resultados_filtrados = []
-        
-        # Determinar qué tabla se está consultando
-        if 'FROM inscritos' in query.upper():
-            # Para inscritos, filtrar por email o matrícula
-            for row in resultados:
-                row_dict = dict(row)
-                if (row_dict.get('email') == username or 
-                    row_dict.get('email_gmail') == username or
-                    row_dict.get('matricula') == username):
-                    resultados_filtrados.append(row)
-        elif 'FROM usuarios' in query.upper():
-            # Para usuarios, solo permitir ver su propio registro
-            for row in resultados:
-                row_dict = dict(row)
-                if row_dict.get('usuario') == username or row_dict.get('email') == username:
-                    resultados_filtrados.append(row)
-        else:
-            # Para otras tablas, no permitir acceso
-            return []
-        
-        return resultados_filtrados
-    
-    def agregar_inscrito_completo_seguro(self, datos_inscrito, username):
-        """Agregar inscrito con validaciones de seguridad"""
+    def verificar_usuario(self, usuario, password):
+        """VERIFICACIÓN DE USUARIO CORREGIDA - Maneja passwords hasheadas y texto plano"""
         try:
-            # Validar datos
+            query = "SELECT * FROM usuarios WHERE usuario = ?"
+            resultados = self.ejecutar_query(query, (usuario,))
+            
+            if not resultados:
+                logger.warning(f"Usuario no encontrado: {usuario}")
+                return None
+            
+            usuario_data = resultados[0]
+            stored_password = usuario_data['password']
+            
+            # PRIMERO: Intentar con hash (la forma segura)
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            
+            if stored_password == password_hash:
+                logger.info(f"✅ Login exitoso (hash) para: {usuario}")
+                return usuario_data
+            
+            # SEGUNDO: Si no funciona con hash, probar texto plano (para compatibilidad)
+            if stored_password == password:
+                logger.info(f"✅ Login exitoso (texto) para: {usuario}")
+                # Si la contraseña estaba en texto, la actualizamos a hash
+                self._actualizar_password_a_hash(usuario, password_hash)
+                return usuario_data
+            
+            # Si llegamos aquí, la contraseña no coincide
+            logger.warning(f"Contraseña incorrecta para usuario: {usuario}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error verificando usuario: {e}", exc_info=True)
+            return None
+    
+    def _actualizar_password_a_hash(self, usuario, password_hash):
+        """Actualizar contraseña en texto plano a hash para mayor seguridad"""
+        try:
+            query = "UPDATE usuarios SET password = ? WHERE usuario = ?"
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (password_hash, usuario))
+                conn.commit()
+            logger.info(f"✅ Contraseña actualizada a hash para usuario: {usuario}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error actualizando password a hash: {e}")
+            return False
+    
+    def agregar_inscrito_completo(self, datos_inscrito):
+        try:
             if datos_inscrito.get('email_gmail'):
                 if not self.validador.validar_email_gmail(datos_inscrito['email_gmail']):
                     raise ValueError("❌ El correo debe ser de dominio @gmail.com")
             
-            # Verificar duplicados
             query_check = '''
                 SELECT COUNT(*) as count FROM inscritos 
                 WHERE email = ? OR email_gmail = ?
             '''
-            resultado = self.ejecutar_query_segura(query_check, (
+            resultado = self.ejecutar_query(query_check, (
                 datos_inscrito['email'],
                 datos_inscrito.get('email_gmail', '')
-            ), user_role='publico', username=username)
+            ))
             
             if resultado and resultado[0]['count'] > 0:
                 estado_sistema.registrar_duplicado_eliminado()
                 raise ValueError("❌ Ya existe un registro con este correo electrónico")
             
-            # Generar identificadores únicos
             folio_unico = self.generar_folio_unico()
             fecha_limite = (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
             
-            # Insertar inscrito
             query_inscrito = '''
                 INSERT INTO inscritos (
                     matricula, folio_unico, nombre_completo, email, email_gmail, telefono,
@@ -1763,24 +1263,24 @@ class SistemaBaseDatosSeguro:
                     acepto_privacidad, acepto_convocatoria,
                     fecha_aceptacion_privacidad, fecha_aceptacion_convocatoria,
                     duplicado_verificado, matricula_unam,
-                    completado, observaciones, usuario_actualizacion
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    completado, observaciones
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
             
             params_inscrito = (
                 datos_inscrito.get('matricula', ''),
                 folio_unico,
-                self.validador.sanitizar_input(datos_inscrito.get('nombre_completo', '')),
+                datos_inscrito.get('nombre_completo', ''),
                 datos_inscrito.get('email', ''),
                 datos_inscrito.get('email_gmail', ''),
                 datos_inscrito.get('telefono', ''),
                 datos_inscrito.get('tipo_programa', ''),
                 datos_inscrito.get('categoria_academica', ''),
-                self.validador.sanitizar_input(datos_inscrito.get('programa_interes', '')),
+                datos_inscrito.get('programa_interes', ''),
                 datos_inscrito.get('estado_civil', ''),
                 datos_inscrito.get('edad', None),
-                self.validador.sanitizar_input(datos_inscrito.get('domicilio', '')),
-                self.validador.sanitizar_input(datos_inscrito.get('licenciatura_origen', '')),
+                datos_inscrito.get('domicilio', ''),
+                datos_inscrito.get('licenciatura_origen', ''),
                 datos_inscrito.get('documentos_subidos', 0),
                 datos_inscrito.get('documentos_guardados', ''),
                 datos_inscrito.get('documentos_faltantes', ''),
@@ -1794,31 +1294,89 @@ class SistemaBaseDatosSeguro:
                 1,
                 datos_inscrito.get('matricula_unam', ''),
                 0,
-                self.validador.sanitizar_input(datos_inscrito.get('observaciones', '')),
-                username
+                datos_inscrito.get('observaciones', '')
             )
             
-            inscrito_id = self.ejecutar_query_segura(query_inscrito, params_inscrito, 
-                                                    user_role='publico', username=username)
+            inscrito_id = self.ejecutar_query(query_inscrito, params_inscrito)
             
-            # Insertar estudio socioeconómico si existe
             if datos_inscrito.get('estudio_socioeconomico_detallado'):
-                self.guardar_estudio_socioeconomico(inscrito_id, datos_inscrito['estudio_socioeconomico_detallado'], username)
+                self.guardar_estudio_socioeconomico(inscrito_id, datos_inscrito['estudio_socioeconomico_detallado'])
             
-            logger.info(f"✅ Inscrito agregado por {username}: {datos_inscrito.get('matricula')} - Folio: {folio_unico}")
+            if datos_inscrito.get('archivos_subidos'):
+                for archivo_info in datos_inscrito['archivos_subidos']:
+                    self.guardar_documento_subido(
+                        inscrito_id, 
+                        archivo_info['nombre_documento'],
+                        archivo_info['nombre_archivo'],
+                        archivo_info['ruta_archivo'],
+                        archivo_info['tamano_bytes'],
+                        archivo_info['tipo_archivo']
+                    )
             
-            return inscrito_id, folio_unico
+            if inscrito_id:
+                query_usuario = '''
+                    INSERT INTO usuarios (
+                        usuario, password, rol, nombre_completo, email, matricula, activo,
+                        categoria_academica, tipo_programa, acepto_privacidad, acepto_convocatoria
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+                
+                # Contraseña por defecto para inscritos: su matrícula
+                password_hash = hashlib.sha256(datos_inscrito.get('matricula', '').encode()).hexdigest()
+                params_usuario = (
+                    datos_inscrito.get('matricula', ''),
+                    password_hash,
+                    'inscrito',
+                    datos_inscrito.get('nombre_completo', ''),
+                    datos_inscrito.get('email', ''),
+                    datos_inscrito.get('matricula', ''),
+                    1,
+                    datos_inscrito.get('categoria_academica', ''),
+                    datos_inscrito.get('tipo_programa', ''),
+                    1 if datos_inscrito.get('acepto_privacidad') else 0,
+                    1 if datos_inscrito.get('acepto_convocatoria') else 0
+                )
+                
+                self.ejecutar_query(query_usuario, params_usuario)
+                logger.info(f"✅ Inscrito agregado: {datos_inscrito.get('matricula')} - Folio: {folio_unico}")
+                
+                return inscrito_id, folio_unico
+            
+            return None, None
             
         except Exception as e:
-            logger.error(f"❌ Error agregando inscrito seguro: {e}")
+            logger.error(f"❌ Error agregando inscrito completo: {e}")
             raise
+    
+    def guardar_documento_subido(self, inscrito_id, nombre_documento, nombre_archivo, ruta_archivo, tamano_bytes, tipo_archivo):
+        try:
+            query = '''
+                INSERT INTO documentos_subidos (
+                    inscrito_id, nombre_documento, nombre_archivo, ruta_archivo,
+                    tamano_bytes, tipo_archivo
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            '''
+            
+            self.ejecutar_query(query, (
+                inscrito_id,
+                nombre_documento,
+                nombre_archivo,
+                ruta_archivo,
+                tamano_bytes,
+                tipo_archivo
+            ))
+            
+            logger.info(f"✅ Documento subido registrado: {nombre_archivo} para inscrito {inscrito_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error guardando documento subido: {e}")
     
     def generar_folio_unico(self):
         fecha = datetime.now().strftime('%y%m%d')
         random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         return f"FOL{fecha}{random_str}"
     
-    def guardar_estudio_socioeconomico(self, inscrito_id, datos_estudio, username):
+    def guardar_estudio_socioeconomico(self, inscrito_id, datos_estudio):
         try:
             query = '''
                 INSERT INTO estudios_socioeconomicos (
@@ -1828,38 +1386,28 @@ class SistemaBaseDatosSeguro:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
             
-            self.ejecutar_query_segura(query, (
+            self.ejecutar_query(query, (
                 inscrito_id,
                 datos_estudio.get('ingreso_familiar'),
                 datos_estudio.get('personas_dependientes'),
                 1 if datos_estudio.get('vivienda_propia') else 0,
                 1 if datos_estudio.get('transporte_propio') else 0,
-                self.validador.sanitizar_input(datos_estudio.get('seguro_medico', '')),
+                datos_estudio.get('seguro_medico'),
                 1 if datos_estudio.get('discapacidad') else 0,
                 1 if datos_estudio.get('beca_solicitada') else 0,
                 1 if datos_estudio.get('trabajo_estudiantil') else 0,
-                self.validador.sanitizar_input(datos_estudio.get('detalles', ''))
-            ), user_role='publico', username=username)
+                datos_estudio.get('detalles', '')
+            ))
             
-            logger.info(f"✅ Estudio socioeconómico guardado por {username} para inscrito {inscrito_id}")
+            logger.info(f"✅ Estudio socioeconómico guardado para inscrito {inscrito_id}")
             
         except Exception as e:
             logger.error(f"❌ Error guardando estudio socioeconómico: {e}")
     
-    def obtener_documentos_faltantes(self, inscrito_id, username):
+    def obtener_documentos_faltantes(self, inscrito_id):
         try:
-            # Verificar que el usuario tenga acceso a este inscrito
-            query_verificacion = "SELECT email, email_gmail, matricula FROM inscritos WHERE id = ?"
-            resultado = self.ejecutar_query_segura(query_verificacion, (inscrito_id,), 
-                                                  user_role='publico', username=username)
-            
-            if not resultado:
-                raise PermissionError("No tienes permisos para acceder a estos datos")
-            
-            # Continuar con la consulta original
             query_tipo = "SELECT tipo_programa FROM inscritos WHERE id = ?"
-            tipo_result = self.ejecutar_query_segura(query_tipo, (inscrito_id,), 
-                                                    user_role='publico', username=username)
+            tipo_result = self.ejecutar_query(query_tipo, (inscrito_id,))
             
             if not tipo_result:
                 return []
@@ -1871,12 +1419,10 @@ class SistemaBaseDatosSeguro:
                 WHERE tipo_programa = ? AND obligatorio = 1
                 ORDER BY orden
             '''
-            documentos_obligatorios = self.ejecutar_query_segura(query_docs, (tipo_programa,), 
-                                                                user_role='publico', username=username)
+            documentos_obligatorios = self.ejecutar_query(query_docs, (tipo_programa,))
             
             query_subidos = "SELECT documentos_guardados FROM inscritos WHERE id = ?"
-            subidos_result = self.ejecutar_query_segura(query_subidos, (inscrito_id,), 
-                                                       user_role='publico', username=username)
+            subidos_result = self.ejecutar_query(query_subidos, (inscrito_id,))
             
             documentos_subidos = []
             if subidos_result and subidos_result[0]['documentos_guardados']:
@@ -1887,35 +1433,21 @@ class SistemaBaseDatosSeguro:
             
             if faltantes:
                 query_update = "UPDATE inscritos SET documentos_faltantes = ? WHERE id = ?"
-                self.ejecutar_query_segura(query_update, (', '.join(faltantes), inscrito_id), 
-                                          user_role='publico', username=username)
+                self.ejecutar_query(query_update, (', '.join(faltantes), inscrito_id))
             
             return faltantes
             
-        except PermissionError as pe:
-            logger.warning(f"⛔ Intento de acceso no autorizado a documentos: {pe}")
-            return []
         except Exception as e:
             logger.error(f"❌ Error obteniendo documentos faltantes: {e}")
             return []
     
-    def enviar_recordatorio(self, inscrito_id, username):
+    def enviar_recordatorio(self, inscrito_id):
         try:
-            # Verificar permisos
-            query_verificacion = "SELECT id FROM inscritos WHERE id = ?"
-            resultado = self.ejecutar_query_segura(query_verificacion, (inscrito_id,), 
-                                                  user_role='secretaria', username=username)
-            
-            if not resultado:
-                raise PermissionError("No tienes permisos para enviar recordatorios")
-            
-            # Continuar con la lógica original
             query = '''
                 SELECT nombre_completo, email, email_gmail, fecha_limite_registro 
                 FROM inscritos WHERE id = ? AND recordatorio_enviado = 0
             '''
-            resultado = self.ejecutar_query_segura(query, (inscrito_id,), 
-                                                  user_role='secretaria', username=username)
+            resultado = self.ejecutar_query(query, (inscrito_id,))
             
             if not resultado:
                 return False
@@ -1931,28 +1463,20 @@ class SistemaBaseDatosSeguro:
                     SET recordatorio_enviado = 1, ultimo_recordatorio = ?
                     WHERE id = ?
                 '''
-                self.ejecutar_query_segura(query_update, (datetime.now().isoformat(), inscrito_id), 
-                                          user_role='secretaria', username=username)
+                self.ejecutar_query(query_update, (datetime.now().isoformat(), inscrito_id))
                 
                 estado_sistema.registrar_recordatorio()
-                logger.info(f"✅ Recordatorio enviado por {username} para inscrito {inscrito_id} ({dias_restantes} días restantes)")
+                logger.info(f"✅ Recordatorio registrado para inscrito {inscrito_id} ({dias_restantes} días restantes)")
                 return True
             
             return False
             
-        except PermissionError as pe:
-            logger.warning(f"⛔ Intento no autorizado de enviar recordatorio: {pe}")
-            return False
         except Exception as e:
             logger.error(f"❌ Error enviando recordatorio: {e}")
             return False
     
-    def limpiar_registros_incompletos(self, dias_inactividad=7, username='admin'):
+    def limpiar_registros_incompletos(self, dias_inactividad=7):
         try:
-            # Solo admin puede limpiar registros
-            if not username or username != 'admin':
-                raise PermissionError("Solo administradores pueden limpiar registros")
-            
             fecha_limite = (datetime.now() - timedelta(days=dias_inactividad)).date()
             
             query = '''
@@ -1962,223 +1486,580 @@ class SistemaBaseDatosSeguro:
                 AND documentos_subidos < 5
             '''
             
-            with self.get_connection('admin') as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query, (fecha_limite.isoformat(),))
                 eliminados = cursor.rowcount
             
             estado_sistema.registrar_registro_incompleto_eliminado(eliminados)
-            logger.info(f"🗑️ Eliminados {eliminados} registros incompletos por {username}")
+            logger.info(f"🗑️ Eliminados {eliminados} registros incompletos")
             return eliminados
             
-        except PermissionError as pe:
-            logger.warning(f"⛔ Intento no autorizado de limpiar registros: {pe}")
-            return 0
         except Exception as e:
             logger.error(f"❌ Error limpiando registros incompletos: {e}")
             return 0
     
-    def obtener_inscritos(self, username, user_role):
+    def obtener_inscritos(self):
         try:
-            if user_role in ['admin', 'secretaria']:
-                # Admin y secretaria ven todos
-                query = "SELECT * FROM inscritos ORDER BY fecha_registro DESC"
-                resultados = self.ejecutar_query_segura(query, user_role=user_role, username=username)
-            else:
-                # Usuarios normales solo ven sus datos
-                query = """
-                    SELECT * FROM inscritos 
-                    WHERE email = ? OR email_gmail = ? OR matricula = ?
-                    ORDER BY fecha_registro DESC
-                """
-                resultados = self.ejecutar_query_segura(query, (username, username, username), 
-                                                       user_role=user_role, username=username)
-            
+            query = "SELECT * FROM inscritos ORDER BY fecha_registro DESC"
+            resultados = self.ejecutar_query(query)
             return resultados if resultados else []
         except Exception as e:
             logger.error(f"❌ Error obteniendo inscritos: {e}")
             return []
     
-    def obtener_inscrito_por_matricula(self, matricula, username, user_role):
+    def obtener_inscrito_por_matricula(self, matricula):
         try:
             query = "SELECT * FROM inscritos WHERE matricula = ?"
-            resultados = self.ejecutar_query_segura(query, (matricula,), 
-                                                   user_role=user_role, username=username)
-            
-            if resultados:
-                # Verificar permisos
-                inscrito = resultados[0]
-                if user_role in ['admin', 'secretaria']:
-                    return inscrito
-                elif (inscrito.get('email') == username or 
-                      inscrito.get('email_gmail') == username or
-                      inscrito.get('matricula') == username):
-                    return inscrito
-                else:
-                    raise PermissionError("No tienes permisos para ver este registro")
-            
-            return None
-            
-        except PermissionError as pe:
-            raise pe
+            resultados = self.ejecutar_query(query, (matricula,))
+            return resultados[0] if resultados else None
         except Exception as e:
             logger.error(f"❌ Error obteniendo inscrito: {e}")
             return None
     
-    def obtener_total_inscritos(self, username, user_role):
+    def obtener_total_inscritos(self):
         try:
-            if user_role in ['admin', 'secretaria']:
-                query = "SELECT COUNT(*) as total FROM inscritos"
-                resultados = self.ejecutar_query_segura(query, user_role=user_role, username=username)
-            else:
-                query = """
-                    SELECT COUNT(*) as total FROM inscritos 
-                    WHERE email = ? OR email_gmail = ? OR matricula = ?
-                """
-                resultados = self.ejecutar_query_segura(query, (username, username, username), 
-                                                       user_role=user_role, username=username)
-            
+            query = "SELECT COUNT(*) as total FROM inscritos"
+            resultados = self.ejecutar_query(query)
             total = resultados[0]['total'] if resultados else 0
             
-            # Solo admin actualiza el estado global
-            if user_role == 'admin':
-                estado_sistema.set_total_inscritos(total)
+            estado_sistema.set_total_inscritos(total)
             
             return total
         except Exception as e:
             logger.error(f"❌ Error obteniendo total: {e}")
             return 0
 
-# Inicializar base de datos segura
-db_segura = SistemaBaseDatosSeguro()
+db_completa = SistemaBaseDatosCompleto()
 
 # ============================================================================
-# CAPA 8: COMPONENTES UI SEGUROS
+# CAPA 7: SISTEMA DE BACKUPS, DOCUMENTOS Y CORREOS
 # ============================================================================
 
-class ComponentesUISeguro:
-    """Componentes UI reutilizables con seguridad"""
+class SistemaBackupAutomatico:
+    """Sistema de backup automático"""
     
-    @staticmethod
-    def mostrar_header(titulo, subtitulo="", nivel=1):
-        if nivel == 1:
-            st.markdown(f"""
-            <style>
-            .main-header-seguro {{
-                font-size: 2.5rem;
-                color: #2E86AB;
-                text-align: center;
-                margin-bottom: 1rem;
-                font-weight: bold;
-                padding: 10px;
-                background-color: #f8f9fa;
-                border-radius: 10px;
-                border-left: 5px solid #A23B72;
-            }}
-            .sub-header-seguro {{
-                font-size: 1.5rem;
-                color: #A23B72;
-                margin-bottom: 2rem;
-                font-weight: 600;
-                text-align: center;
-            }}
-            </style>
+    def __init__(self, gestor_ssh):
+        self.gestor_ssh = gestor_ssh
+        self.backup_dir = APP_CONFIG['backup_dir']
+        self.max_backups = APP_CONFIG['max_backups']
+        
+    def crear_backup(self, tipo_operacion, detalles):
+        try:
+            if not os.path.exists(self.backup_dir):
+                os.makedirs(self.backup_dir)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"backup_{tipo_operacion}_{timestamp}.zip"
+            backup_path = os.path.join(self.backup_dir, backup_filename)
+            
+            if self.gestor_ssh.conectar_ssh():
+                try:
+                    temp_db = self.gestor_ssh.descargar_db_remota()
+                    if temp_db:
+                        with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            zipf.write(temp_db, 'database.db')
+                            
+                            metadata = {
+                                'fecha_backup': datetime.now().isoformat(),
+                                'tipo_operacion': tipo_operacion,
+                                'detalles': detalles,
+                                'usuario': 'sistema'
+                            }
+                            
+                            metadata_str = json.dumps(metadata, indent=2, default=str)
+                            zipf.writestr('metadata.json', metadata_str)
+                        
+                        logger.info(f"✅ Backup creado: {backup_path}")
+                        self._limpiar_backups_antiguos()
+                        
+                        return backup_path
+                finally:
+                    self.gestor_ssh.desconectar_ssh()
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error creando backup: {e}")
+            return None
+    
+    def _limpiar_backups_antiguos(self):
+        try:
+            if not os.path.exists(self.backup_dir):
+                return
+            
+            backups = []
+            for file in os.listdir(self.backup_dir):
+                if file.startswith('backup_') and file.endswith('.zip'):
+                    filepath = os.path.join(self.backup_dir, file)
+                    backups.append((filepath, os.path.getmtime(filepath)))
+            
+            backups.sort(key=lambda x: x[1], reverse=True)
+            
+            for backup in backups[self.max_backups:]:
+                try:
+                    os.remove(backup[0])
+                    logger.info(f"🗑️ Backup antiguo eliminado: {backup[0]}")
+                except Exception as e:
+                    logger.warning(f"⚠️ No se pudo eliminar backup antiguo: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error limpiando backups antiguos: {e}")
+    
+    def listar_backups(self):
+        try:
+            if not os.path.exists(self.backup_dir):
+                return []
+            
+            backups = []
+            for file in os.listdir(self.backup_dir):
+                if file.startswith('backup_') and file.endswith('.zip'):
+                    filepath = os.path.join(self.backup_dir, file)
+                    file_info = {
+                        'nombre': file,
+                        'ruta': filepath,
+                        'tamaño': os.path.getsize(filepath),
+                        'fecha': datetime.fromtimestamp(os.path.getmtime(filepath))
+                    }
+                    backups.append(file_info)
+            
+            return sorted(backups, key=lambda x: x['fecha'], reverse=True)
+            
+        except Exception as e:
+            logger.error(f"Error listando backups: {e}")
+            return []
+
+class SistemaGestionDocumentos:
+    """Sistema para gestionar la subida y almacenamiento de documentos"""
+    
+    def __init__(self):
+        self.uploads_dir = APP_CONFIG['uploads_dir']
+        self.crear_directorio_uploads()
+    
+    def crear_directorio_uploads(self):
+        """Crear directorio para almacenar documentos subidos"""
+        try:
+            if not os.path.exists(self.uploads_dir):
+                os.makedirs(self.uploads_dir)
+                logger.info(f"✅ Directorio de uploads creado: {self.uploads_dir}")
+            
+            subdirs = ['actas_nacimiento', 'curps', 'certificados', 'identificaciones', 
+                      'comprobantes', 'fotografias', 'titulos', 'cedulas', 'cartas']
+            for subdir in subdirs:
+                subdir_path = os.path.join(self.uploads_dir, subdir)
+                if not os.path.exists(subdir_path):
+                    os.makedirs(subdir_path)
+                    
+        except Exception as e:
+            logger.error(f"❌ Error creando directorio de uploads: {e}")
+    
+    def subir_documento(self, archivo, nombre_documento, matricula):
+        """Subir un documento al servidor"""
+        try:
+            if archivo is None:
+                return None
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            nombre_original = archivo.name
+            extension = nombre_original.split('.')[-1] if '.' in nombre_original else 'pdf'
+            
+            nombre_seguro = f"{matricula}_{nombre_documento.replace(' ', '_')}_{timestamp}.{extension}"
+            
+            directorio_destino = self._obtener_directorio_documento(nombre_documento)
+            ruta_completa = os.path.join(directorio_destino, nombre_seguro)
+            
+            with open(ruta_completa, "wb") as f:
+                f.write(archivo.getbuffer())
+            
+            tamano_bytes = os.path.getsize(ruta_completa)
+            
+            logger.info(f"✅ Documento subido: {nombre_original} -> {ruta_completa} ({tamano_bytes} bytes)")
+            
+            return {
+                'nombre_documento': nombre_documento,
+                'nombre_archivo': nombre_seguro,
+                'ruta_archivo': ruta_completa,
+                'tamano_bytes': tamano_bytes,
+                'tipo_archivo': extension
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error subiendo documento: {e}")
+            return None
+    
+    def _obtener_directorio_documento(self, nombre_documento):
+        """Obtener el directorio adecuado según el tipo de documento"""
+        nombre_doc_lower = nombre_documento.lower()
+        
+        if 'acta' in nombre_doc_lower or 'nacimiento' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'actas_nacimiento')
+        elif 'curp' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'curps')
+        elif 'certificado' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'certificados')
+        elif 'ine' in nombre_doc_lower or 'identificacion' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'identificaciones')
+        elif 'comprobante' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'comprobantes')
+        elif 'foto' in nombre_doc_lower or 'fotografía' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'fotografias')
+        elif 'titulo' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'titulos')
+        elif 'cedula' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'cedulas')
+        elif 'carta' in nombre_doc_lower:
+            return os.path.join(self.uploads_dir, 'cartas')
+        else:
+            return self.uploads_dir
+
+class SistemaCorreosCompleto:
+    """Sistema de envío de correos completo"""
+    
+    def __init__(self):
+        try:
+            smtp_config = gestor_remoto.config.get('smtp', {})
+            
+            self.smtp_server = smtp_config.get("smtp_server", "")
+            self.smtp_port = int(smtp_config.get("smtp_port", 587))
+            self.email_user = smtp_config.get("email_user", "")
+            self.email_password = smtp_config.get("email_password", "")
+            self.correos_habilitados = bool(self.smtp_server and self.email_user)
+            
+            if self.correos_habilitados:
+                logger.info("✅ Sistema de correos configurado")
+            else:
+                logger.warning("⚠️ Sistema de correos no configurado completamente")
+        except Exception as e:
+            logger.warning(f"⚠️ Configuración de correo no disponible: {e}")
+            self.correos_habilitados = False
+    
+    def enviar_correo_confirmacion_completo(self, destinatario, nombre_estudiante, matricula, folio, programa, tipo_programa):
+        if not self.correos_habilitados:
+            return False, "Sistema de correos no configurado"
+        
+        try:
+            mensaje = MIMEMultipart()
+            mensaje['From'] = self.email_user
+            mensaje['To'] = destinatario
+            mensaje['Subject'] = f"Confirmación de Pre-Inscripción - Folio: {folio}"
+            
+            cuerpo = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                    <div style="text-align: center; background-color: #2E86AB; color: white; padding: 20px; border-radius: 10px 10px 0 0;">
+                        <h1>🏥 Escuela de Enfermería</h1>
+                        <h2>Confirmación de Pre-Inscripción</h2>
+                        <h3>Convocatoria Febrero 2026</h3>
+                    </div>
+                    
+                    <div style="padding: 20px;">
+                        <p>Estimado/a <strong>{nombre_estudiante}</strong>,</p>
+                        
+                        <p>Hemos recibido exitosamente tu solicitud de pre-inscripción. <strong>IMPORTANTE:</strong> Los resultados se publicarán únicamente con el folio asignado para garantizar la confidencialidad.</p>
+                        
+                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #2E86AB;">
+                            <h3 style="color: #2E86AB; margin-top: 0;">📋 Datos de tu Registro</h3>
+                            <p><strong>Folio Único (ANÓNIMO):</strong> <span style="background-color: #ffeaa7; padding: 2px 5px; border-radius: 3px; font-weight: bold;">{folio}</span></p>
+                            <p><strong>Matrícula:</strong> {matricula}</p>
+                            <p><strong>Programa:</strong> {programa} ({tipo_programa})</p>
+                            <p><strong>Fecha de registro:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+                            <p><strong>Estatus:</strong> Pre-inscrito</p>
+                        </div>
+                        
+                        <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #A23B72;">
+                            <h4 style="color: #A23B72; margin-top: 0;">⚠️ INFORMACIÓN CRÍTICA</h4>
+                            <p><strong>¡GUARDA TU FOLIO!</strong> Los resultados finales se publicarán <strong>SÓLO CON EL FOLIO {folio}</strong> para garantizar la privacidad.</p>
+                            <p>No se mostrarán nombres completos en la publicación de resultados.</p>
+                        </div>
+                        
+                        <h3 style="color: #2E86AB;">📬 Próximos Pasos</h3>
+                        <ol>
+                            <li><strong>Revisión de documentos</strong> (2-3 días hábiles)</li>
+                            <li><strong>Correo de confirmación</strong> con fecha de examen</li>
+                            <li><strong>Examen de admisión</strong> (presencial/online)</li>
+                            <li><strong>Entrevista personal</strong> (si aplica)</li>
+                            <li><strong>Publicación de resultados</strong> (solo con folio)</li>
+                        </ol>
+                        
+                        <p>Si tienes alguna pregunta, no dudes en contactarnos:</p>
+                        <ul>
+                            <li>📧 Email: admisiones@escuelaenfermeria.edu.mx</li>
+                            <li>📞 Teléfono: (55) 1234-5678</li>
+                            <li>🕒 Horario: Lunes a Viernes de 9:00 a 18:00 hrs</li>
+                        </ul>
+                        
+                        <p>¡Te deseamos mucho éxito en tu proceso de admisión!</p>
+                        
+                        <p>Atentamente,<br>
+                        <strong>Departamento de Admisiones</strong><br>
+                        Escuela de Enfermería<br>
+                        Formando Líderes en Salud Cardiovascular</p>
+                    </div>
+                    
+                    <div style="text-align: center; background-color: #f1f1f1; padding: 15px; border-radius: 0 0 10px 10px; font-size: 12px; color: #666;">
+                        <p>Este es un correo automático, por favor no respondas a este mensaje.</p>
+                        <p>Folio generado automáticamente: {folio} | Sistema de Pre-Inscripción v4.0</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            mensaje.attach(MIMEText(cuerpo, 'html'))
+            
+            with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
+                server.starttls()
+                server.login(self.email_user, self.email_password)
+                server.send_message(mensaje)
+            
+            logger.info(f"✅ Correo de confirmación enviado a {destinatario} - Folio: {folio}")
+            return True, "Correo enviado exitosamente"
+            
+        except socket.timeout:
+            logger.error(f"❌ Timeout enviando correo a {destinatario}")
+            return False, "Timeout al enviar correo"
+        except Exception as e:
+            logger.error(f"❌ Error enviando correo: {e}")
+            return False, f"Error: {str(e)}"
+
+# ============================================================================
+# CAPA 8: SISTEMA DE AUTENTICACIÓN CORREGIDO
+# ============================================================================
+
+class SistemaAutenticacion:
+    """Sistema de autenticación para usuarios administrativos - CORREGIDO"""
+    
+    def __init__(self):
+        self.usuario_actual = None
+        self.rol_actual = None
+        
+        if 'autenticado' not in st.session_state:
+            st.session_state.autenticado = False
+            st.session_state.usuario = None
+            st.session_state.rol = None
+    
+    def mostrar_login(self):
+        """Mostrar formulario de login"""
+        with st.container():
+            st.markdown("""
+            <div style="background-color: #f0f2f6; padding: 30px; border-radius: 10px; 
+                        max-width: 400px; margin: 50px auto; border: 1px solid #ddd;">
+                <h2 style="text-align: center; color: #2E86AB;">🔐 Acceso Administrativo</h2>
+                <p style="text-align: center; color: #666;">Ingresa tus credenciales para acceder al sistema</p>
+            </div>
             """, unsafe_allow_html=True)
             
-            st.markdown(f'<div class="main-header-seguro">{titulo}</div>', unsafe_allow_html=True)
-            if subtitulo:
-                st.markdown(f'<div class="sub-header-seguro">{subtitulo}</div>', unsafe_allow_html=True)
-        else:
-            st.title(titulo)
-            if subtitulo:
-                st.subheader(subtitulo)
+            col1, col2, col3 = st.columns([1, 2, 1])
+            
+            with col2:
+                with st.form("form_login", clear_on_submit=True):
+                    usuario = st.text_input("Usuario", placeholder="admin", key="login_usuario")
+                    password = st.text_input("Contraseña", type="password", 
+                                           placeholder="Admin123!", key="login_password")
+                    enviar = st.form_submit_button("Iniciar Sesión", type="primary", use_container_width=True)
+                    
+                    if enviar:
+                        if self.validar_credenciales(usuario, password):
+                            st.session_state.autenticado = True
+                            st.session_state.usuario = usuario
+                            st.session_state.rol = self.rol_actual
+                            st.success(f"✅ Bienvenido, {usuario}!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("❌ Usuario o contraseña incorrectos")
+                            
+                            # Información de debug temporal (eliminar después)
+                            with st.expander("🔍 Información de depuración (temporal)"):
+                                st.info("Credenciales por defecto:")
+                                st.code("Usuario: admin\nContraseña: Admin123!")
+                                
+                                # Verificar si hay usuarios en la base de datos
+                                try:
+                                    query = "SELECT usuario, LENGTH(password) as pass_len FROM usuarios"
+                                    usuarios = db_completa.ejecutar_query(query)
+                                    if usuarios:
+                                        st.write("Usuarios en base de datos:", usuarios)
+                                    else:
+                                        st.warning("No hay usuarios en la base de datos")
+                                except Exception as e:
+                                    st.error(f"Error consultando usuarios: {e}")
+    
+    def validar_credenciales(self, usuario, password):
+        """Validar credenciales usando el método corregido de la base de datos"""
+        try:
+            usuario_data = db_completa.verificar_usuario(usuario, password)
+            
+            if usuario_data:
+                self.usuario_actual = usuario_data
+                self.rol_actual = usuario_data['rol']
+                logger.info(f"✅ Autenticación exitosa para: {usuario}")
+                return True
+            
+            logger.warning(f"❌ Autenticación fallida para: {usuario}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error validando credenciales: {e}")
+            return False
+    
+    def verificar_autenticacion(self, rol_requerido=None):
+        """Verificar si el usuario está autenticado y tiene el rol requerido"""
+        if not st.session_state.autenticado:
+            return False
         
+        if rol_requerido and st.session_state.rol != rol_requerido:
+            st.error(f"❌ No tienes permisos para acceder a esta sección. Rol requerido: {rol_requerido}")
+            return False
+        
+        return True
+    
+    def cerrar_sesion(self):
+        """Cerrar sesión del usuario"""
+        st.session_state.autenticado = False
+        st.session_state.usuario = None
+        st.session_state.rol = None
+        st.success("✅ Sesión cerrada exitosamente")
+        time.sleep(1)
+        st.rerun()
+    
+    def mostrar_cerrar_sesion(self):
+        """Mostrar botón para cerrar sesión"""
+        if st.session_state.autenticado:
+            col1, col2, col3 = st.columns([3, 1, 3])
+            with col2:
+                if st.button("🚪 Cerrar Sesión", use_container_width=True):
+                    self.cerrar_sesion()
+
+# ============================================================================
+# CAPA 9: COMPONENTES UI REUTILIZABLES
+# ============================================================================
+
+class ComponentesUI:
+    """Componentes UI reutilizables"""
+    
+    @staticmethod
+    def mostrar_header(titulo, subtitulo=""):
+        st.markdown(f"""
+        <style>
+        .main-header {{
+            font-size: 2.5rem;
+            color: #2E86AB;
+            text-align: center;
+            margin-bottom: 1rem;
+            font-weight: bold;
+        }}
+        .sub-header {{
+            font-size: 1.5rem;
+            color: #A23B72;
+            margin-bottom: 2rem;
+            font-weight: 600;
+            text-align: center;
+        }}
+        .step-header {{
+            background-color: #2E86AB;
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }}
+        .info-box {{
+            background-color: #e8f4f8;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #A23B72;
+        }}
+        </style>
+        """, unsafe_allow_html=True)
+        
+        st.markdown(f'<div class="main-header">{titulo}</div>', unsafe_allow_html=True)
+        if subtitulo:
+            st.markdown(f'<div class="sub-header">{subtitulo}</div>', unsafe_allow_html=True)
         st.markdown("---")
     
     @staticmethod
-    def crear_sidebar_seguro(usuario_nombre, usuario_rol, seguridad_manager):
+    def crear_sidebar(sistema_auth):
+        """Crear sidebar con autenticación"""
         with st.sidebar:
-            # Información del usuario
-            st.title(f"🏥 {usuario_nombre}")
-            st.caption(f"Rol: {usuario_rol}")
-            
-            # Estado del sistema
+            st.title("🏥 Sistema de Pre-Inscripción")
+            st.markdown(f"**Versión {APP_CONFIG['version']}**")
             st.markdown("---")
-            st.subheader("🔍 Estado del Sistema")
             
+            # Mostrar información de usuario si está autenticado
+            if sistema_auth and st.session_state.autenticado:
+                st.markdown(f"**👤 Usuario:** {st.session_state.usuario}")
+                st.markdown(f"**🎭 Rol:** {st.session_state.rol}")
+                st.markdown("---")
+            
+            st.subheader("🔍 Estado del Sistema")
             col_est1, col_est2 = st.columns(2)
             with col_est1:
                 if estado_sistema.esta_inicializada():
-                    st.success("✅ BD")
+                    st.success("✅ BD Inicializada")
                 else:
-                    st.error("❌ BD")
+                    st.error("❌ BD No Inic.")
             
             with col_est2:
                 if estado_sistema.estado.get('ssh_conectado'):
-                    st.success("✅ SSH")
+                    st.success("✅ SSH Conectado")
                 else:
-                    st.error("❌ SSH")
+                    st.error("❌ SSH Descon.")
             
-            # Estadísticas según rol
-            st.markdown("---")
-            if usuario_rol in ['admin', 'secretaria']:
-                st.subheader("📊 Estadísticas")
-                
-                col_stat1, col_stat2 = st.columns(2)
-                with col_stat1:
-                    total_inscritos = estado_sistema.estado.get('total_inscritos', 0)
-                    st.metric("Inscritos", total_inscritos)
-                
-                with col_stat2:
-                    recordatorios = estado_sistema.estado.get('recordatorios_enviados', 0)
-                    st.metric("Recordatorios", recordatorios)
+            st.subheader("📊 Estadísticas")
+            col_stat1, col_stat2 = st.columns(2)
+            with col_stat1:
+                total_inscritos = estado_sistema.estado.get('total_inscritos', 0)
+                st.metric("Inscritos", total_inscritos)
             
-            # Navegación según rol
+            with col_stat2:
+                recordatorios = estado_sistema.estado.get('recordatorios_enviados', 0)
+                st.metric("Recordatorios", recordatorios)
+            
             st.markdown("---")
             st.subheader("📱 Navegación")
             
-            return ComponentesUISeguro._obtener_opciones_menu(usuario_rol)
+            # Definir opciones de menú según autenticación
+            if sistema_auth and st.session_state.autenticado:
+                opciones_menu = [
+                    "🏠 Inicio y Resumen",
+                    "📝 Nueva Pre-Inscripción",
+                    "📋 Consultar Inscritos",
+                    "📁 Gestionar Documentos",
+                    "⚙️ Configuración",
+                    "📊 Reportes y Backups"
+                ]
+            else:
+                opciones_menu = [
+                    "🏠 Inicio y Resumen",
+                    "📝 Nueva Pre-Inscripción",
+                    "🔐 Acceso Administrativo"
+                ]
+            
+            menu_seleccionado = st.selectbox("Selecciona una opción:", opciones_menu)
+            
+            st.markdown("---")
+            st.caption(f"🔄 Última sincronización: {estado_sistema.estado.get('ultima_sincronizacion', 'Nunca')}")
+            st.caption(f"💾 Backups: {estado_sistema.estado.get('backups_realizados', 0)}")
+            
+            # Botón de cerrar sesión si está autenticado
+            if sistema_auth and st.session_state.autenticado:
+                if st.button("🚪 Cerrar Sesión", use_container_width=True, type="secondary"):
+                    sistema_auth.cerrar_sesion()
+            
+            return menu_seleccionado
     
     @staticmethod
-    def _obtener_opciones_menu(rol):
-        """Obtener opciones de menú según rol"""
-        if rol == 'admin':
-            return [
-                "🏠 Inicio y Resumen",
-                "📝 Nueva Pre-Inscripción",
-                "📋 Consultar Inscritos",
-                "👥 Gestión de Usuarios",
-                "⚙️ Configuración",
-                "📊 Reportes y Backups"
-            ]
-        elif rol == 'secretaria':
-            return [
-                "🏠 Inicio",
-                "📝 Nueva Pre-Inscripción",
-                "📋 Consultar Inscritos",
-                "📊 Reportes Básicos"
-            ]
-        elif rol == 'inscrito':
-            return [
-                "👤 Mi Perfil",
-                "📄 Mis Documentos",
-                "📋 Mi Progreso"
-            ]
-        else:  # publico
-            return [
-                "📝 Inscripción Pública"
-            ]
-    
-    @staticmethod
-    def crear_paso_formulario_seguro(numero, titulo, contenido_func, expandido=True):
-        with st.expander(f"🔒 PASO {numero}: {titulo}", expanded=expandido):
+    def crear_paso_formulario(numero, titulo, contenido_func, expandido=True):
+        with st.expander(f"PASO {numero}: {titulo}", expanded=expandido):
             return contenido_func()
     
     @staticmethod
     def mostrar_mensaje_exito(titulo, detalles):
         st.success(f"✅ **{titulo}**")
         st.markdown(f"""
-        <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #28a745;">
+        <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin: 10px 0;">
         {detalles}
         </div>
         """, unsafe_allow_html=True)
@@ -2187,261 +2068,652 @@ class ComponentesUISeguro:
     def mostrar_mensaje_error(titulo, detalles):
         st.error(f"❌ **{titulo}**")
         st.markdown(f"""
-        <div style="background-color: #f8d7da; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #dc3545;">
+        <div style="background-color: #f8d7da; padding: 15px; border-radius: 5px; margin: 10px 0;">
         {detalles}
         </div>
         """, unsafe_allow_html=True)
     
     @staticmethod
-    def mostrar_mensaje_advertencia(titulo, detalles):
-        st.warning(f"⚠️ **{titulo}**")
-        st.markdown(f"""
-        <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107;">
-        {detalles}
-        </div>
-        """, unsafe_allow_html=True)
-    
-    @staticmethod
-    def crear_boton_accion_seguro(texto, tipo="primary", container=True, disabled=False):
-        return st.button(texto, type=tipo, use_container_width=container, disabled=disabled)
-    
-    @staticmethod
-    def mostrar_panel_seguridad(usuario_rol, ultimo_acceso=None):
-        """Mostrar panel de información de seguridad"""
-        if usuario_rol in ['admin', 'secretaria']:
-            with st.expander("🔐 Información de Seguridad", expanded=False):
-                col_sec1, col_sec2 = st.columns(2)
-                
-                with col_sec1:
-                    st.metric("Sesiones Activas", len(estado_sistema.estado.get('sesiones_activas', {})))
-                    if ultimo_acceso:
-                        st.caption(f"Último acceso: {ultimo_acceso}")
-                
-                with col_sec2:
-                    st.metric("Intentos Fallidos", estado_sistema.estado.get('estadisticas_sistema', {}).get('intentos_fallidos', 0))
-                    st.caption(f"Usuarios bloqueados: {len(estado_sistema.estado.get('usuarios_bloqueados', {}))}")
+    def crear_boton_accion(texto, tipo="primary", container=True):
+        return st.button(texto, type=tipo, use_container_width=container)
 
 # ============================================================================
-# CAPA 9: SISTEMA DE INSCRITOS SEGURO
+# CAPA 10: SERVICIOS DE DATOS Y LÓGICA
 # ============================================================================
 
-class SistemaInscritosSeguro:
-    """Sistema principal de gestión de inscritos SEGURO"""
+class ServicioProgramas:
+    """Servicio para gestión de programas académicos"""
     
-    def __init__(self, seguridad_manager):
-        self.base_datos = db_segura
-        self.seguridad = seguridad_manager
-        self.base_datos.set_security_manager(seguridad_manager)
-        self.validador = ValidadorDatosSeguro()
-        
-        logger.info("🔐 Sistema de inscritos SEGURO inicializado")
+    @staticmethod
+    def obtener_programas_completos():
+        """Obtener todos los programas organizados por categoría"""
+        return [
+            # POSGRADO
+            {
+                "categoria": "Posgrado",
+                "categoria_id": "posgrado",
+                "tipo_programa": "MAESTRIA",
+                "nombre": "Maestría en Enfermería",
+                "duracion": "2 años",
+                "modalidad": "Presencial",
+                "descripcion": "Formación avanzada en enfermería con especialización en investigación clínica. Desarrolla habilidades en gestión, liderazgo y metodología de investigación aplicada al ámbito de la salud.",
+                "requisitos": ["Licenciatura en Enfermería", "Cédula profesional", "2 años de experiencia clínica", "Promedio mínimo de 8.0", "Examen de admisión", "Entrevista personal"]
+            },
+            {
+                "categoria": "Posgrado",
+                "categoria_id": "posgrado", 
+                "tipo_programa": "ESPECIALIDAD",
+                "nombre": "Especialidad en Enfermería Cardiovascular",
+                "duracion": "2 años",
+                "modalidad": "Presencial",
+                "descripcion": "Formación especializada en el cuidado integral de pacientes con patologías cardiovasculares. Enfoque en técnicas avanzadas de monitorización, intervención y rehabilitación cardíaca.",
+                "requisitos": ["Licenciatura en Enfermería", "Cédula profesional", "2 años de experiencia en área clínica", "Examen de conocimientos", "Entrevista con comité académico"]
+            },
+            {
+                "categoria": "Posgrado",
+                "categoria_id": "posgrado",
+                "tipo_programa": "ESPECIALIDAD",
+                "nombre": "Especialidad en Cuidados Intensivos",
+                "duracion": "2 años",
+                "modalidad": "Presencial",
+                "descripcion": "Formación en cuidados críticos y atención especializada a pacientes en estado grave. Manejo de ventilación mecánica, monitorización hemodinámica y farmacología avanzada.",
+                "requisitos": ["Licenciatura en Enfermería", "Cédula profesional", "1 año de experiencia en urgencias o terapia intensiva", "Examen de aptitudes", "Entrevista técnica"]
+            },
+            
+            # PREGRADO
+            {
+                "categoria": "Pregrado",
+                "categoria_id": "pregrado",
+                "tipo_programa": "LICENCIATURA",
+                "nombre": "Licenciatura en Enfermería",
+                "duracion": "4 años",
+                "modalidad": "Presencial",
+                "descripcion": "Formación integral en enfermería con enfoque en cardiología. Desarrolla competencias en cuidado holístico, gestión de servicios de salud y prevención de enfermedades cardiovasculares.",
+                "requisitos": ["Bachillerato terminado", "Promedio mínimo 8.0", "Examen de admisión", "Aptitud para el servicio", "Examen médico"]
+            },
+            {
+                "categoria": "Pregrado",
+                "categoria_id": "pregrado",
+                "tipo_programa": "LICENCIATURA", 
+                "nombre": "Licenciatura en Enfermería - RSC Cardiovascular",
+                "duracion": "4 años",
+                "modalidad": "Presencial",
+                "descripcion": "Formación especializada en Rehabilitación y Salud Cardiovascular. Enfoque en prevención secundaria, programas de ejercicio terapéutico y manejo integral del paciente cardíaco.",
+                "requisitos": ["Bachillerato terminado", "Promedio mínimo 8.0", "Aptitud física certificada", "Examen de conocimientos básicos", "Entrevista motivacional"]
+            },
+            {
+                "categoria": "Pregrado",
+                "categoria_id": "pregrado",
+                "tipo_programa": "LICENCIATURA",
+                "nombre": "Licenciatura en Enfermería - Cardiología Hepática",
+                "duracion": "4 años",
+                "modalidad": "Presencial",
+                "descripcion": "Formación en cuidados de pacientes con patologías hepato-cardíacas. Integración de conocimientos en fisiopatología, farmacología especializada y manejo de complicaciones.",
+                "requisitos": ["Bachillerato terminado", "Promedio mínimo 8.0", "Examen de admisión", "Interés demostrado en área clínica"]
+            },
+            {
+                "categoria": "Pregrado",
+                "categoria_id": "pregrado",
+                "tipo_programa": "LICENCIATURA",
+                "nombre": "Licenciatura en Enfermería Pediátrica",
+                "duracion": "4 años",
+                "modalidad": "Presencial",
+                "descripcion": "Formación especializada en cuidados de enfermería para población infantil y adolescente. Énfasis en crecimiento y desarrollo, pediatría social y cuidados paliativos pediátricos.",
+                "requisitos": ["Bachillerato terminado", "Promedio mínimo 8.0", "Vocación de servicio certificada", "Aptitud para trabajo con niños", "Entrevista psicológica"]
+            },
+            
+            # EDUCACIÓN CONTINUA
+            {
+                "categoria": "Educación Continua",
+                "categoria_id": "educacion_continua",
+                "tipo_programa": "DIPLOMADO",
+                "nombre": "Diplomado en Cardiología Básica",
+                "duracion": "6 meses",
+                "modalidad": "Híbrida",
+                "descripcion": "Actualización en fundamentos de cardiología para profesionales de la salud. Interpretación de ECG, reconocimiento de arritmias y manejo inicial de síndromes coronarios agudos.",
+                "requisitos": ["Título profesional en área de la salud", "Experiencia mínima 1 año", "Disponibilidad para sesiones prácticas"]
+            },
+            {
+                "categoria": "Educación Continua",
+                "categoria_id": "educacion_continua",
+                "tipo_programa": "DIPLOMADO",
+                "nombre": "Diplomado en Enfermería Oncológica",
+                "duracion": "6 meses",
+                "modalidad": "Híbrida",
+                "descripcion": "Formación en cuidados de enfermería especializados para pacientes oncológicos. Manejo de quimioterapia, cuidados paliativos y soporte emocional al paciente y familia.",
+                "requisitos": ["Licenciatura en Enfermería o área afín", "Experiencia en área clínica", "Disponibilidad para rotaciones hospitalarias"]
+            },
+            {
+                "categoria": "Educación Continua",
+                "categoria_id": "educacion_continua",
+                "tipo_programa": "CURSO",
+                "nombre": "Curso de RCP Avanzado",
+                "duracion": "40 horas",
+                "modalidad": "Presencial",
+                "descripcion": "Certificación en Reanimación Cardiopulmonar Avanzada según estándares internacionales. Manejo de vía aérea, desfibrilación y algoritmos de emergencia cardiovascular.",
+                "requisitos": ["Título en área de la salud", "Certificación BLS vigente", "Aptitud física"]
+            },
+            {
+                "categoria": "Educación Continua",
+                "categoria_id": "educacion_continua",
+                "tipo_programa": "CURSO",
+                "nombre": "Curso de Electrocardiografía Básica",
+                "duracion": "30 horas",
+                "modalidad": "Presencial",
+                "descripcion": "Interpretación básica de electrocardiogramas para personal de salud. Reconocimiento de ritmos cardíacos, isquemia e infarto, y monitorización continua.",
+                "requisitos": ["Estudiantes o profesionales de salud", "Conocimientos básicos de anatomía y fisiología"]
+            },
+            {
+                "categoria": "Educación Continua",
+                "categoria_id": "educacion_continua",
+                "tipo_programa": "CURSO",
+                "nombre": "Taller de Cuidados Paliativos",
+                "duracion": "20 horas",
+                "modalidad": "Presencial",
+                "descripcion": "Atención integral a pacientes en fase terminal y sus familias. Manejo del dolor, comunicación efectiva y soporte emocional en situaciones de final de vida.",
+                "requisitos": ["Personal de salud", "Interés en área humanística", "Disponibilidad emocional"]
+            }
+        ]
     
-    def mostrar_formulario_publico(self):
-        """Mostrar formulario para usuarios públicos (sin login)"""
-        ComponentesUISeguro.mostrar_header(
-            "📝 Formulario de Pre-Inscripción Pública", 
-            "Escuela de Enfermería - Convocatoria Febrero 2026", nivel=1
-        )
+    @staticmethod
+    def obtener_documentos_por_tipo(tipo_programa):
+        if tipo_programa == "LICENCIATURA":
+            return DOCUMENTOS_BASE + [
+                "Comprobante domicilio (adicional)",
+                "Carta de exposición de motivos",
+                "Certificado de bachillerato"
+            ]
+        elif tipo_programa == "ESPECIALIDAD":
+            return DOCUMENTOS_BASE + [
+                "Título profesional",
+                "Certificado de licenciatura",
+                "Cédula profesional",
+                "INE (vigente)",
+                "Comprobante de Servicio Social",
+                "Autorización de titulación",
+                "Constancia de experiencia laboral (2+ años)",
+                "Constancia de cómputo",
+                "Constancia de comprensión de textos"
+            ]
+        elif tipo_programa == "MAESTRIA":
+            return DOCUMENTOS_BASE + [
+                "Título profesional",
+                "Certificado de licenciatura",
+                "Cédula profesional",
+                "INE (vigente)",
+                "Constancia de experiencia laboral (3+ años)",
+                "Carta de intención",
+                "Propuesta de investigación",
+                "2 cartas de recomendación"
+            ]
+        elif tipo_programa == "DIPLOMADO":
+            return DOCUMENTOS_BASE + [
+                "Título profesional",
+                "Cédula profesional",
+                "INE (vigente)",
+                "Currículum vitae",
+                "Carta de exposición de motivos"
+            ]
+        else:  # CURSO
+            return DOCUMENTOS_BASE + [
+                "Identificación oficial",
+                "Comprobante de estudios",
+                "Currículum vitae"
+            ]
+
+class ServicioGeneradores:
+    """Servicio para generar códigos únicos"""
+    
+    @staticmethod
+    def generar_matricula():
+        try:
+            while True:
+                fecha = datetime.now().strftime('%y%m%d')
+                random_num = ''.join(random.choices(string.digits, k=4))
+                matricula = f"INS{fecha}{random_num}"
+                
+                if db_completa:
+                    if not db_completa.obtener_inscrito_por_matricula(matricula):
+                        return matricula
+                else:
+                    return matricula
+        except:
+            return f"INS{datetime.now().strftime('%y%m%d%H%M%S')}"
+    
+    @staticmethod
+    def generar_folio_unico():
+        fecha = datetime.now().strftime('%y%m%d')
+        random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        return f"FOL{fecha}{random_str}"
+
+class ServicioValidacionCompleto(ValidadorDatos):
+    """Servicio de validación extendido"""
+    
+    @staticmethod
+    def validar_campos_obligatorios(campos):
+        errores = []
+        for campo, nombre in campos:
+            if not campo:
+                errores.append(f"❌ {nombre} es obligatorio")
+        return errores
+    
+    @staticmethod
+    def validar_documentos_minimos(documentos_subidos, tipo_programa):
+        minimos = {
+            "LICENCIATURA": 5,
+            "ESPECIALIDAD": 8,
+            "MAESTRIA": 6,
+            "DIPLOMADO": 4,
+            "CURSO": 3
+        }
         
-        st.info("""
-        **Instrucciones para inscripción pública:**
-        1. Completa todos los campos obligatorios (*)
-        2. Asegúrate de usar un correo Gmail válido
-        3. Guarda tu folio único para consultar resultados
-        4. Los resultados se publican de forma anónima
-        """)
+        minimo_requerido = minimos.get(tipo_programa, 3)
         
-        if 'formulario_publico_enviado' not in st.session_state:
-            st.session_state.formulario_publico_enviado = False
+        if len(documentos_subidos) < minimo_requerido:
+            return False, f"❌ Se requieren al menos {minimo_requerido} documentos para {tipo_programa}"
         
-        if not st.session_state.formulario_publico_enviado:
-            with st.form("formulario_publico", clear_on_submit=True):
-                # Generar identificador temporal para usuario público
-                if 'usuario_publico_id' not in st.session_state:
-                    st.session_state.usuario_publico_id = f"publico_{int(time.time())}_{random.randint(1000, 9999)}"
+        return True, ""
+
+# ============================================================================
+# CAPA 11: SISTEMA DE INSCRITOS COMPLETO
+# ============================================================================
+
+class SistemaInscritosCompleto:
+    """Sistema principal de gestión de inscritos COMPLETO"""
+    
+    def __init__(self):
+        self.base_datos = db_completa
+        self.sistema_correos = SistemaCorreosCompleto()
+        self.validador = ServicioValidacionCompleto()
+        self.generadores = ServicioGeneradores()
+        self.servicio_programas = ServicioProgramas()
+        self.backup_system = SistemaBackupAutomatico(gestor_remoto)
+        self.gestor_documentos = SistemaGestionDocumentos()
+        
+        logger.info("🚀 Sistema de inscritos COMPLETO inicializado")
+    
+    def mostrar_formulario_completo_interactivo(self):
+        ComponentesUI.mostrar_header("📝 Formulario Completo de Pre-Inscripción", 
+                                    "Escuela de Enfermería - Convocatoria Febrero 2026")
+        
+        if 'formulario_enviado' not in st.session_state:
+            st.session_state.formulario_enviado = False
+        
+        if not st.session_state.formulario_enviado:
+            # Inicializar estado del programa
+            if 'programa_seleccionado_key' not in st.session_state:
+                st.session_state.programa_seleccionado_key = None
+            if 'programa_info' not in st.session_state:
+                st.session_state.programa_info = None
+            
+            # Primero, mostrar la selección de programa FUERA del formulario
+            st.markdown("### 🎓 Selecciona el programa de tu interés")
+            
+            # Obtener todos los programas
+            programas = self.servicio_programas.obtener_programas_completos()
+            
+            # Crear opciones formateadas para mostrar
+            opciones_programas = []
+            programas_dict = {}
+            
+            for programa in programas:
+                # Formato: "Categoría - Nombre del Programa (Tipo - Duración)"
+                opcion_formateada = f"{programa['categoria']} - {programa['nombre']} ({programa['tipo_programa']} - {programa['duracion']})"
+                opciones_programas.append(opcion_formateada)
+                programas_dict[opcion_formateada] = programa
+            
+            # Selectbox con callback para actualizar el estado
+            def actualizar_programa():
+                if st.session_state.programa_seleccionado_select:
+                    programa_seleccionado = st.session_state.programa_seleccionado_select
+                    if programa_seleccionado in programas_dict:
+                        st.session_state.programa_info = programas_dict[programa_seleccionado]
+                        st.session_state.programa_seleccionado_key = programa_seleccionado
+                        st.rerun()
+                else:
+                    st.session_state.programa_info = None
+                    st.session_state.programa_seleccionado_key = None
+            
+            # Selectbox para seleccionar programa
+            programa_seleccionado = st.selectbox(
+                "**Programa de Interés ***",
+                opciones_programas,
+                help="Selecciona el programa que deseas cursar",
+                key="programa_seleccionado_select",
+                index=None,
+                placeholder="Selecciona un programa...",
+                on_change=actualizar_programa
+            )
+            
+            st.markdown("---")
+            
+            # Mostrar información del programa seleccionado (si hay)
+            if st.session_state.programa_info:
+                programa_info = st.session_state.programa_info
                 
-                # PASO 1: Selección de programa
-                seleccion_programa = self._mostrar_paso_seleccion_programa_publico()
+                # Mostrar detalles del programa seleccionado
+                with st.container():
+                    # Encabezado con icono y colores
+                    st.markdown(f"""
+                    <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; 
+                                border-left: 4px solid #2E86AB; margin-bottom: 15px;">
+                        <h3 style="color: #2E86AB; margin: 0;">
+                        📋 <strong>INFORMACIÓN DEL PROGRAMA SELECCIONADO</strong>
+                        </h3>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Usar columnas para mejor organización
+                    col_info1, col_info2 = st.columns(2)
+                    
+                    with col_info1:
+                        st.markdown(f"**🏷️ Categoría:** `{programa_info['categoria']}`")
+                        st.markdown(f"**📚 Tipo de Programa:** `{programa_info['tipo_programa']}`")
+                        st.markdown(f"**⏱️ Duración:** `{programa_info['duracion']}`")
+                    
+                    with col_info2:
+                        st.markdown(f"**🎓 Modalidad:** `{programa_info['modalidad']}`")
+                        st.markdown("**📍 Sedes disponibles:** `Hospital Central, Campus Norte`")
+                    
+                    # Descripción en un recuadro destacado
+                    with st.expander("📝 **DESCRIPCIÓN DETALLADA**", expanded=True):
+                        st.write(programa_info['descripcion'])
+                    
+                    # Requisitos en una lista numerada
+                    with st.expander("✅ **REQUISITOS DE INGRESO**", expanded=True):
+                        for i, req in enumerate(programa_info['requisitos'], 1):
+                            st.markdown(f"{i}. {req}")
+                    
+                    # Mostrar documentos específicos para este tipo de programa
+                    documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(programa_info['tipo_programa'])
+                    
+                    with st.expander(f"📄 **DOCUMENTOS REQUERIDOS** ({len(documentos_requeridos)} documentos)", expanded=False):
+                        # Dividir documentos en columnas para mejor visualización
+                        col_doc1, col_doc2 = st.columns(2)
+                        
+                        docs_col1 = documentos_requeridos[:len(documentos_requeridos)//2]
+                        docs_col2 = documentos_requeridos[len(documentos_requeridos)//2:]
+                        
+                        with col_doc1:
+                            for i, doc in enumerate(docs_col1, 1):
+                                st.markdown(f"• **{doc}**")
+                        
+                        with col_doc2:
+                            start_idx = len(docs_col1) + 1
+                            for i, doc in enumerate(docs_col2, start_idx):
+                                st.markdown(f"• **{doc}**")
+                    
+                    st.markdown("---")
+            
+            # Si no hay selección, mostrar instrucciones
+            else:
+                st.info("""
+                **ℹ️ INSTRUCCIONES:**
                 
+                1. **Selecciona un programa** de la lista desplegable arriba
+                2. **Verás aparecer automáticamente** la información completa del programa
+                3. **Revisa requisitos y documentos** requeridos
+                4. **Continúa** con el formulario
+                """)
                 st.markdown("---")
+            
+            # Ahora el formulario principal
+            if st.session_state.programa_info:
+                programa_info = st.session_state.programa_info
                 
-                # PASO 2: Datos personales
-                datos_personales = self._mostrar_paso_datos_personales_publico(seleccion_programa["tipo_programa"])
-                
-                st.markdown("---")
-                
-                # PASO 3: Documentación
-                documentos = self._mostrar_paso_documentacion_publico(seleccion_programa["tipo_programa"])
-                
-                st.markdown("---")
-                
-                # PASO 4: Aceptaciones
-                aceptaciones = self._mostrar_paso_aceptaciones_publico()
-                
-                st.markdown("---")
-                
-                # Botón de envío
-                col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-                with col_btn2:
+                with st.form("formulario_completo_interactivo", clear_on_submit=True):
+                    # Pasar la información del programa al resto del formulario
+                    seleccion_programa = {
+                        "categoria": programa_info['categoria'],
+                        "categoria_id": programa_info['categoria_id'],
+                        "tipo_programa": programa_info['tipo_programa'],
+                        "programa": programa_info['nombre'],
+                        "duracion": programa_info['duracion'],
+                        "modalidad": programa_info['modalidad'],
+                        "descripcion": programa_info['descripcion']
+                    }
+                    
+                    # PASO 2: Datos personales
+                    datos_personales = self._mostrar_paso_datos_personales(seleccion_programa["tipo_programa"])
+                    
+                    st.markdown("---")
+                    
+                    # PASO 3: Documentación (AHORA CON SUBIDA DE ARCHIVOS)
+                    documentos = self._mostrar_paso_documentacion_completa(
+                        seleccion_programa["tipo_programa"], 
+                        datos_personales.get("matricula_generada", "")
+                    )
+                    
+                    st.markdown("---")
+                    
+                    # PASO 4: Estudio socioeconómico
+                    estudio_socioeconomico = self._mostrar_paso_estudio_socioeconomico()
+                    
+                    st.markdown("---")
+                    
+                    # PASO 5: Aceptaciones
+                    aceptaciones = self._mostrar_paso_aceptaciones()
+                    
+                    st.markdown("---")
+                    
+                    # PASO 6: Examen psicométrico
+                    examen_psicometrico = self._mostrar_paso_examen_psicometrico()
+                    
+                    st.markdown("---")
+                    
                     enviado = st.form_submit_button(
-                        "🚀 **ENVIAR SOLICITUD DE PRE-INSCRIPCIÓN**", 
+                        "🚀 **ENVIAR SOLICITUD COMPLETA DE PRE-INSCRIPCIÓN**", 
                         use_container_width=True, type="primary"
                     )
-                
-                if enviado:
-                    self._procesar_envio_publico(
-                        seleccion_programa,
-                        datos_personales,
-                        documentos,
-                        aceptaciones
-                    )
+                    
+                    if enviado:
+                        self._procesar_envio(
+                            seleccion_programa,
+                            datos_personales,
+                            documentos,
+                            estudio_socioeconomico,
+                            aceptaciones,
+                            examen_psicometrico
+                        )
+            else:
+                st.warning("⚠️ **Debes seleccionar un programa antes de continuar con el formulario.**")
         
         else:
-            self._mostrar_resultado_exitoso_publico()
+            self._mostrar_resultado_exitoso()
     
-    def _mostrar_paso_seleccion_programa_publico(self):
-        col_cat1, col_cat2 = st.columns(2)
+    def _mostrar_paso_datos_personales(self, tipo_programa):
+        # Generar matrícula automáticamente
+        matricula_generada = self.generadores.generar_matricula()
         
-        with col_cat1:
-            categoria_academica = st.selectbox(
-                "**Categoría Académica ***",
-                [c["nombre"] for c in CATEGORIAS_ACADEMICAS],
-                format_func=lambda x: x.replace("_", " ").title(),
-                help="Selecciona la categoría académica correspondiente"
-            )
-        
-        with col_cat2:
-            tipo_programa = st.selectbox(
-                "**Tipo de Programa ***",
-                TIPOS_PROGRAMA,
-                help="Selecciona el tipo de programa que deseas cursar"
-            )
-        
-        # Programas disponibles (simplificado para público)
-        programas_disponibles = {
-            "LICENCIATURA": ["Licenciatura en Enfermería"],
-            "ESPECIALIDAD": ["Especialidad en Enfermería Cardiovascular"],
-            "MAESTRIA": ["Maestría en Ciencias Cardiológicas"],
-            "DIPLOMADO": ["Diplomado de Cardiología Básica"],
-            "CURSO": ["Curso de RCP Avanzado"]
-        }
-        
-        programa_interes = st.selectbox(
-            "**Programa de Interés ***", 
-            programas_disponibles.get(tipo_programa, ["Selecciona tipo primero"])
-        )
-        
-        return {
-            "categoria": categoria_academica,
-            "tipo_programa": tipo_programa,
-            "programa": programa_interes
-        }
-    
-    def _mostrar_paso_datos_personales_publico(self, tipo_programa):
         col_datos1, col_datos2 = st.columns(2)
         
         with col_datos1:
-            nombre_completo = st.text_input("**Nombre Completo ***", 
-                                          placeholder="Ej: María González López",
-                                          max_chars=100)
-            
-            email = st.text_input("**Correo Electrónico Personal ***", 
-                                placeholder="ejemplo@email.com",
-                                max_chars=100)
-            
-            email_gmail = st.text_input("**Correo Gmail ***", 
-                                      placeholder="ejemplo@gmail.com", 
-                                      help="Debe ser una cuenta @gmail.com - Se usará para comunicación oficial",
-                                      max_chars=100)
+            nombre_completo = st.text_input("**Nombre Completo ***", placeholder="Ej: María González López")
+            email = st.text_input("**Correo Electrónico Personal ***", placeholder="ejemplo@email.com")
+            email_gmail = st.text_input("**Correo Gmail ***", placeholder="ejemplo@gmail.com", 
+                                       help="Debe ser una cuenta @gmail.com - Se usará para comunicación oficial")
         
         with col_datos2:
-            telefono = st.text_input("**Teléfono ***", 
-                                   placeholder="5512345678",
-                                   max_chars=15)
+            telefono = st.text_input("**Teléfono ***", placeholder="5512345678")
             
-            if tipo_programa == "ESPECIALIDAD":
+            if tipo_programa in ["LICENCIATURA", "MAESTRIA"]:
+                estado_civil = st.selectbox("**Estado Civil**", ["", "Soltero/a", "Casado/a", "Divorciado/a", "Viudo/a", "Unión libre"])
+                edad = st.number_input("**Edad**", min_value=17, max_value=60, value=18)
+                domicilio = st.text_area("**Domicilio Completo**", placeholder="Calle, número, colonia, ciudad, estado, código postal")
+            
+            elif tipo_programa == "ESPECIALIDAD":
                 licenciatura_origen = st.text_input("**Licenciatura de Origen ***", 
-                                                  placeholder="Ej: Licenciatura en Enfermería",
-                                                  max_chars=100)
+                                                   placeholder="Ej: Licenciatura en Enfermería")
+                domicilio = st.text_area("**Domicilio Completo**", placeholder="Calle, número, colonia, ciudad, estado, código postal")
             else:
-                licenciatura_origen = ""
-            
-            domicilio = st.text_area("**Domicilio Completo**", 
-                                   placeholder="Calle, número, colonia, ciudad, estado, código postal",
-                                   max_chars=200)
+                domicilio = st.text_area("**Domicilio**", placeholder="Calle, número, colonia, ciudad, estado, código postal")
         
-        matricula_unam = st.text_input("Matrícula UNAM (si aplica)", 
-                                     placeholder="Dejar vacío si no aplica",
-                                     max_chars=20)
+        matricula_unam = st.text_input("Matrícula UNAM (si ya tienes)", placeholder="Dejar vacío si no aplica")
+        
+        # Mostrar matrícula generada
+        st.info(f"**🎫 Tu matrícula asignada:** `{matricula_generada}`")
         
         return {
+            "matricula_generada": matricula_generada,
             "nombre": nombre_completo,
             "email": email,
             "email_gmail": email_gmail,
             "telefono": telefono,
-            "licenciatura_origen": licenciatura_origen,
+            "estado_civil": estado_civil if tipo_programa in ["LICENCIATURA", "MAESTRIA"] else "",
+            "edad": edad if tipo_programa in ["LICENCIATURA", "MAESTRIA"] else None,
             "domicilio": domicilio,
+            "licenciatura_origen": licenciatura_origen if tipo_programa == "ESPECIALIDAD" else "",
             "matricula_unam": matricula_unam
         }
     
-    def _mostrar_paso_documentacion_publico(self, tipo_programa):
-        st.markdown("**📋 Documentos obligatorios:**")
+    def _mostrar_paso_documentacion_completa(self, tipo_programa, matricula):
+        st.markdown("### 📄 **SUBA SUS DOCUMENTOS**")
+        st.info(f"**Matrícula:** `{matricula}` - Usa esta matrícula para nombrar tus archivos si es necesario")
         
-        # Documentos según tipo de programa (simplificado)
-        documentos_base = [
-            "Certificado preparatoria (promedio ≥ 8.0)",
-            "Acta nacimiento (≤ 3 meses)",
-            "CURP (≤ 1 mes)",
-            "Cartilla Nacional de Salud"
-        ]
+        documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(tipo_programa)
         
-        if tipo_programa == "ESPECIALIDAD":
-            documentos_extra = [
-                "Título profesional",
-                "Cédula profesional",
-                "Constancia de experiencia laboral (2+ años)"
-            ]
-            documentos_requeridos = documentos_base + documentos_extra
-        else:
-            documentos_requeridos = documentos_base
+        documentos_subidos = []
+        archivos_subidos_info = []
         
-        with st.expander("Ver lista completa de documentos", expanded=False):
-            for i, doc in enumerate(documentos_requeridos, 1):
-                st.write(f"{i}. {doc}")
-        
-        st.markdown("**Documentos disponibles (marcar los que ya tienes):**")
+        # Dividir documentos en grupos para mejor organización
+        documentos_grupo1 = documentos_requeridos[:len(documentos_requeridos)//2]
+        documentos_grupo2 = documentos_requeridos[len(documentos_requeridos)//2:]
         
         col_doc1, col_doc2 = st.columns(2)
-        documentos_subidos = []
         
         with col_doc1:
-            for doc in documentos_requeridos[:len(documentos_requeridos)//2]:
-                if st.checkbox(doc):
-                    documentos_subidos.append(doc)
+            for doc in documentos_grupo1:
+                with st.expander(f"📎 {doc}", expanded=False):
+                    archivo = st.file_uploader(
+                        f"Subir {doc}",
+                        type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
+                        key=f"file_{doc.replace(' ', '_')}"
+                    )
+                    
+                    if archivo is not None:
+                        documentos_subidos.append(doc)
+                        
+                        # Mostrar información del archivo
+                        st.success(f"✅ **{archivo.name}** subido ({archivo.size} bytes)")
+                        
+                        # Guardar información del archivo
+                        archivos_subidos_info.append({
+                            'nombre_documento': doc,
+                            'archivo': archivo
+                        })
         
         with col_doc2:
-            for doc in documentos_requeridos[len(documentos_requeridos)//2:]:
-                if st.checkbox(doc):
-                    documentos_subidos.append(doc)
+            for doc in documentos_grupo2:
+                with st.expander(f"📎 {doc}", expanded=False):
+                    archivo = st.file_uploader(
+                        f"Subir {doc}",
+                        type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
+                        key=f"file2_{doc.replace(' ', '_')}"
+                    )
+                    
+                    if archivo is not None:
+                        documentos_subidos.append(doc)
+                        
+                        # Mostrar información del archivo
+                        st.success(f"✅ **{archivo.name}** subido ({archivo.size} bytes)")
+                        
+                        # Guardar información del archivo
+                        archivos_subidos_info.append({
+                            'nombre_documento': doc,
+                            'archivo': archivo
+                        })
+        
+        # Mostrar resumen
+        if documentos_subidos:
+            st.success(f"✅ **{len(documentos_subidos)} documentos listos para subir**")
+            
+            with st.expander("📋 Ver documentos listos", expanded=False):
+                for doc in documentos_subidos:
+                    st.markdown(f"• {doc}")
+        else:
+            st.warning("⚠️ **No has subido ningún documento aún.**")
         
         return {
             "documentos_requeridos": documentos_requeridos,
             "documentos_subidos": documentos_subidos,
+            "archivos_subidos_info": archivos_subidos_info,
             "total_subidos": len(documentos_subidos)
         }
     
-    def _mostrar_paso_aceptaciones_publico(self):
+    def _mostrar_paso_estudio_socioeconomico(self):
+        with st.expander("📊 Estudio Socioeconómico (Opcional)", expanded=False):
+            col_soc1, col_soc2 = st.columns(2)
+            
+            with col_soc1:
+                ingreso_familiar = st.number_input("Ingreso Familiar Mensual (MXN)", min_value=0, value=0, step=1000)
+                personas_dependientes = st.number_input("Personas Dependientes", min_value=0, max_value=20, value=1)
+                vivienda_propia = st.checkbox("Vivienda Propia")
+                transporte_propio = st.checkbox("Transporte Propio")
+            
+            with col_soc2:
+                seguro_medico = st.selectbox("Seguro Médico", ["", "IMSS", "ISSSTE", "Privado", "Ninguno"])
+                discapacidad = st.checkbox("Discapacidad o Condición Especial")
+                beca_solicitada = st.checkbox("Solicita Beca")
+                trabajo_estudiantil = st.checkbox("Trabajo Estudiantil")
+            
+            detalles_socioeconomicos = st.text_area("Observaciones Adicionales")
+        
+        return {
+            'ingreso_familiar': ingreso_familiar,
+            'personas_dependientes': personas_dependientes,
+            'vivienda_propia': vivienda_propia,
+            'transporte_propio': transporte_propio,
+            'seguro_medico': seguro_medico,
+            'discapacidad': discapacidad,
+            'beca_solicitada': beca_solicitada,
+            'trabajo_estudiantil': trabajo_estudiantil,
+            'detalles': detalles_socioeconomicos
+        }
+    
+    def _mostrar_paso_aceptaciones(self):
         st.markdown("**📄 Aceptaciones obligatorias:**")
         
         col_acep1, col_acep2 = st.columns(2)
         
         with col_acep1:
+            with st.expander("📜 Leer Aviso de Privacidad", expanded=False):
+                st.markdown("""
+                **AVISO DE PRIVACIDAD INTEGRAL**
+                
+                En cumplimiento a lo dispuesto por la Ley Federal de Protección de Datos Personales en Posesión de los Particulares, la Escuela de Enfermería hace de su conocimiento que los datos personales que nos proporcione serán tratados de manera confidencial y utilizados exclusivamente para:
+                
+                1. Proceso de admisión y selección
+                2. Comunicación institucional
+                3. Gestión académica
+                4. Estadísticas institucionales
+                
+                Sus datos no serán compartidos con terceros sin su consentimiento expreso.
+                """)
+            
             aviso_privacidad = st.checkbox(
                 "**He leído y acepto el Aviso de Privacidad ***",
                 help="El aviso de privacidad describe cómo se manejarán tus datos personales."
             )
         
         with col_acep2:
+            with st.expander("📜 Leer Convocatoria UNAM 2026", expanded=False):
+                st.markdown("""
+                **CONVOCATORIA UNAM FEBRERO 2026**
+                
+                La Universidad Nacional Autónoma de México convoca a los interesados en cursar estudios en la Escuela de Enfermería a participar en el proceso de admisión para el ciclo escolar Febrero-Julio 2026.
+                
+                **Requisitos:**
+                - Bachillerato terminado o equivalente
+                - Promedio mínimo de 8.0
+                - Aprobar examen de admisión
+                - Presentar documentación completa
+                
+                **Fechas importantes:**
+                - Registro: hasta 15 de enero 2026
+                - Examen: 25 de enero 2026
+                - Resultados: 5 de febrero 2026
+                """)
+            
             convocatoria_unam = st.checkbox(
                 "**He leído y acepto los términos de la Convocatoria UNAM Febrero 2026 ***",
                 help="Convocatoria oficial para el proceso de admisión Febrero 2026"
@@ -2452,10 +2724,38 @@ class SistemaInscritosSeguro:
             "convocatoria_unam": convocatoria_unam
         }
     
-    def _procesar_envio_publico(self, programa, datos, documentos, aceptaciones):
+    def _mostrar_paso_examen_psicometrico(self):
+        with st.expander("🧠 Examen Psicométrico (Opcional)", expanded=False):
+            realizar_examen = st.checkbox("Realizar Examen Psicométrico en Línea", 
+                                         help="Examen rápido para evaluación de aptitudes")
+            
+            resultado_psicometrico = None
+            if realizar_examen:
+                col_apt1, col_apt2 = st.columns(2)
+                
+                with col_apt1:
+                    aptitud_1 = st.slider("Capacidad de trabajo bajo presión", 1, 10, 5)
+                    aptitud_2 = st.slider("Habilidades de comunicación", 1, 10, 5)
+                
+                with col_apt2:
+                    aptitud_3 = st.slider("Empatía con pacientes", 1, 10, 5)
+                    aptitud_4 = st.slider("Capacidad de aprendizaje rápido", 1, 10, 5)
+                
+                aptitud_general = (aptitud_1 + aptitud_2 + aptitud_3 + aptitud_4) / 4
+                
+                resultado_psicometrico = {
+                    'resultado': f"Aptitud General: {aptitud_general:.1f}/10",
+                    'aptitudes': f"Presión: {aptitud_1}/10, Comunicación: {aptitud_2}/10, Empatía: {aptitud_3}/10, Aprendizaje: {aptitud_4}/10",
+                    'recomendaciones': "Adecuado para programas de salud" if aptitud_general >= 6 else "Se recomienda evaluación adicional"
+                }
+                
+                st.info(f"**Resultado preliminar:** {aptitud_general:.1f}/10")
+        
+        return resultado_psicometrico
+    
+    def _procesar_envio(self, programa, datos, documentos, estudio, aceptaciones, examen):
         errores = []
         
-        # Validaciones
         campos_obligatorios = [
             (datos["nombre"], "Nombre completo"),
             (datos["email"], "Correo electrónico personal"),
@@ -2466,9 +2766,7 @@ class SistemaInscritosSeguro:
             (aceptaciones["convocatoria_unam"], "Convocatoria UNAM")
         ]
         
-        for campo, nombre in campos_obligatorios:
-            if not campo:
-                errores.append(f"❌ {nombre} es obligatorio")
+        errores.extend(self.validador.validar_campos_obligatorios(campos_obligatorios))
         
         if datos["email"] and not self.validador.validar_email(datos["email"]):
             errores.append("❌ Formato de correo electrónico personal inválido")
@@ -2477,37 +2775,45 @@ class SistemaInscritosSeguro:
             errores.append("❌ El correo Gmail debe ser de dominio @gmail.com")
         
         if datos["telefono"] and not self.validador.validar_telefono(datos["telefono"]):
-            errores.append("❌ Teléfono debe tener 10 dígitos")
+            errores.append("❌ Teléfono debe tener al menos 10 dígitos")
+        
+        valido, mensaje = self.validador.validar_documentos_minimos(
+            documentos["documentos_subidos"],
+            programa["tipo_programa"]
+        )
+        if not valido:
+            errores.append(mensaje)
         
         if programa["tipo_programa"] == "ESPECIALIDAD" and not datos.get("licenciatura_origen"):
             errores.append("❌ Licenciatura de origen es obligatoria para especialidades")
-        
-        # Validar documentos mínimos
-        minimos = {
-            "LICENCIATURA": 4,
-            "ESPECIALIDAD": 6,
-            "MAESTRIA": 4,
-            "DIPLOMADO": 3,
-            "CURSO": 2
-        }
-        
-        minimo_requerido = minimos.get(programa["tipo_programa"], 3)
-        if len(documentos["documentos_subidos"]) < minimo_requerido:
-            errores.append(f"❌ Se requieren al menos {minimo_requerido} documentos para {programa['tipo_programa']}")
         
         if errores:
             for error in errores:
                 st.error(error)
             return
         
-        # Procesar inscripción
-        with st.spinner("🔄 Procesando tu solicitud..."):
+        with st.spinner("🔄 Procesando tu solicitud completa..."):
             try:
-                # Generar matrícula única
-                matricula = self._generar_matricula_unica()
+                # Crear backup antes de la operación
+                backup_info = f"Agregar inscrito: {datos['nombre']}"
+                backup_path = self.backup_system.crear_backup("AGREGAR_INSCRITO_COMPLETO", backup_info)
+                
+                if backup_path:
+                    logger.info(f"✅ Backup creado antes de operación: {os.path.basename(backup_path)}")
+                
+                # Subir archivos primero
+                archivos_subidos = []
+                for archivo_info in documentos.get("archivos_subidos_info", []):
+                    archivo_subido = self.gestor_documentos.subir_documento(
+                        archivo_info['archivo'],
+                        archivo_info['nombre_documento'],
+                        datos['matricula_generada']
+                    )
+                    if archivo_subido:
+                        archivos_subidos.append(archivo_subido)
                 
                 datos_completos = {
-                    'matricula': matricula,
+                    'matricula': datos['matricula_generada'],
                     'nombre_completo': datos['nombre'],
                     'email': datos['email'],
                     'email_gmail': datos['email_gmail'],
@@ -2515,60 +2821,76 @@ class SistemaInscritosSeguro:
                     'tipo_programa': programa['tipo_programa'],
                     'categoria_academica': programa['categoria'],
                     'programa_interes': programa['programa'],
+                    'estado_civil': datos.get('estado_civil', ''),
+                    'edad': datos.get('edad'),
+                    'domicilio': datos.get('domicilio', ''),
                     'licenciatura_origen': datos.get('licenciatura_origen', ''),
                     'matricula_unam': datos.get('matricula_unam', ''),
-                    'domicilio': datos.get('domicilio', ''),
                     'acepto_privacidad': aceptaciones['aviso_privacidad'],
                     'acepto_convocatoria': aceptaciones['convocatoria_unam'],
-                    'documentos_subidos': documentos['total_subidos'],
-                    'documentos_guardados': ', '.join(documentos['documentos_subidos']) if documentos['documentos_subidos'] else ''
+                    'estudio_socioeconomico': 'Completado' if any(estudio.values()) else 'No realizado',
+                    'estudio_socioeconomico_detallado': estudio,
+                    'resultado_psicometrico': examen,
+                    'archivos_subidos': archivos_subidos
                 }
                 
-                # Usar el ID temporal del usuario público
-                username = st.session_state.usuario_publico_id
+                datos_completos['documentos_subidos'] = documentos['total_subidos']
+                datos_completos['documentos_guardados'] = ', '.join(documentos['documentos_subidos']) if documentos['documentos_subidos'] else ''
                 
-                # Agregar a base de datos
-                inscrito_id, folio_unico = self.base_datos.agregar_inscrito_completo_seguro(
-                    datos_completos, 
-                    username
-                )
+                inscrito_id, folio_unico = self.base_datos.agregar_inscrito_completo(datos_completos)
                 
                 if inscrito_id:
-                    # Sincronizar con servidor remoto
                     if self.base_datos.sincronizar_hacia_remoto():
-                        st.session_state.formulario_publico_enviado = True
-                        st.session_state.datos_exitosos_publico = {
+                        st.session_state.formulario_enviado = True
+                        st.session_state.datos_exitosos = {
                             'folio': folio_unico,
-                            'matricula': matricula,
+                            'matricula': datos_completos['matricula'],
                             'nombre': datos['nombre'],
+                            'email': datos['email'],
                             'email_gmail': datos['email_gmail'],
                             'programa': programa['programa'],
                             'tipo_programa': programa['tipo_programa'],
-                            'documentos': documentos['total_subidos']
+                            'categoria': programa['categoria'],
+                            'duracion': programa.get('duracion', ''),
+                            'modalidad': programa.get('modalidad', ''),
+                            'documentos': documentos['total_subidos'],
+                            'estudio_socioeconomico': 'Sí' if any(estudio.values()) else 'No',
+                            'examen_psicometrico': 'Sí' if examen else 'No',
+                            'archivos_subidos': len(archivos_subidos)
                         }
+                        
+                        correo_enviado = False
+                        mensaje_correo = "Sistema de correos no configurado"
+                        
+                        if self.sistema_correos.correos_habilitados:
+                            correo_enviado, mensaje_correo = self.sistema_correos.enviar_correo_confirmacion_completo(
+                                datos['email_gmail'],
+                                datos['nombre'],
+                                datos_completos['matricula'],
+                                folio_unico,
+                                programa['programa'],
+                                programa['tipo_programa']
+                            )
+                        
+                        st.session_state.datos_exitosos['correo_enviado'] = correo_enviado
+                        st.session_state.datos_exitosos['mensaje_correo'] = mensaje_correo
                         
                         st.rerun()
                     else:
-                        st.error("❌ Error al sincronizar con el servidor")
+                        st.error("❌ Error al sincronizar con el servidor remoto")
                 else:
                     st.error("❌ Error al guardar en la base de datos")
                 
-            except ValueError as ve:
-                st.error(f"❌ Error de validación: {str(ve)}")
+            except ValueError as e:
+                st.error(f"❌ Error de validación: {str(e)}")
             except Exception as e:
                 st.error(f"❌ Error en el registro: {str(e)}")
-                logger.error(f"Error registrando inscripción pública: {e}", exc_info=True)
+                logger.error(f"Error registrando inscripción completa: {e}", exc_info=True)
     
-    def _generar_matricula_unica(self):
-        """Generar matrícula única"""
-        fecha = datetime.now().strftime('%y%m%d')
-        random_num = ''.join(random.choices(string.digits, k=4))
-        return f"INS{fecha}{random_num}"
-    
-    def _mostrar_resultado_exitoso_publico(self):
-        datos = st.session_state.datos_exitosos_publico
+    def _mostrar_resultado_exitoso(self):
+        datos = st.session_state.datos_exitosos
         
-        ComponentesUISeguro.mostrar_header("🎉 ¡PRE-INSCRIPCIÓN COMPLETADA!", nivel=2)
+        st.success("🎉 **¡PRE-INSCRIPCIÓN COMPLETADA EXITOSAMENTE!**")
         st.balloons()
         
         col_res1, col_res2 = st.columns(2)
@@ -2576,15 +2898,17 @@ class SistemaInscritosSeguro:
         with col_res1:
             st.info(f"**📋 Folio Único (ANÓNIMO):**\n\n**{datos['folio']}**")
             st.info(f"**🎓 Matrícula:**\n\n{datos['matricula']}")
-        
-        with col_res2:
             st.info(f"**👤 Nombre:**\n\n{datos['nombre']}")
             st.info(f"**📧 Correo Gmail:**\n\n{datos['email_gmail']}")
-            st.info(f"**🎯 Programa:**\n\n{datos['programa']}")
         
-        # Información crítica
+        with col_res2:
+            st.info(f"**🎯 Programa:**\n\n{datos['programa']}")
+            st.info(f"**📄 Categoría:**\n\n{datos['categoria']}")
+            st.info(f"**⏱️ Duración:**\n\n{datos.get('duracion', 'No especificada')}")
+            st.info(f"**🏫 Modalidad:**\n\n{datos.get('modalidad', 'No especificada')}")
+        
         st.markdown(f"""
-        <div style="background-color: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0; border-left: 5px solid #ffc107;">
+        <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; margin: 15px 0;">
         <h4 style="color: #856404; margin-top: 0;">⚠️ **INFORMACIÓN CRÍTICA - LEA CON ATENCIÓN**</h4>
         
         **TU FOLIO ÚNICO ES: `{datos['folio']}`**
@@ -2593,51 +2917,496 @@ class SistemaInscritosSeguro:
         2. **📋 Anonimato:** No se mostrarán nombres completos en la publicación de resultados
         3. **💾 Guarda este folio:** Es tu identificador único para consultar resultados
         4. **📧 Verificación:** Recibirás un correo de confirmación en {datos['email_gmail']}
+        5. **📄 Documentos subidos:** Has subido {datos.get('archivos_subidos', 0)} documento(s)
         
         **Fecha límite para completar documentos:** {(datetime.now() + timedelta(days=14)).strftime('%d/%m/%Y')}
         </div>
         """, unsafe_allow_html=True)
         
-        # Opciones
-        col_op1, col_op2 = st.columns(2)
-        with col_op1:
-            if ComponentesUISeguro.crear_boton_accion_seguro("📝 Realizar otra inscripción"):
-                st.session_state.formulario_publico_enviado = False
+        if datos.get('correo_enviado'):
+            st.success("📧 **Se ha enviado un correo de confirmación detallado a tu dirección de Gmail.**")
+        else:
+            st.warning(f"⚠️ **No se pudo enviar el correo de confirmación:** {datos.get('mensaje_correo', 'Razón desconocida')}")
+        
+        if ComponentesUI.crear_boton_accion("📝 Realizar otra pre-inscripción"):
+            # Limpiar el estado del formulario
+            st.session_state.formulario_enviado = False
+            st.session_state.programa_seleccionado_key = None
+            st.session_state.programa_info = None
+            st.session_state.datos_exitosos = None
+            st.rerun()
+
+# ============================================================================
+# CAPA 12: PÁGINAS/VISTAS PRINCIPALES
+# ============================================================================
+
+class PaginaPrincipal:
+    """Página principal del sistema"""
+    
+    @staticmethod
+    def mostrar():
+        ComponentesUI.mostrar_header(
+            "🏥 Sistema Completo de Pre-Inscripción",
+            f"Versión {APP_CONFIG['version']} - Convocatoria Febrero 2026"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            #### ✅ **PROCESO DE PRE-INSCRIPCIÓN**
+            
+            1. **Documentos por tipo de programa**
+            2. **Documentación específica** 
+            3. **Convocatoria Feb 2026**
+            4. **Formulario ampliado**
+            5. **Estudio socioeconómico**
+            6. **Correo Gmail obligatorio**
+            7. **Notificación por correo**
+            8. **Folio único anónimo**
+            9. **Aviso de privacidad**
+            10. **Recordatorio días restantes**
+            11. **Eliminar duplicidad**
+            12. **Desechar preinscripciones incompletas**
+            13. **Convocatoria UNAM con aceptación**
+            14. **Examen psicométrico en línea**
+            15. **Trípticos informativos**
+            """)
+        
+        with col2:
+            st.markdown("""
+            #### 📚 **GESTIÓN ACADÉMICA**
+            
+            16. **Descargar bases de datos**
+            17. **Calificaciones estadísticas**
+            18. **Control completo de alumno**
+            19. **Matrícula UNAM**
+            20. **Ficha médica**
+            21. **Control servicio social**
+            22. **Sistema de minutas**
+            23. **Cartas compromiso**
+            24. **Evaluación jefes servicio**
+            25. **4 categorías académicas**
+            26. **Calendario salones**
+            
+            ---
+            
+            **Base de datos:** Estructura completa
+            **Seguridad:** Mejoras implementadas
+            **Performance:** Optimizado
+            """)
+        
+        st.markdown("---")
+        
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if ComponentesUI.crear_boton_accion("📝 Iniciar Nueva Pre-Inscripción", "primary"):
+                st.session_state.pagina_actual = "inscripcion"
                 st.rerun()
         
-        with col_op2:
-            if ComponentesUISeguro.crear_boton_accion_seguro("🚪 Salir del sistema"):
-                for key in list(st.session_state.keys()):
-                    if key != 'usuario_publico_id':  # Mantener ID para posible re-uso
-                        del st.session_state[key]
+        with col_btn2:
+            if ComponentesUI.crear_boton_accion("📋 Consultar Inscritos"):
+                st.session_state.pagina_actual = "consulta"
                 st.rerun()
+        
+        if not estado_sistema.esta_inicializada():
+            st.warning("""
+            ⚠️ **Base de datos no inicializada**
+            
+            Para comenzar a usar el sistema:
+            1. Configura secrets.toml con credenciales SSH
+            2. Inicializa la base de datos
+            """)
+            
+            if ComponentesUI.crear_boton_accion("🔄 Inicializar Base de Datos"):
+                with st.spinner("Inicializando base de datos en servidor remoto..."):
+                    if db_completa.sincronizar_desde_remoto():
+                        st.success("✅ Base de datos inicializada exitosamente")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error inicializando base de datos")
 
-# ============================================================================
-# CAPA 10: CONTROLADOR PRINCIPAL SEGURO
-# ============================================================================
-
-class ControladorPrincipalSeguro:
-    """Controlador principal de la aplicación con seguridad"""
+class PaginaInscripcion:
+    """Página de inscripción completa"""
     
     def __init__(self):
-        self.db_path = None
-        self.security_manager = None
-        self.sistema_inscripciones = None
+        self.sistema = SistemaInscritosCompleto()
+    
+    def mostrar(self):
+        self.sistema.mostrar_formulario_completo_interactivo()
+
+class PaginaConsulta:
+    """Página de consulta de inscritos"""
+    
+    @staticmethod
+    def mostrar():
+        ComponentesUI.mostrar_header("📋 Consulta de Inscritos")
         
-        # Estado inicial
-        if 'authentication_status' not in st.session_state:
-            st.session_state.authentication_status = None
-        if 'role' not in st.session_state:
-            st.session_state.role = None
-        if 'username' not in st.session_state:
-            st.session_state.username = None
-        if 'name' not in st.session_state:
-            st.session_state.name = None
+        try:
+            with st.spinner("🔄 Sincronizando con servidor remoto..."):
+                if db_completa.sincronizar_desde_remoto():
+                    st.success("✅ Base de datos sincronizada")
+                else:
+                    st.warning("⚠️ No se pudo sincronizar completamente")
+            
+            inscritos = db_completa.obtener_inscritos()
+            total_inscritos = len(inscritos)
+            
+            st.metric("Total de Inscritos", total_inscritos)
+            
+            if total_inscritos > 0:
+                datos_tabla = []
+                for inscrito in inscritos:
+                    datos_tabla.append({
+                        'Folio Único': inscrito['folio_unico'],
+                        'Matrícula': inscrito['matricula'],
+                        'Nombre': inscrito['nombre_completo'],
+                        'Programa': inscrito['programa_interes'],
+                        'Tipo': inscrito['tipo_programa'],
+                        'Categoría': inscrito['categoria_academica'],
+                        'Fecha Registro': inscrito['fecha_registro'][:10] if isinstance(inscrito['fecha_registro'], str) else inscrito['fecha_registro'].strftime('%Y-%m-%d'),
+                        'Documentos': inscrito['documentos_subidos'],
+                        'Completado': '✅' if inscrito['completado'] else '⚠️'
+                    })
+                
+                df = pd.DataFrame(datos_tabla)
+                
+                st.subheader("🔍 Búsqueda de Inscritos")
+                search_term = st.text_input("Buscar por folio, matrícula o nombre:")
+                
+                if search_term:
+                    df = df[df.apply(lambda row: row.astype(str).str.contains(search_term, case=False).any(), axis=1)]
+                
+                if not df.empty:
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    
+                    st.subheader("📊 Exportar Datos")
+                    col_exp1, col_exp2 = st.columns(2)
+                    
+                    with col_exp1:
+                        # Crear Excel en memoria
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            df.to_excel(writer, sheet_name='Inscritos', index=False)
+                        output.seek(0)
+                        
+                        st.download_button(
+                            label="📥 Descargar Excel",
+                            data=output,
+                            file_name=f"inscritos_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                    
+                    with col_exp2:
+                        # Crear CSV en memoria
+                        csv = df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Descargar CSV",
+                            data=csv,
+                            file_name=f"inscritos_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv"
+                        )
+                else:
+                    st.info("ℹ️ No hay inscritos registrados o no hay coincidencias con la búsqueda")
+            else:
+                st.info("ℹ️ No hay inscritos registrados")
+            
+        except Exception as e:
+            st.error(f"❌ Error cargando inscritos: {e}")
+
+class PaginaGestionDocumentos:
+    """Página para gestionar documentos subidos"""
+    
+    @staticmethod
+    def mostrar():
+        ComponentesUI.mostrar_header("📁 Gestión de Documentos")
         
-        logger.info("🔐 Controlador principal seguro inicializado")
+        st.info("""
+        **Funcionalidades disponibles:**
+        
+        1. **Ver documentos subidos** por cada inscrito
+        2. **Descargar documentos** individualmente
+        3. **Validar documentos** subidos
+        4. **Generar reportes** de documentos faltantes
+        """)
+        
+        try:
+            # Obtener todos los inscritos
+            inscritos = db_completa.obtener_inscritos()
+            
+            if not inscritos:
+                st.info("ℹ️ No hay inscritos registrados")
+                return
+            
+            # Seleccionar inscrito
+            inscritos_opciones = [f"{ins['matricula']} - {ins['nombre_completo']}" for ins in inscritos]
+            seleccion = st.selectbox("Seleccionar inscrito:", inscritos_opciones)
+            
+            if seleccion:
+                matricula = seleccion.split(" - ")[0]
+                
+                # Obtener información del inscrito
+                inscrito = next((ins for ins in inscritos if ins['matricula'] == matricula), None)
+                
+                if inscrito:
+                    col_info1, col_info2 = st.columns(2)
+                    
+                    with col_info1:
+                        st.markdown(f"**Matrícula:** `{inscrito['matricula']}`")
+                        st.markdown(f"**Nombre:** {inscrito['nombre_completo']}")
+                        st.markdown(f"**Programa:** {inscrito['programa_interes']}")
+                    
+                    with col_info2:
+                        st.markdown(f"**Folio:** `{inscrito['folio_unico']}`")
+                        st.markdown(f"**Documentos subidos:** {inscrito['documentos_subidos']}")
+                        st.markdown(f"**Estatus:** {inscrito['estatus']}")
+                    
+                    st.markdown("---")
+                    
+                    # Mostrar documentos subidos (simulación - en una implementación real se obtendrían de la tabla documentos_subidos)
+                    if inscrito['documentos_subidos'] > 0:
+                        st.subheader("📄 Documentos Registrados")
+                        
+                        documentos = inscrito['documentos_guardados'].split(', ') if inscrito['documentos_guardados'] else []
+                        
+                        for doc in documentos:
+                            col_doc1, col_doc2, col_doc3 = st.columns([3, 1, 1])
+                            with col_doc1:
+                                st.markdown(f"• **{doc}**")
+                            with col_doc2:
+                                st.info("✅ Subido")
+                            with col_doc3:
+                                # Botón simulado para descargar
+                                st.button("📥 Descargar", key=f"desc_{doc}", disabled=True)
+                    
+                    # Mostrar documentos faltantes
+                    if inscrito['documentos_faltantes']:
+                        st.subheader("⚠️ Documentos Faltantes")
+                        faltantes = inscrito['documentos_faltantes'].split(', ') if inscrito['documentos_faltantes'] else []
+                        for doc in faltantes:
+                            st.markdown(f"• **{doc}**")
+                    
+                    # Botón para marcar como completado
+                    if inscrito['documentos_subidos'] >= 8:  # Umbral para considerar completo
+                        if inscrito['completado'] == 0:
+                            if st.button("✅ Marcar como Completado", type="primary", use_container_width=True):
+                                with st.spinner("Actualizando estatus..."):
+                                    try:
+                                        with db_completa.get_connection() as conn:
+                                            cursor = conn.cursor()
+                                            cursor.execute(
+                                                "UPDATE inscritos SET completado = 1, estatus = 'Documentación completa' WHERE matricula = ?",
+                                                (matricula,)
+                                            )
+                                            conn.commit()
+                                        st.success("✅ Inscrito marcado como completado")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error actualizando: {e}")
+        
+        except Exception as e:
+            st.error(f"❌ Error cargando documentos: {e}")
+
+class PaginaConfiguracion:
+    """Página de configuración del sistema"""
+    
+    @staticmethod
+    def mostrar():
+        ComponentesUI.mostrar_header("⚙️ Configuración del Sistema")
+        
+        with st.expander("🔗 Estado de Conexión", expanded=True):
+            col_conf1, col_conf2 = st.columns(2)
+            
+            with col_conf1:
+                if estado_sistema.esta_inicializada():
+                    st.success("✅ Base de Datos Inicializada")
+                    fecha = estado_sistema.obtener_fecha_inicializacion()
+                    if fecha:
+                        st.caption(f"Fecha: {fecha.strftime('%Y-%m-%d %H:%M')}")
+                else:
+                    st.error("❌ Base de Datos No Inicializada")
+            
+            with col_conf2:
+                if estado_sistema.estado.get('ssh_conectado'):
+                    st.success("✅ SSH Conectado")
+                    if gestor_remoto.config.get('host'):
+                        st.caption(f"Servidor: {gestor_remoto.config['host']}")
+                else:
+                    st.error("❌ SSH Desconectado")
+            
+            if ComponentesUI.crear_boton_accion("🔗 Probar Conexión SSH"):
+                with st.spinner("Probando conexión..."):
+                    if gestor_remoto.verificar_conexion_ssh():
+                        st.success("✅ Conexión SSH exitosa")
+                        st.rerun()
+                    else:
+                        st.error("❌ Conexión SSH fallida")
+        
+        with st.expander("🔄 Mantenimiento del Sistema", expanded=True):
+            col_mant1, col_mant2 = st.columns(2)
+            
+            with col_mant1:
+                if ComponentesUI.crear_boton_accion("🧹 Limpiar Registros Incompletos"):
+                    with st.spinner("Limpiando registros incompletos..."):
+                        eliminados = db_completa.limpiar_registros_incompletos()
+                        if eliminados > 0:
+                            st.success(f"✅ Eliminados {eliminados} registros incompletos")
+                            st.rerun()
+                        else:
+                            st.info("ℹ️ No se encontraron registros incompletos para eliminar")
+            
+            with col_mant2:
+                if ComponentesUI.crear_boton_accion("📧 Enviar Recordatorios Automáticos"):
+                    with st.spinner("Enviando recordatorios..."):
+                        try:
+                            # Enviar recordatorios a todos los inscritos
+                            inscritos = db_completa.obtener_inscritos()
+                            enviados = 0
+                            for inscrito in inscritos:
+                                if db_completa.enviar_recordatorio(inscrito['id']):
+                                    enviados += 1
+                            
+                            if enviados > 0:
+                                st.success(f"✅ {enviados} recordatorios enviados")
+                            else:
+                                st.info("ℹ️ No hay recordatorios pendientes por enviar")
+                        except Exception as e:
+                            st.error(f"❌ Error enviando recordatorios: {e}")
+
+class PaginaReportes:
+    """Página de reportes y backups"""
+    
+    @staticmethod
+    def mostrar():
+        ComponentesUI.mostrar_header("📊 Reportes y Sistema de Backups")
+        
+        st.subheader("📈 Estadísticas del Sistema")
+        
+        col_rep1, col_rep2, col_rep3, col_rep4 = st.columns(4)
+        
+        with col_rep1:
+            total_inscritos = estado_sistema.estado.get('total_inscritos', 0)
+            st.metric("Total Inscritos", total_inscritos)
+        
+        with col_rep2:
+            recordatorios = estado_sistema.estado.get('recordatorios_enviados', 0)
+            st.metric("Recordatorios", recordatorios)
+        
+        with col_rep3:
+            duplicados = estado_sistema.estado.get('duplicados_eliminados', 0)
+            st.metric("Duplicados Eliminados", duplicados)
+        
+        with col_rep4:
+            incompletos = estado_sistema.estado.get('registros_incompletos_eliminados', 0)
+            st.metric("Incompletos Eliminados", incompletos)
+        
+        backup_system = SistemaBackupAutomatico(gestor_remoto)
+        backups = backup_system.listar_backups()
+        
+        st.markdown("---")
+        st.subheader("💾 Sistema de Backups")
+        
+        if backups:
+            st.success(f"✅ {len(backups)} backups disponibles")
+            
+            backup_data = []
+            for backup in backups:
+                backup_data.append({
+                    'Nombre': backup['nombre'],
+                    'Tamaño': f"{backup['tamaño']:,} bytes",
+                    'Fecha': backup['fecha'].strftime('%Y-%m-%d %H:%M'),
+                })
+            
+            df_backups = pd.DataFrame(backup_data)
+            st.dataframe(df_backups, use_container_width=True, hide_index=True)
+            
+            # Botón para crear nuevo backup
+            col_back1, col_back2 = st.columns(2)
+            
+            with col_back1:
+                if ComponentesUI.crear_boton_accion("💾 Crear Nuevo Backup", "primary"):
+                    with st.spinner("Creando backup..."):
+                        backup_path = backup_system.crear_backup(
+                            "REPORTE_MENSUAL",
+                            "Backup mensual del sistema"
+                        )
+                        if backup_path:
+                            st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
+                            st.rerun()
+            
+            with col_back2:
+                # Botón para descargar backup seleccionado
+                if backups:
+                    backup_seleccionado = st.selectbox("Seleccionar backup para descargar:", 
+                                                      [b['nombre'] for b in backups])
+                    
+                    if backup_seleccionado:
+                        backup_info = next((b for b in backups if b['nombre'] == backup_seleccionado), None)
+                        if backup_info:
+                            with open(backup_info['ruta'], 'rb') as f:
+                                backup_bytes = f.read()
+                            
+                            st.download_button(
+                                label="📥 Descargar Backup Seleccionado",
+                                data=backup_bytes,
+                                file_name=backup_info['nombre'],
+                                mime="application/zip"
+                            )
+        else:
+            st.info("ℹ️ No hay backups disponibles. Crea el primer backup.")
+            
+            if ComponentesUI.crear_boton_accion("💾 Crear Primer Backup", "primary"):
+                with st.spinner("Creando primer backup..."):
+                    backup_path = backup_system.crear_backup(
+                        "PRIMER_BACKUP",
+                        "Primer backup del sistema"
+                    )
+                    if backup_path:
+                        st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
+                        st.rerun()
+
+# ============================================================================
+# CAPA 13: CONTROLADOR PRINCIPAL
+# ============================================================================
+
+class ControladorPrincipal:
+    """Controlador principal de la aplicación"""
+    
+    def __init__(self):
+        self.sistema_auth = SistemaAutenticacion()
+        
+        # Inicializar páginas
+        self.paginas = {
+            "inicio": PaginaPrincipal(),
+            "inscripcion": PaginaInscripcion(),
+            "consulta": PaginaConsulta(),
+            "gestion_documentos": PaginaGestionDocumentos(),
+            "configuracion": PaginaConfiguracion(),
+            "reportes": PaginaReportes(),
+            "login": self.sistema_auth
+        }
+        
+        # Mapeo de menú según autenticación
+        self.mapeo_menu_autenticado = {
+            "🏠 Inicio y Resumen": "inicio",
+            "📝 Nueva Pre-Inscripción": "inscripcion",
+            "📋 Consultar Inscritos": "consulta",
+            "📁 Gestionar Documentos": "gestion_documentos",
+            "⚙️ Configuración": "configuracion",
+            "📊 Reportes y Backups": "reportes"
+        }
+        
+        self.mapeo_menu_no_autenticado = {
+            "🏠 Inicio y Resumen": "inicio",
+            "📝 Nueva Pre-Inscripción": "inscripcion",
+            "🔐 Acceso Administrativo": "login"
+        }
+        
+        if 'pagina_actual' not in st.session_state:
+            st.session_state.pagina_actual = "inicio"
     
     def configurar_aplicacion(self):
-        """Configuración inicial de la aplicación"""
         st.set_page_config(
             page_title=APP_CONFIG['page_title'],
             page_icon=APP_CONFIG['page_icon'],
@@ -2645,694 +3414,80 @@ class ControladorPrincipalSeguro:
             initial_sidebar_state=APP_CONFIG['sidebar_state']
         )
     
-    def inicializar_sistema(self):
-        """Inicializar sistema de base de datos y seguridad"""
-        try:
-            # Sincronizar base de datos
-            with st.spinner("🔄 Sincronizando con servidor remoto..."):
-                if db_segura.sincronizar_desde_remoto():
-                    self.db_path = db_segura.db_local_temp
-                    
-                    # Inicializar gestor de seguridad
-                    self.security_manager = SecurityManager(self.db_path)
-                    db_segura.set_security_manager(self.security_manager)
-                    
-                    # Inicializar sistema de inscripciones
-                    self.sistema_inscripciones = SistemaInscritosSeguro(self.security_manager)
-                    
-                    return True
-                else:
-                    st.error("❌ No se pudo sincronizar con el servidor remoto")
-                    return False
-                    
-        except Exception as e:
-            st.error(f"❌ Error inicializando sistema: {e}")
-            logger.error(f"Error inicializando sistema: {e}", exc_info=True)
-            return False
-    
-    def mostrar_pagina_login(self):
-        """Mostrar página de login/registro"""
-        # Ocultar sidebar
-        st.markdown("""
-        <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            .stDeployButton {visibility: hidden;}
-        </style>
-        """, unsafe_allow_html=True)
-        
-        # Banner superior
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, #2E86AB 0%, #A23B72 100%); 
-                    color: white; padding: 25px; border-radius: 10px; margin-bottom: 30px;">
-            <h1 style="margin: 0; text-align: center;">🏥 Escuela de Enfermería</h1>
-            <h3 style="margin: 10px 0; text-align: center;">Sistema de Pre-Inscripción Seguro</h3>
-            <p style="text-align: center; margin: 0;">Versión {APP_CONFIG['version']} - Convocatoria Febrero 2026</p>
-        </div>
-        """.format(APP_CONFIG=APP_CONFIG), unsafe_allow_html=True)
-        
-        # Tabs para diferentes tipos de acceso
-        tab1, tab2 = st.tabs(["🔐 Acceso Administrativo", "📝 Inscripción Pública"])
-        
-        with tab1:
-            self._mostrar_login_administrativo()
-        
-        with tab2:
-            self._mostrar_inscripcion_publica()
-    
-    def _mostrar_login_administrativo(self):
-        """Mostrar formulario de login administrativo"""
-        st.markdown("### 🔐 Acceso para Personal Autorizado")
-        
-        # Verificar bloqueos
-        user_ip = UtilidadesSistemaSeguro.obtener_ip_usuario()
-        bloqueado, mensaje_bloqueo = estado_sistema.verificar_usuario_bloqueado('', user_ip)
-        
-        if bloqueado:
-            st.error(f"⛔ {mensaje_bloqueo}")
-            return
-        
-        # Crear autenticador
-        if self.security_manager:
-            authenticator = self.security_manager.create_authenticator()
-            
-            if authenticator:
-                # Widget de login
-                name, auth_status, username = authenticator.login(
-                    'Inicio de Sesión', 
-                    location='main'
-                )
-                
-                if auth_status:
-                    # Obtener rol del usuario
-                    user_data = self.security_manager.auth_config['credentials']['usernames'].get(username, {})
-                    user_role = user_data.get('rol', 'inscrito')
-                    
-                    # Registrar sesión exitosa
-                    estado_sistema.limpiar_intentos_fallidos()
-                    estado_sistema.registrar_sesion(username, user_ip, True, 0)
-                    
-                    # Actualizar estado de sesión
-                    st.session_state.update({
-                        'name': name,
-                        'authentication_status': auth_status,
-                        'username': username,
-                        'role': user_role,
-                        'last_activity': time.time()
-                    })
-                    
-                    st.rerun()
-                    
-                elif auth_status == False:
-                    # Registrar intento fallido
-                    estado_sistema.registrar_intento_fallido(username or 'unknown', user_ip)
-                    estado_sistema.registrar_sesion(username or 'unknown', user_ip, False, 0)
-                    
-                    st.error("❌ Usuario o contraseña incorrectos")
-                    
-                    # Mostrar advertencia si hay muchos intentos
-                    if estado_sistema.estado.get('estadisticas_sistema', {}).get('intentos_fallidos', 0) >= 2:
-                        st.warning("⚠️ Demasiados intentos fallidos. Su IP podría ser bloqueada.")
-        
-        else:
-            st.warning("⚠️ Sistema de autenticación no disponible")
-    
-    def _mostrar_inscripcion_publica(self):
-        """Mostrar opción de inscripción pública"""
-        st.markdown("### 📝 Inscripción para Aspirantes")
-        
-        st.info("""
-        **Proceso de inscripción pública:**
-        - No requiere cuenta previa
-        - Solo podrás ver TU información
-        - Los resultados se publican de forma anónima
-        - Necesitas un correo Gmail para comunicación oficial
-        """)
-        
-        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-        with col_btn2:
-            if st.button("📝 Comenzar Inscripción Pública", type="primary", use_container_width=True):
-                # Configurar sesión como público
-                user_ip = UtilidadesSistemaSeguro.obtener_ip_usuario()
-                
-                st.session_state.update({
-                    'authentication_status': 'publico',
-                    'role': 'publico',
-                    'username': f'publico_{int(time.time())}',
-                    'name': 'Usuario Público',
-                    'last_activity': time.time()
-                })
-                
-                # Registrar sesión pública
-                estado_sistema.registrar_sesion('publico', user_ip, True, 0)
-                
-                st.rerun()
-    
-    def verificar_sesion_activa(self):
-        """Verificar si la sesión sigue activa"""
-        if 'last_activity' in st.session_state:
-            tiempo_transcurrido = time.time() - st.session_state.last_activity
-            if tiempo_transcurrido > APP_CONFIG['session_timeout_minutes'] * 60:
-                # Sesión expirada
-                self.cerrar_sesion("Sesión expirada por inactividad")
-                return False
-            
-            # Actualizar tiempo de actividad
-            st.session_state.last_activity = time.time()
-        
-        return True
-    
-    def cerrar_sesion(self, motivo="Sesión cerrada por el usuario"):
-        """Cerrar sesión actual"""
-        logger.info(f"🔒 Cerrando sesión: {motivo}")
-        
-        # Limpiar estado de sesión
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        
-        # Limpiar estado de autenticación
-        st.session_state.authentication_status = None
-        st.session_state.role = None
-        st.session_state.username = None
-        st.session_state.name = None
-    
-    def mostrar_pagina_publica(self):
-        """Mostrar página para usuarios públicos"""
-        # Ocultar sidebar completamente
-        st.markdown("""
-        <style>
-            section[data-testid="stSidebar"] {display: none;}
-            .stDeployButton {visibility: hidden;}
-        </style>
-        """, unsafe_allow_html=True)
-        
-        # Mostrar sistema de inscripciones públicas
-        if self.sistema_inscripciones:
-            self.sistema_inscripciones.mostrar_formulario_publico()
-        else:
-            st.error("❌ Sistema de inscripciones no disponible")
-    
-    def mostrar_pagina_autenticada(self):
-        """Mostrar página para usuarios autenticados"""
-        # Verificar sesión activa
-        if not self.verificar_sesion_activa():
-            return
-        
-        # Obtener información del usuario
-        username = st.session_state.get('username')
-        user_role = st.session_state.get('role')
-        user_name = st.session_state.get('name')
-        
-        # Sidebar con información del usuario
-        with st.sidebar:
-            # Encabezado del usuario
-            st.title(f"👤 {user_name}")
-            st.caption(f"Rol: {user_role}")
-            
-            # Estado del sistema
-            st.markdown("---")
-            st.subheader("🔍 Estado del Sistema")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if estado_sistema.esta_inicializada():
-                    st.success("✅ BD")
-                else:
-                    st.error("❌ BD")
-            
-            with col2:
-                if estado_sistema.estado.get('ssh_conectado'):
-                    st.success("✅ SSH")
-                else:
-                    st.error("❌ SSH")
-            
-            # Navegación según rol
-            st.markdown("---")
-            st.subheader("📱 Navegación")
-            
-            opciones_menu = self._obtener_opciones_menu_por_rol(user_role)
-            seleccion_menu = st.selectbox("Selecciona una opción:", opciones_menu)
-            
-            # Botón de logout
-            st.markdown("---")
-            if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
-                self.cerrar_sesion()
-                st.rerun()
-            
-            # Información adicional para admin
-            if user_role == 'admin':
-                st.markdown("---")
-                st.caption(f"💾 Backups: {estado_sistema.estado.get('backups_realizados', 0)}")
-                st.caption(f"🔄 Última sinc: {estado_sistema.estado.get('ultima_sincronizacion', 'Nunca')}")
-        
-        # Mostrar contenido según selección
-        self._mostrar_contenido_por_seleccion(seleccion_menu, user_role, username)
-    
-    def _obtener_opciones_menu_por_rol(self, rol):
-        """Obtener opciones de menú según rol"""
-        if rol == 'admin':
-            return [
-                "🏠 Inicio y Resumen",
-                "📝 Nueva Pre-Inscripción",
-                "📋 Consultar Inscritos",
-                "👥 Gestión de Usuarios",
-                "⚙️ Configuración",
-                "📊 Reportes y Backups"
-            ]
-        elif rol == 'secretaria':
-            return [
-                "🏠 Inicio",
-                "📝 Nueva Pre-Inscripción",
-                "📋 Consultar Inscritos",
-                "📊 Reportes Básicos"
-            ]
-        elif rol == 'inscrito':
-            return [
-                "👤 Mi Perfil",
-                "📄 Mis Documentos",
-                "📋 Mi Progreso"
-            ]
-        else:
-            return ["🏠 Inicio"]
-    
-    def _mostrar_contenido_por_seleccion(self, seleccion, user_role, username):
-        """Mostrar contenido según la selección del menú"""
-        
-        if seleccion == "🏠 Inicio" or seleccion == "🏠 Inicio y Resumen":
-            self._mostrar_pagina_inicio(user_role, username)
-        
-        elif seleccion == "📝 Nueva Pre-Inscripción":
-            if user_role in ['admin', 'secretaria']:
-                self._mostrar_pagina_inscripcion_admin()
-            else:
-                st.error("⛔ No tienes permisos para esta acción")
-        
-        elif seleccion == "📋 Consultar Inscritos":
-            if user_role in ['admin', 'secretaria']:
-                self._mostrar_pagina_consulta_admin(username, user_role)
-            elif user_role == 'inscrito':
-                self._mostrar_pagina_mi_perfil(username)
-            else:
-                st.error("⛔ No tienes permisos para esta acción")
-        
-        elif seleccion == "👤 Mi Perfil" and user_role == 'inscrito':
-            self._mostrar_pagina_mi_perfil(username)
-        
-        elif seleccion == "👥 Gestión de Usuarios" and user_role == 'admin':
-            self._mostrar_pagina_gestion_usuarios()
-        
-        elif seleccion == "⚙️ Configuración" and user_role == 'admin':
-            self._mostrar_pagina_configuracion()
-        
-        elif seleccion == "📊 Reportes y Backups" and user_role == 'admin':
-            self._mostrar_pagina_reportes()
-        
-        elif seleccion == "📊 Reportes Básicos" and user_role == 'secretaria':
-            self._mostrar_pagina_reportes_basicos(username)
-        
-        elif seleccion == "📄 Mis Documentos" and user_role == 'inscrito':
-            self._mostrar_pagina_mis_documentos(username)
-        
-        elif seleccion == "📋 Mi Progreso" and user_role == 'inscrito':
-            self._mostrar_pagina_mi_progreso(username)
-        
-        else:
-            st.error("⛔ Opción no disponible para tu rol")
-    
-    def _mostrar_pagina_inicio(self, user_role, username):
-        """Mostrar página de inicio según rol"""
-        ComponentesUISeguro.mostrar_header(
-            f"🏥 Bienvenido al Sistema de Pre-Inscripción",
-            f"Rol: {user_role} | Usuario: {username}", nivel=1
-        )
-        
-        if user_role == 'admin':
-            st.markdown("""
-            ### 👋 ¡Bienvenido Administrador!
-            
-            **Funciones disponibles:**
-            - 📝 **Nueva Pre-Inscripción**: Registrar nuevos aspirantes
-            - 📋 **Consultar Inscritos**: Ver y gestionar todos los registros
-            - 👥 **Gestión de Usuarios**: Administrar usuarios del sistema
-            - ⚙️ **Configuración**: Configurar sistema y conexiones
-            - 📊 **Reportes y Backups**: Generar reportes y backups
-            """)
-            
-            # Estadísticas rápidas
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                total = db_segura.obtener_total_inscritos(username, user_role)
-                st.metric("Total Inscritos", total)
-            with col2:
-                st.metric("Sesiones Activas", len(estado_sistema.estado.get('sesiones_activas', {})))
-            with col3:
-                st.metric("Backups", estado_sistema.estado.get('backups_realizados', 0))
-        
-        elif user_role == 'secretaria':
-            st.markdown("""
-            ### 👋 ¡Bienvenida Secretaria!
-            
-            **Funciones disponibles:**
-            - 📝 **Nueva Pre-Inscripción**: Registrar nuevos aspirantes
-            - 📋 **Consultar Inscritos**: Ver y gestionar registros
-            - 📊 **Reportes Básicos**: Ver estadísticas básicas
-            """)
-        
-        elif user_role == 'inscrito':
-            st.markdown("""
-            ### 👋 ¡Bienvenido Aspirante!
-            
-            **Funciones disponibles:**
-            - 👤 **Mi Perfil**: Ver tu información personal
-            - 📄 **Mis Documentos**: Ver y completar tu documentación
-            - 📋 **Mi Progreso**: Seguir tu proceso de admisión
-            """)
-            
-            # Mostrar información básica del aspirante
-            try:
-                inscritos = db_segura.obtener_inscritos(username, user_role)
-                if inscritos:
-                    inscrito = inscritos[0]
-                    col_info1, col_info2 = st.columns(2)
-                    with col_info1:
-                        st.info(f"**Folio:** {inscrito['folio_unico']}")
-                        st.info(f"**Matrícula:** {inscrito['matricula']}")
-                        st.info(f"**Programa:** {inscrito['programa_interes']}")
-                    with col_info2:
-                        st.info(f"**Estatus:** {inscrito['estatus']}")
-                        st.info(f"**Documentos:** {inscrito['documentos_subidos']}/10")
-                        st.info(f"**Fecha límite:** {inscrito['fecha_limite_registro']}")
-                else:
-                    st.info("ℹ️ No tienes una inscripción registrada.")
-            except Exception as e:
-                st.error(f"❌ Error cargando información: {e}")
-    
-    def _mostrar_pagina_inscripcion_admin(self):
-        """Mostrar página de inscripción para administradores"""
-        st.warning("🚧 Página de inscripción administrativa en desarrollo")
-        st.info("Para inscripciones públicas, cierra sesión y selecciona 'Inscripción Pública'")
-    
-    def _mostrar_pagina_consulta_admin(self, username, user_role):
-        """Mostrar página de consulta para administradores"""
-        ComponentesUISeguro.mostrar_header("📋 Consulta de Inscritos", nivel=2)
-        
-        try:
-            # Sincronizar datos
-            with st.spinner("🔄 Actualizando datos..."):
-                db_segura.sincronizar_desde_remoto()
-            
-            # Obtener inscritos
-            inscritos = db_segura.obtener_inscritos(username, user_role)
-            total_inscritos = len(inscritos)
-            
-            st.metric("Total de Inscritos", total_inscritos)
-            
-            if total_inscritos > 0:
-                # Preparar datos para tabla
-                datos_tabla = []
-                for inscrito in inscritos:
-                    datos_tabla.append({
-                        'ID': inscrito['id'],
-                        'Folio': inscrito['folio_unico'],
-                        'Matrícula': inscrito['matricula'],
-                        'Nombre': inscrito['nombre_completo'],
-                        'Programa': inscrito['programa_interes'],
-                        'Tipo': inscrito['tipo_programa'],
-                        'Estatus': inscrito['estatus'],
-                        'Documentos': inscrito['documentos_subidos'],
-                        'Fecha Registro': inscrito['fecha_registro'][:10] if isinstance(inscrito['fecha_registro'], str) else inscrito['fecha_registro'].strftime('%Y-%m-%d'),
-                        'Completado': '✅' if inscrito['completado'] else '⚠️'
-                    })
-                
-                df = pd.DataFrame(datos_tabla)
-                
-                # Búsqueda
-                st.subheader("🔍 Búsqueda de Inscritos")
-                col_bus1, col_bus2 = st.columns(2)
-                with col_bus1:
-                    search_term = st.text_input("Buscar por folio, matrícula o nombre:")
-                with col_bus2:
-                    filtro_estatus = st.selectbox("Filtrar por estatus:", 
-                                                ["Todos", "Pre-inscrito", "En revisión", "Aceptado", "Rechazado"])
-                
-                # Aplicar filtros
-                if search_term:
-                    df = df[df.apply(lambda row: row.astype(str).str.contains(search_term, case=False).any(), axis=1)]
-                
-                if filtro_estatus != "Todos":
-                    df = df[df['Estatus'] == filtro_estatus]
-                
-                # Mostrar tabla
-                if not df.empty:
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-                    
-                    # Acciones
-                    st.subheader("📊 Acciones")
-                    col_acc1, col_acc2, col_acc3 = st.columns(3)
-                    
-                    with col_acc1:
-                        if st.button("📄 Exportar a Excel", use_container_width=True):
-                            st.success("✅ Datos exportados (simulación)")
-                    
-                    with col_acc2:
-                        if st.button("📊 Generar Reporte", use_container_width=True):
-                            st.success("✅ Reporte generado (simulación)")
-                    
-                    with col_acc3:
-                        if st.button("🔄 Sincronizar", use_container_width=True):
-                            st.rerun()
-                else:
-                    st.info("ℹ️ No hay inscritos que coincidan con los filtros")
-            else:
-                st.info("ℹ️ No hay inscritos registrados")
-            
-        except Exception as e:
-            st.error(f"❌ Error cargando inscritos: {e}")
-    
-    def _mostrar_pagina_mi_perfil(self, username):
-        """Mostrar página de perfil para inscritos"""
-        ComponentesUISeguro.mostrar_header("👤 Mi Perfil", nivel=2)
-        
-        try:
-            inscritos = db_segura.obtener_inscritos(username, 'inscrito')
-            
-            if inscritos:
-                inscrito = inscritos[0]
-                
-                # Información en columnas
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.info(f"**📋 Folio Único:**\n\n**{inscrito['folio_unico']}**")
-                    st.info(f"**🎓 Matrícula:**\n\n{inscrito['matricula']}")
-                    st.info(f"**👤 Nombre:**\n\n{inscrito['nombre_completo']}")
-                    st.info(f"**📧 Correo Personal:**\n\n{inscrito['email']}")
-                    st.info(f"**📧 Correo Gmail:**\n\n{inscrito['email_gmail']}")
-                
-                with col2:
-                    st.info(f"**📞 Teléfono:**\n\n{inscrito['telefono']}")
-                    st.info(f"**🎯 Programa:**\n\n{inscrito['programa_interes']}")
-                    st.info(f"**📄 Tipo:**\n\n{inscrito['tipo_programa']}")
-                    st.info(f"**📊 Estatus:**\n\n{inscrito['estatus']}")
-                    st.info(f"**📅 Fecha Límite:**\n\n{inscrito['fecha_limite_registro']}")
-                
-                # Documentos
-                st.subheader("📄 Mis Documentos")
-                if inscrito['documentos_guardados']:
-                    docs = inscrito['documentos_guardados'].split(', ')
-                    for doc in docs:
-                        st.checkbox(doc, value=True, disabled=True)
-                    
-                    st.info(f"**Progreso:** {inscrito['documentos_subidos']} documentos subidos")
-                    
-                    # Mostrar documentos faltantes
-                    faltantes = db_segura.obtener_documentos_faltantes(inscrito['id'], username)
-                    if faltantes:
-                        st.warning("**📋 Documentos faltantes:**")
-                        for doc in faltantes:
-                            st.write(f"- {doc}")
-                else:
-                    st.warning("⚠️ No has subido documentos aún")
-                
-                # Información importante
-                st.markdown(f"""
-                <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin-top: 20px;">
-                <h4>📌 Información Importante</h4>
-                <p><strong>Folio único:</strong> {inscrito['folio_unico']}</p>
-                <p>Los resultados se publicarán <strong>sólo con este folio</strong> para garantizar tu privacidad.</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-            else:
-                st.info("ℹ️ No tienes una inscripción registrada.")
-                
-        except Exception as e:
-            st.error(f"❌ Error cargando perfil: {e}")
-    
-    def _mostrar_pagina_gestion_usuarios(self):
-        """Mostrar página de gestión de usuarios (solo admin)"""
-        ComponentesUISeguro.mostrar_header("👥 Gestión de Usuarios", nivel=2)
-        
-        st.warning("🚧 Página en desarrollo")
-        st.info("Funcionalidad completa de gestión de usuarios próximamente")
-    
-    def _mostrar_pagina_configuracion(self):
-        """Mostrar página de configuración (solo admin)"""
-        ComponentesUISeguro.mostrar_header("⚙️ Configuración del Sistema", nivel=2)
-        
-        st.warning("🚧 Página en desarrollo")
-        st.info("Configuración completa del sistema próximamente")
-    
-    def _mostrar_pagina_reportes(self):
-        """Mostrar página de reportes (solo admin)"""
-        ComponentesUISeguro.mostrar_header("📊 Reportes y Backups", nivel=2)
-        
-        st.warning("🚧 Página en desarrollo")
-        st.info("Reportes y sistema de backups próximamente")
-    
-    def _mostrar_pagina_reportes_basicos(self, username):
-        """Mostrar página de reportes básicos (secretaria)"""
-        ComponentesUISeguro.mostrar_header("📊 Reportes Básicos", nivel=2)
-        
-        try:
-            inscritos = db_segura.obtener_inscritos(username, 'secretaria')
-            total = len(inscritos)
-            
-            if total > 0:
-                # Estadísticas básicas
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    preinscritos = sum(1 for i in inscritos if i['estatus'] == 'Pre-inscrito')
-                    st.metric("Pre-inscritos", preinscritos)
-                
-                with col2:
-                    completados = sum(1 for i in inscritos if i['completado'])
-                    st.metric("Completados", completados)
-                
-                with col3:
-                    con_documentos = sum(1 for i in inscritos if i['documentos_subidos'] >= 5)
-                    st.metric("Con documentos", con_documentos)
-                
-                with col4:
-                    especialidad = sum(1 for i in inscritos if i['tipo_programa'] == 'ESPECIALIDAD')
-                    st.metric("Especialidad", especialidad)
-                
-                # Gráfico simple de programas
-                st.subheader("📈 Distribución por Programa")
-                programas = {}
-                for inscrito in inscritos:
-                    programa = inscrito['programa_interes']
-                    programas[programa] = programas.get(programa, 0) + 1
-                
-                df_programas = pd.DataFrame({
-                    'Programa': list(programas.keys()),
-                    'Cantidad': list(programas.values())
-                })
-                
-                if not df_programas.empty:
-                    st.bar_chart(df_programas.set_index('Programa'))
-                else:
-                    st.info("ℹ️ No hay datos para mostrar")
-                
-            else:
-                st.info("ℹ️ No hay inscritos para generar reportes")
-                
-        except Exception as e:
-            st.error(f"❌ Error generando reportes: {e}")
-    
-    def _mostrar_pagina_mis_documentos(self, username):
-        """Mostrar página de documentos para inscritos"""
-        ComponentesUISeguro.mostrar_header("📄 Mis Documentos", nivel=2)
-        
-        st.info("ℹ️ Funcionalidad de gestión de documentos próximamente")
-        st.info("Actualmente puedes ver tus documentos en 'Mi Perfil'")
-    
-    def _mostrar_pagina_mi_progreso(self, username):
-        """Mostrar página de progreso para inscritos"""
-        ComponentesUISeguro.mostrar_header("📋 Mi Progreso", nivel=2)
-        
-        st.info("ℹ️ Funcionalidad de seguimiento de progreso próximamente")
-    
     def ejecutar(self):
-        """Ejecutar aplicación principal"""
         self.configurar_aplicacion()
         
-        # Inicializar sistema
-        if not hasattr(self, 'security_manager') or self.security_manager is None:
-            if not self.inicializar_sistema():
-                st.error("❌ No se pudo inicializar el sistema. Por favor, recarga la página.")
-                return
-        
-        # Determinar qué mostrar según estado de autenticación
-        auth_status = st.session_state.get('authentication_status')
-        
-        if not auth_status:
-            # Mostrar página de login
-            self.mostrar_pagina_login()
-        
-        elif auth_status == 'publico':
-            # Mostrar página pública
-            self.mostrar_pagina_publica()
-        
-        elif auth_status == True:
-            # Mostrar página autenticada
-            self.mostrar_pagina_autenticada()
-        
+        # Determinar qué mapeo de menú usar
+        if self.sistema_auth and st.session_state.autenticado:
+            mapeo_menu = self.mapeo_menu_autenticado
         else:
-            # Estado inválido, mostrar login
-            st.error("❌ Estado de sesión inválido")
-            self.cerrar_sesion("Estado de sesión inválido")
-            self.mostrar_pagina_login()
+            mapeo_menu = self.mapeo_menu_no_autenticado
+        
+        # Obtener selección del sidebar
+        seleccion_menu = ComponentesUI.crear_sidebar(self.sistema_auth)
+        
+        # Obtener página seleccionada
+        pagina_seleccionada = mapeo_menu.get(seleccion_menu, "inicio")
+        
+        # Verificar autenticación para páginas administrativas
+        if pagina_seleccionada in ["consulta", "gestion_documentos", "configuracion", "reportes"]:
+            if not self.sistema_auth.verificar_autenticacion(rol_requerido="admin"):
+                # Redirigir a login si no está autenticado
+                pagina_seleccionada = "login"
+        
+        # Actualizar página actual si cambió
+        if pagina_seleccionada != st.session_state.pagina_actual:
+            st.session_state.pagina_actual = pagina_seleccionada
+        
+        try:
+            # Mostrar página seleccionada
+            pagina = self.paginas[st.session_state.pagina_actual]
+            
+            if st.session_state.pagina_actual == "login":
+                pagina.mostrar_login()
+            else:
+                pagina.mostrar()
+                
+        except KeyError:
+            st.error("Página no encontrada")
+            self.paginas["inicio"].mostrar()
 
 # ============================================================================
-# CAPA 11: PUNTO DE ENTRADA PRINCIPAL SEGURO
+# CAPA 14: PUNTO DE ENTRADA PRINCIPAL
 # ============================================================================
 
-def main_segura():
-    """Función principal segura de la aplicación"""
+def main():
+    """Función principal de la aplicación"""
     
     try:
-        # Inicializar estado del sistema
-        estado_sistema.limpiar_intentos_fallidos()
+        controlador = ControladorPrincipal()
         
-        # Mostrar banner informativo
+        # Mostrar encabezado
         st.markdown(f"""
         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 20px; 
                     border-left: 5px solid #2E86AB;">
-            <h3 style="margin: 0; color: #2E86AB;">🏥 Sistema de Pre-Inscripción Seguro</h3>
+            <h3 style="margin: 0; color: #2E86AB;">🏥 Sistema de Pre-Inscripción</h3>
             <p style="margin: 5px 0; color: #666;">Escuela de Enfermería - Versión {APP_CONFIG['version']}</p>
             <p style="margin: 0; font-size: 0.9em; color: #888;">
-                🔒 Sistema protegido con autenticación por roles | 📅 Convocatoria Febrero 2026
+                📅 Convocatoria Febrero 2026 | 🔄 Conexión SSH Remota | 💾 Backup Automático
             </p>
         </div>
         """, unsafe_allow_html=True)
         
-        # Inicializar y ejecutar controlador
-        controlador = ControladorPrincipalSeguro()
+        # Ejecutar controlador principal
         controlador.ejecutar()
-        
-        # Footer de seguridad
-        st.markdown("---")
-        st.caption(f"🔒 Sistema seguro v{APP_CONFIG['version']} | 📊 {estado_sistema.estado.get('sesiones_iniciadas', 0)} sesiones | ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         
     except Exception as e:
         st.error(f"❌ Error crítico en la aplicación: {e}")
-        logger.critical(f"Error crítico en sistema seguro: {e}", exc_info=True)
+        logger.critical(f"Error crítico en sistema: {e}", exc_info=True)
         
-        with st.expander("🚨 Información de diagnóstico para soporte"):
+        with st.expander("🚨 Información de diagnóstico"):
             st.write("**Traceback completo:**")
             st.code(traceback.format_exc())
-            
-            st.write("**Información del sistema:**")
-            st.write(f"- Python: {sys.version}")
-            st.write(f"- Streamlit: {st.__version__}")
-            st.write(f"- Sistema operativo: {os.name}")
-            st.write(f"- Directorio actual: {os.getcwd()}")
 
 # ============================================================================
-# EJECUCIÓN PRINCIPAL
+# EJECUCIÓN
 # ============================================================================
 
 if __name__ == "__main__":
-    main_segura()
+    main()
