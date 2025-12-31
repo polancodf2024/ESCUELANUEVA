@@ -1994,14 +1994,14 @@ class ComponentesUI:
                 st.markdown("---")
             
             st.subheader("🔍 Estado del Sistema")
-            col_est1, col_est2 = st.columns(2)
+            col_est2 = st.columns(1)
             with col_est1:
-                if estado_sistema.esta_inicializada():
-                    st.success("✅ BD Inicializada")
-                else:
-                    st.error("❌ BD No Inic.")
+              #  if estado_sistema.esta_inicializada():
+              #      st.success("✅ BD Inicializada")
+              #  else:
+              #      st.error("❌ BD No Inic.")
             
-            with col_est2:
+          #  with col_est2:
                 if estado_sistema.estado.get('ssh_conectado'):
                     st.success("✅ SSH Conectado")
                 else:
@@ -3014,14 +3014,14 @@ class PaginaPrincipal:
         
         st.markdown("---")
         
-        if not estado_sistema.esta_inicializada():
-            st.warning("""
-            ⚠️ **Base de datos no inicializada**
-            
-            Para comenzar a usar el sistema:
-            1. Configura secrets.toml con credenciales SSH
-            2. Inicializa la base de datos
-            """)
+ #       if not estado_sistema.esta_inicializada():
+ #           st.warning("""
+ #           ⚠️ **Base de datos no inicializada**
+ #           
+ #           Para comenzar a usar el sistema:
+ #           1. Configura secrets.toml con credenciales SSH
+ #           2. Inicializa la base de datos
+ #           """)
 
 class PaginaInscripcion:
     """Página de inscripción completa"""
