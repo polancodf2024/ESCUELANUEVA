@@ -1995,10 +1995,10 @@ class ComponentesUI:
             
             st.subheader("🔍 Estado del Sistema")
             # CORREGIDO: Solo una columna en lugar de dos columnas mal formadas
-            if estado_sistema.esta_inicializada():
-                st.success("✅ BD Inicializada")
-            else:
-                st.error("❌ BD No Inic.")
+          #  if estado_sistema.esta_inicializada():
+          #      st.success("✅ BD Inicializada")
+          #  else:
+          #      st.error("❌ BD No Inic.")
             
             if estado_sistema.estado.get('ssh_conectado'):
                 st.success("✅ SSH Conectado")
