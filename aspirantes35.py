@@ -142,7 +142,7 @@ class EnhancedLogger:
         
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            datefmt='%Y-%m-d %H:%M:%S'
         )
         
         console_handler = logging.StreamHandler()
@@ -502,7 +502,7 @@ class GestorConexionRemota:
             
             smtp_config = {
                 'smtp_server': self.config_completa.get('smtp_server', ''),
-                'smtp_port': self.config_completa.get('smtp_port', 587),
+                'smtp_port': int(self.config_completa.get('smtp_port', 587)),
                 'email_user': self.config_completa.get('email_user', ''),
                 'email_password': self.config_completa.get('email_password', ''),
                 'notification_email': self.config_completa.get('notification_email', ''),
@@ -1995,10 +1995,10 @@ class ComponentesUI:
             
             st.subheader("🔍 Estado del Sistema")
             # CORREGIDO: Solo una columna en lugar de dos columnas mal formadas
-        #    if estado_sistema.esta_inicializada():
-        #        st.success("✅ BD Inicializada")
-        #    else:
-        #        st.error("❌ BD No Inic.")
+            if estado_sistema.esta_inicializada():
+                st.success("✅ BD Inicializada")
+            else:
+                st.error("❌ BD No Inic.")
             
             if estado_sistema.estado.get('ssh_conectado'):
                 st.success("✅ SSH Conectado")
@@ -3027,7 +3027,7 @@ class PaginaInscripcion:
         self.sistema.mostrar_formulario_completo_interactivo()
 
 class PaginaConsulta:
-    """Página de consulta de inscritos"""
+    """Página de consulta de inscritos - CON MANEJO DE ERRORES MEJORADO"""
     
     @staticmethod
     def mostrar():
@@ -3075,21 +3075,28 @@ class PaginaConsulta:
                     col_exp1, col_exp2 = st.columns(2)
                     
                     with col_exp1:
-                        # Crear Excel en memoria
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            df.to_excel(writer, sheet_name='Inscritos', index=False)
-                        output.seek(0)
-                        
-                        st.download_button(
-                            label="📥 Descargar Excel",
-                            data=output,
-                            file_name=f"inscritos_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                        # Intentar exportar a Excel si openpyxl está disponible
+                        try:
+                            import openpyxl
+                            # Crear Excel en memoria
+                            output = io.BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df.to_excel(writer, sheet_name='Inscritos', index=False)
+                            output.seek(0)
+                            
+                            st.download_button(
+                                label="📥 Descargar Excel",
+                                data=output,
+                                file_name=f"inscritos_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        except ImportError:
+                            st.warning("⚠️ Para exportar a Excel, instala: `pip install openpyxl`")
+                        except Exception as e:
+                            st.error(f"❌ Error al crear Excel: {e}")
                     
                     with col_exp2:
-                        # Crear CSV en memoria
+                        # Crear CSV en memoria (siempre funciona)
                         csv = df.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="📥 Descargar CSV",
@@ -3104,6 +3111,20 @@ class PaginaConsulta:
             
         except Exception as e:
             st.error(f"❌ Error cargando inscritos: {e}")
+            
+            # Información de diagnóstico más detallada
+            with st.expander("🔍 Información de diagnóstico"):
+                st.write(f"**Tipo de error:** {type(e).__name__}")
+                st.write(f"**Mensaje:** {str(e)}")
+                
+                # Instrucciones para solucionar
+                if "openpyxl" in str(e).lower():
+                    st.markdown("""
+                    **Solución:** Instala openpyxl con:
+                    ```bash
+                    pip install openpyxl
+                    ```
+                    """)
 
 class PaginaConfiguracion:
     """Página de configuración del sistema"""
