@@ -1994,7 +1994,7 @@ class ComponentesUI:
                 st.markdown("---")
             
             st.subheader("🔍 Estado del Sistema")
-            col_est2 = st.columns(1)
+            col_est1 = st.columns(1)
             with col_est1:
               #  if estado_sistema.esta_inicializada():
               #      st.success("✅ BD Inicializada")
