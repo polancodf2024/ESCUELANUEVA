@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 4.0 (SEGURIDAD MEJORADA)
+SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 3.8 (TRABAJO REMOTO COMPLETO)
 Sistema completo que trabaja directamente en el servidor remoto
-VERSIÓN 4.0: Implementado bcrypt para passwords y timeout + rate limiting
+VERSIÓN CORREGIDA: Solucionados problemas con st.rerun() y contador de documentos
+VERSIÓN 3.9.2: CONTADOR DE DOCUMENTOS CORREGIDO - SOLUCIÓN COMPLETA
 """
 
 # ============================================================================
@@ -45,9 +46,6 @@ import math
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, List, Tuple
 import shutil
-import bcrypt
-from functools import wraps
-from collections import defaultdict
 
 warnings.filterwarnings('ignore')
 
@@ -71,7 +69,7 @@ except ImportError:
 # Configuración de la aplicación
 APP_CONFIG = {
     'app_name': 'Sistema Escuela Enfermería',
-    'version': '4.0',  # Versión con mejoras de seguridad
+    'version': '3.9.2',  # Versión actualizada - CONTADOR DE DOCUMENTOS CORREGIDO
     'page_title': 'Sistema Escuela Enfermería - Pre-Inscripción',
     'page_icon': '🏥',
     'layout': 'wide',
@@ -80,12 +78,7 @@ APP_CONFIG = {
     'uploads_dir': 'uploads',
     'max_backups': 10,
     'estado_file': 'estado_aspirantes.json',
-    'session_timeout': 60,  # minutos
-    'login_timeout': 30,  # segundos para timeout de login
-    'max_login_attempts': 5,  # intentos máximos de login
-    'login_block_time': 300,  # segundos de bloqueo después de intentos fallidos
-    'request_rate_limit': 10,  # solicitudes por minuto
-    'password_hash_rounds': 12  # rondas para bcrypt
+    'session_timeout': 60  # minutos
 }
 
 # Constantes de tiempo
@@ -97,9 +90,7 @@ TIME_CONFIG = {
     'sftp_transfer_timeout': 300,
     'db_download_timeout': 180,
     'retry_attempts': 3,
-    'retry_delay_base': 5,
-    'request_timeout': 30,  # timeout general para solicitudes
-    'db_query_timeout': 10   # timeout para consultas de base de datos
+    'retry_delay_base': 5
 }
 
 # Categorías académicas CORREGIDAS (solo 3 categorías sin redundancia)
@@ -141,155 +132,7 @@ TESTIMONIOS = [
 ]
 
 # ============================================================================
-# CAPA 3: SISTEMA DE SEGURIDAD MEJORADO - BCRYPT Y RATE LIMITING
-# ============================================================================
-
-class SistemaSeguridad:
-    """Sistema de seguridad mejorado con bcrypt, timeout y rate limiting"""
-    
-    # Almacenar intentos de login por IP
-    login_attempts = defaultdict(list)
-    # Almacenar solicitudes por IP para rate limiting
-    request_counts = defaultdict(list)
-    
-    @staticmethod
-    def hash_password(password: str) -> str:
-        """Hashear password usando bcrypt"""
-        try:
-            # Generar salt y hash con número configurable de rondas
-            salt = bcrypt.gensalt(rounds=APP_CONFIG['password_hash_rounds'])
-            hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-            return hashed.decode('utf-8')
-        except Exception as e:
-            logger.error(f"Error hasheando password: {e}")
-            # Fallback a SHA-256 si bcrypt falla
-            return hashlib.sha256(password.encode()).hexdigest()
-    
-    @staticmethod
-    def verify_password(password: str, hashed_password: str) -> bool:
-        """Verificar password contra hash bcrypt o SHA-256 (para compatibilidad)"""
-        try:
-            # Primero intentar con bcrypt
-            if hashed_password.startswith('$2b$'):
-                return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
-            # Si no es bcrypt, verificar como SHA-256 (para compatibilidad con hashes existentes)
-            elif len(hashed_password) == 64:  # SHA-256 hash length
-                password_hash = hashlib.sha256(password.encode()).hexdigest()
-                return password_hash == hashed_password
-            else:
-                # Para passwords en texto plano (migración)
-                return password == hashed_password
-        except Exception as e:
-            logger.error(f"Error verificando password: {e}")
-            return False
-    
-    @staticmethod
-    def check_login_attempts(ip_address: str) -> tuple[bool, int]:
-        """Verificar intentos de login para una IP"""
-        now = time.time()
-        attempts = SistemaSeguridad.login_attempts.get(ip_address, [])
-        
-        # Limpiar intentos antiguos
-        recent_attempts = [t for t in attempts if now - t < APP_CONFIG['login_block_time']]
-        SistemaSeguridad.login_attempts[ip_address] = recent_attempts
-        
-        # Verificar si está bloqueado
-        if len(recent_attempts) >= APP_CONFIG['max_login_attempts']:
-            time_left = APP_CONFIG['login_block_time'] - (now - recent_attempts[0])
-            return False, int(time_left)
-        
-        return True, 0
-    
-    @staticmethod
-    def record_login_attempt(ip_address: str, success: bool):
-        """Registrar intento de login"""
-        now = time.time()
-        if ip_address not in SistemaSeguridad.login_attempts:
-            SistemaSeguridad.login_attempts[ip_address] = []
-        
-        if not success:
-            SistemaSeguridad.login_attempts[ip_address].append(now)
-        
-        # Limpiar intentos antiguos
-        attempts = SistemaSeguridad.login_attempts[ip_address]
-        SistemaSeguridad.login_attempts[ip_address] = [
-            t for t in attempts if now - t < APP_CONFIG['login_block_time']
-        ]
-    
-    @staticmethod
-    def check_rate_limit(ip_address: str, endpoint: str = "general") -> tuple[bool, int]:
-        """Verificar rate limiting para una IP y endpoint"""
-        now = time.time()
-        key = f"{ip_address}:{endpoint}"
-        
-        if key not in SistemaSeguridad.request_counts:
-            SistemaSeguridad.request_counts[key] = []
-        
-        # Limpiar solicitudes antiguas (más de 1 minuto)
-        SistemaSeguridad.request_counts[key] = [
-            t for t in SistemaSeguridad.request_counts[key] 
-            if now - t < 60  # 1 minuto
-        ]
-        
-        # Verificar límite
-        if len(SistemaSeguridad.request_counts[key]) >= APP_CONFIG['request_rate_limit']:
-            # Demasiadas solicitudes
-            oldest_request = SistemaSeguridad.request_counts[key][0]
-            wait_time = 60 - (now - oldest_request)
-            return False, int(wait_time)
-        
-        # Registrar nueva solicitud
-        SistemaSeguridad.request_counts[key].append(now)
-        return True, 0
-    
-    @staticmethod
-    def get_client_ip() -> str:
-        """Obtener IP del cliente (simplificado para Streamlit)"""
-        try:
-            # En Streamlit Cloud, podemos obtener la IP de la sesión
-            import streamlit.runtime.scriptrunner as scriptrunner
-            ctx = scriptrunner.get_script_run_ctx()
-            if ctx and hasattr(ctx, 'request'):
-                return ctx.request.remote_ip
-        except:
-            pass
-        
-        # Fallback: usar hash de sesión
-        session_id = st.session_state.get('session_id', 'unknown')
-        return f"session_{hash(session_id) % 10000}"
-    
-    @staticmethod
-    def timeout_decorator(timeout_seconds: int):
-        """Decorador para aplicar timeout a funciones"""
-        def decorator(func):
-            @wraps(func)
-            def wrapper(*args, **kwargs):
-                import signal
-                
-                class TimeoutException(Exception):
-                    pass
-                
-                def timeout_handler(signum, frame):
-                    raise TimeoutException(f"Timeout después de {timeout_seconds} segundos")
-                
-                # Configurar handler de timeout
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(timeout_seconds)
-                
-                try:
-                    result = func(*args, **kwargs)
-                    signal.alarm(0)  # Desactivar alarm
-                    return result
-                except TimeoutException as e:
-                    logger.warning(f"Timeout en función {func.__name__}: {e}")
-                    raise
-                finally:
-                    signal.alarm(0)  # Asegurar que la alarma se desactive
-            return wrapper
-        return decorator
-
-# ============================================================================
-# CAPA 4: LOGGING Y MANEJO DE ESTADO
+# CAPA 3: LOGGING Y MANEJO DE ESTADO
 # ============================================================================
 
 class EnhancedLogger:
@@ -352,14 +195,6 @@ class EstadoPersistente:
                             'total_tiempo': 0
                         }
                     
-                    # Inicializar estadísticas de seguridad
-                    if 'seguridad' not in estado:
-                        estado['seguridad'] = {
-                            'intentos_fallidos': 0,
-                            'bloqueos_ip': 0,
-                            'passwords_migrados': 0
-                        }
-                    
                     return estado
             else:
                 return self._estado_por_defecto()
@@ -383,11 +218,6 @@ class EstadoPersistente:
                 'registros': 0,
                 'total_tiempo': 0
             },
-            'seguridad': {
-                'intentos_fallidos': 0,
-                'bloqueos_ip': 0,
-                'passwords_migrados': 0
-            },
             'backups_realizados': 0,
             'total_inscritos': 0,
             'recordatorios_enviados': 0,
@@ -403,21 +233,6 @@ class EstadoPersistente:
             logger.debug(f"Estado guardado en {self.archivo_estado}")
         except Exception as e:
             logger.error(f"❌ Error guardando estado: {e}")
-    
-    def registrar_intento_fallido(self):
-        """Registrar intento de login fallido"""
-        self.estado['seguridad']['intentos_fallidos'] = self.estado['seguridad'].get('intentos_fallidos', 0) + 1
-        self.guardar_estado()
-    
-    def registrar_bloqueo_ip(self):
-        """Registrar bloqueo de IP"""
-        self.estado['seguridad']['bloqueos_ip'] = self.estado['seguridad'].get('bloqueos_ip', 0) + 1
-        self.guardar_estado()
-    
-    def registrar_password_migrado(self):
-        """Registrar password migrado a bcrypt"""
-        self.estado['seguridad']['passwords_migrados'] = self.estado['seguridad'].get('passwords_migrados', 0) + 1
-        self.guardar_estado()
     
     def marcar_db_inicializada(self):
         self.estado['db_inicializada'] = True
@@ -483,11 +298,11 @@ class EstadoPersistente:
 estado_sistema = EstadoPersistente()
 
 # ============================================================================
-# CAPA 5: UTILIDADES Y SERVICIOS BASE CON TIMEOUT
+# CAPA 4: UTILIDADES Y SERVICIOS BASE
 # ============================================================================
 
 class UtilidadesSistema:
-    """Utilidades para verificación de disco y red con timeout"""
+    """Utilidades para verificación de disco y red"""
     
     @staticmethod
     def verificar_espacio_disco(ruta, espacio_minimo_mb=100):
@@ -508,7 +323,6 @@ class UtilidadesSistema:
             return False, 0
     
     @staticmethod
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['request_timeout'])
     def verificar_conectividad_red(host="8.8.8.8", port=53, timeout=3):
         try:
             socket.setdefaulttimeout(timeout)
@@ -582,7 +396,7 @@ class ValidadorDatos:
         return folio.startswith('FOL') and len(folio) >= 10
 
 def cargar_configuracion_secrets():
-    """Cargar configuración desde secrets.toml con timeout"""
+    """Cargar configuración desde secrets.toml"""
     try:
         if not HAS_TOMLLIB:
             logger.error("❌ ERROR: No se puede cargar secrets.toml sin tomllib/tomli")
@@ -619,7 +433,7 @@ def cargar_configuracion_secrets():
         return {}
 
 # ============================================================================
-# CAPA 6: GESTIÓN DE CONEXIÓN SSH COMPLETA CON SUBIDA DE ARCHIVOS
+# CAPA 5: GESTIÓN DE CONEXIÓN SSH COMPLETA CON SUBIDA DE ARCHIVOS
 # ============================================================================
 
 class GestorConexionRemota:
@@ -743,7 +557,6 @@ class GestorConexionRemota:
         jitter = wait_time * 0.1 * np.random.random()
         return wait_time + jitter
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['ssh_connect_timeout'])
     def probar_conexion_inicial(self):
         try:
             if not self.config.get('host'):
@@ -804,7 +617,6 @@ class GestorConexionRemota:
             estado_sistema.set_ssh_conectado(False, error_msg)
             return False
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['ssh_connect_timeout'])
     def conectar_ssh(self):
         try:
             if not self.config.get('host'):
@@ -913,7 +725,6 @@ class GestorConexionRemota:
             if self.ssh:
                 self.desconectar_ssh()
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['sftp_transfer_timeout'])
     def subir_archivo_remoto(self, archivo_local, ruta_remota):
         """Subir un archivo directamente al servidor remoto"""
         try:
@@ -937,7 +748,6 @@ class GestorConexionRemota:
             if self.ssh:
                 self.desconectar_ssh()
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['sftp_transfer_timeout'])
     def subir_buffer_remoto(self, buffer_archivo, nombre_archivo, ruta_remota):
         """Subir un archivo desde buffer (Streamlit uploaded file) al servidor remoto"""
         try:
@@ -1051,7 +861,7 @@ class GestorConexionRemota:
     
     def _verificar_integridad_db(self, db_path):
         try:
-            conn = sqlite3.connect(db_path, timeout=TIME_CONFIG['db_query_timeout'])
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             cursor.execute("SELECT sqlite_version()")
             version = cursor.fetchone()[0]
@@ -1108,7 +918,7 @@ class GestorConexionRemota:
     def _inicializar_db_estructura_completa(self, db_path):
         try:
             logger.info(f"📝 Inicializando estructura COMPLETA en: {db_path}")
-            conn = sqlite3.connect(db_path, timeout=TIME_CONFIG['db_query_timeout'])
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -1125,8 +935,7 @@ class GestorConexionRemota:
                     categoria_academica TEXT,
                     tipo_programa TEXT,
                     acepto_privacidad INTEGER DEFAULT 0,
-                    acepto_convocatoria INTEGER DEFAULT 0,
-                    password_hash_type TEXT DEFAULT 'bcrypt'
+                    acepto_convocatoria INTEGER DEFAULT 0
                 )
             ''')
             
@@ -1212,19 +1021,6 @@ class GestorConexionRemota:
                 )
             ''')
             
-            # Tabla para logs de seguridad
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS logs_seguridad (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    tipo_evento TEXT NOT NULL,
-                    ip_address TEXT,
-                    usuario TEXT,
-                    descripcion TEXT,
-                    detalles TEXT
-                )
-            ''')
-            
             documentos_licenciatura = [
                 ("LICENCIATURA", "Certificado preparatoria (promedio ≥ 8.0)", 1, "Certificado de bachillerato original", 1),
                 ("LICENCIATURA", "Acta nacimiento (≤ 3 meses)", 1, "Acta de nacimiento actualizada", 2),
@@ -1266,13 +1062,13 @@ class GestorConexionRemota:
                 ''', doc)
             
             try:
-                # Insertar admin con password bcrypt
-                password_hash = SistemaSeguridad.hash_password("Admin123!")
+                # Insertar admin con password seguro (hash) - CORREGIDO
+                password_hash = hashlib.sha256("Admin123!".encode()).hexdigest()
                 cursor.execute(
-                    "INSERT OR IGNORE INTO usuarios (usuario, password, rol, nombre_completo, email, matricula, activo, password_hash_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    ('admin', password_hash, 'admin', 'Administrador', 'admin@enfermeria.edu', 'ADMIN-001', 1, 'bcrypt')
+                    "INSERT OR IGNORE INTO usuarios (usuario, password, rol, nombre_completo, email, matricula, activo) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ('admin', password_hash, 'admin', 'Administrador', 'admin@enfermeria.edu', 'ADMIN-001', 1)
                 )
-                logger.info("✅ Usuario admin creado con password bcrypt: Admin123!")
+                logger.info("✅ Usuario admin creado con password hasheado: Admin123!")
             except Exception as e:
                 logger.warning(f"⚠️ Error insertando admin: {e}")
             
@@ -1324,14 +1120,13 @@ class GestorConexionRemota:
             if self.ssh:
                 self.desconectar_ssh()
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['ssh_connect_timeout'])
     def verificar_conexion_ssh(self):
         return self.probar_conexion_inicial()
 
 gestor_remoto = GestorConexionRemota()
 
 # ============================================================================
-# CAPA 7: SISTEMA DE GESTIÓN DE ARCHIVOS REMOTOS
+# CAPA 6: SISTEMA DE GESTIÓN DE ARCHIVOS REMOTOS
 # ============================================================================
 
 class SistemaGestionArchivosRemotos:
@@ -1350,16 +1145,9 @@ class SistemaGestionArchivosRemotos:
             logger.error(f"❌ Error creando estructura de directorios: {e}")
     
     def subir_documento_remoto(self, archivo, nombre_documento, matricula):
-        """Subir documento directamente al servidor remoto con rate limiting"""
+        """Subir documento directamente al servidor remoto"""
         try:
             if archivo is None:
-                return None
-            
-            # Verificar rate limiting para subida de archivos
-            ip = SistemaSeguridad.get_client_ip()
-            allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "file_upload")
-            if not allowed:
-                logger.warning(f"⚠️ Rate limit excedido para subida de archivos. IP: {ip}")
                 return None
             
             # Generar nombre seguro para el archivo
@@ -1481,11 +1269,11 @@ class SistemaGestionArchivosRemotos:
             return False
 
 # ============================================================================
-# CAPA 8: SISTEMA DE BASE DE DATOS COMPLETO CON SEGURIDAD MEJORADA
+# CAPA 7: SISTEMA DE BASE DE DATOS COMPLETO (CON LOGIN CORREGIDO)
 # ============================================================================
 
 class SistemaBaseDatosCompleto:
-    """Sistema de base de datos SQLite COMPLETO con seguridad mejorada"""
+    """Sistema de base de datos SQLite COMPLETO que trabaja directamente en el servidor remoto"""
     
     def __init__(self):
         self.gestor = gestor_remoto
@@ -1498,7 +1286,6 @@ class SistemaBaseDatosCompleto:
     def _intento_conexion_con_backoff(self, attempt):
         return self.gestor._intento_conexion_con_backoff(attempt)
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['db_download_timeout'])
     def sincronizar_desde_remoto(self):
         inicio_tiempo = time.time()
         
@@ -1515,7 +1302,7 @@ class SistemaBaseDatosCompleto:
                     raise Exception(f"Archivo de base de datos no existe: {self.db_local_temp}")
                 
                 try:
-                    conn = sqlite3.connect(self.db_local_temp, timeout=TIME_CONFIG['db_query_timeout'])
+                    conn = sqlite3.connect(self.db_local_temp)
                     cursor = conn.cursor()
                     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
                     tablas = cursor.fetchall()
@@ -1562,7 +1349,6 @@ class SistemaBaseDatosCompleto:
             logger.error(f"❌ Error inicializando estructura: {e}", exc_info=True)
             raise
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['sftp_transfer_timeout'])
     def sincronizar_hacia_remoto(self):
         inicio_tiempo = time.time()
         
@@ -1599,7 +1385,6 @@ class SistemaBaseDatosCompleto:
                     return False
     
     @contextmanager
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['db_query_timeout'])
     def get_connection(self):
         conn = None
         try:
@@ -1607,7 +1392,7 @@ class SistemaBaseDatosCompleto:
                 if not self.sincronizar_desde_remoto():
                     raise Exception("No se pudo sincronizar la base de datos")
             
-            conn = sqlite3.connect(self.db_local_temp, timeout=TIME_CONFIG['db_query_timeout'])
+            conn = sqlite3.connect(self.db_local_temp)
             conn.row_factory = sqlite3.Row
             
             conn.execute("PRAGMA busy_timeout = 5000")
@@ -1627,7 +1412,6 @@ class SistemaBaseDatosCompleto:
                 conn.close()
                 self.conexion_actual = None
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['db_query_timeout'])
     def ejecutar_query(self, query, params=()):
         try:
             with self.get_connection() as conn:
@@ -1646,84 +1430,54 @@ class SistemaBaseDatosCompleto:
             logger.error(f"❌ Error ejecutando query: {e} - Query: {query}")
             return None
     
-    def _migrar_password_a_bcrypt(self, usuario_data):
-        """Migrar password a bcrypt si es necesario"""
-        try:
-            usuario = usuario_data['usuario']
-            stored_password = usuario_data['password']
-            
-            # Verificar si ya es bcrypt
-            if stored_password.startswith('$2b$'):
-                return stored_password
-            
-            # Migrar de SHA-256 a bcrypt
-            password_hash = SistemaSeguridad.hash_password(stored_password)
-            
-            query = "UPDATE usuarios SET password = ?, password_hash_type = 'bcrypt' WHERE usuario = ?"
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (password_hash, usuario))
-                conn.commit()
-            
-            logger.info(f"✅ Password migrado a bcrypt para usuario: {usuario}")
-            estado_sistema.registrar_password_migrado()
-            
-            return password_hash
-            
-        except Exception as e:
-            logger.error(f"❌ Error migrando password a bcrypt: {e}")
-            return stored_password
-    
     def verificar_usuario(self, usuario, password):
-        """VERIFICACIÓN DE USUARIO CON BCRYPT Y SEGURIDAD MEJORADA"""
-        ip_address = SistemaSeguridad.get_client_ip()
-        
-        # Verificar rate limiting para login
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip_address, "login")
-        if not allowed:
-            logger.warning(f"⚠️ Rate limit excedido para login. IP: {ip_address}")
-            return None
-        
-        # Verificar intentos de login
-        allowed, time_left = SistemaSeguridad.check_login_attempts(ip_address)
-        if not allowed:
-            logger.warning(f"⚠️ IP bloqueada por demasiados intentos. IP: {ip_address}, Tiempo restante: {time_left}s")
-            estado_sistema.registrar_bloqueo_ip()
-            return None
-        
+        """VERIFICACIÓN DE USUARIO CORREGIDA - Maneja passwords hasheadas y texto plano"""
         try:
             query = "SELECT * FROM usuarios WHERE usuario = ?"
             resultados = self.ejecutar_query(query, (usuario,))
             
             if not resultados:
                 logger.warning(f"Usuario no encontrado: {usuario}")
-                SistemaSeguridad.record_login_attempt(ip_address, False)
-                estado_sistema.registrar_intento_fallido()
                 return None
             
             usuario_data = resultados[0]
             stored_password = usuario_data['password']
             
-            # Verificar password con bcrypt
-            if SistemaSeguridad.verify_password(password, stored_password):
-                # Migrar a bcrypt si no lo está ya
-                if not stored_password.startswith('$2b$'):
-                    stored_password = self._migrar_password_a_bcrypt(usuario_data)
-                    usuario_data['password'] = stored_password
-                
-                logger.info(f"✅ Login exitoso (bcrypt) para: {usuario}")
-                SistemaSeguridad.record_login_attempt(ip_address, True)
+            # PRIMERO: Intentar con hash (la forma segura)
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            
+            if stored_password == password_hash:
+                logger.info(f"✅ Login exitoso (hash) para: {usuario}")
                 return usuario_data
-            else:
-                logger.warning(f"Contraseña incorrecta para usuario: {usuario}")
-                SistemaSeguridad.record_login_attempt(ip_address, False)
-                estado_sistema.registrar_intento_fallido()
-                return None
+            
+            # SEGUNDO: Si no funciona con hash, probar texto plano (para compatibilidad)
+            if stored_password == password:
+                logger.info(f"✅ Login exitoso (texto) para: {usuario}")
+                # Si la contraseña estaba en texto, la actualizamos a hash
+                self._actualizar_password_a_hash(usuario, password_hash)
+                return usuario_data
+            
+            # Si llegamos aquí, la contraseña no coincide
+            logger.warning(f"Contraseña incorrecta para usuario: {usuario}")
+            return None
             
         except Exception as e:
             logger.error(f"❌ Error verificando usuario: {e}", exc_info=True)
-            SistemaSeguridad.record_login_attempt(ip_address, False)
             return None
+    
+    def _actualizar_password_a_hash(self, usuario, password_hash):
+        """Actualizar contraseña en texto plano a hash para mayor seguridad"""
+        try:
+            query = "UPDATE usuarios SET password = ? WHERE usuario = ?"
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (password_hash, usuario))
+                conn.commit()
+            logger.info(f"✅ Contraseña actualizada a hash para usuario: {usuario}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error actualizando password a hash: {e}")
+            return False
     
     def agregar_inscrito_completo(self, datos_inscrito):
         try:
@@ -1813,13 +1567,12 @@ class SistemaBaseDatosCompleto:
                 query_usuario = '''
                     INSERT INTO usuarios (
                         usuario, password, rol, nombre_completo, email, matricula, activo,
-                        categoria_academica, tipo_programa, acepto_privacidad, acepto_convocatoria,
-                        password_hash_type
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        categoria_academica, tipo_programa, acepto_privacidad, acepto_convocatoria
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 '''
                 
-                # Usar bcrypt para passwords de usuarios inscritos
-                password_hash = SistemaSeguridad.hash_password(datos_inscrito.get('matricula', ''))
+                # Contraseña por defecto para inscritos: su matrícula
+                password_hash = hashlib.sha256(datos_inscrito.get('matricula', '').encode()).hexdigest()
                 params_usuario = (
                     datos_inscrito.get('matricula', ''),
                     password_hash,
@@ -1831,8 +1584,7 @@ class SistemaBaseDatosCompleto:
                     datos_inscrito.get('categoria_academica', ''),
                     datos_inscrito.get('tipo_programa', ''),
                     1 if datos_inscrito.get('acepto_privacidad') else 0,
-                    1 if datos_inscrito.get('acepto_convocatoria') else 0,
-                    'bcrypt'
+                    1 if datos_inscrito.get('acepto_convocatoria') else 0
                 )
                 
                 self.ejecutar_query(query_usuario, params_usuario)
@@ -2031,144 +1783,17 @@ class SistemaBaseDatosCompleto:
 db_completa = SistemaBaseDatosCompleto()
 
 # ============================================================================
-# CAPA 9: SISTEMA DE AUTENTICACIÓN CORREGIDO CON SEGURIDAD MEJORADA
-# ============================================================================
-
-class SistemaAutenticacion:
-    """Sistema de autenticación para usuarios administrativos - CON SEGURIDAD MEJORADA"""
-    
-    def __init__(self):
-        self.usuario_actual = None
-        self.rol_actual = None
-        
-        if 'autenticado' not in st.session_state:
-            st.session_state.autenticado = False
-            st.session_state.usuario = None
-            st.session_state.rol = None
-        
-        # Generar ID de sesión único
-        if 'session_id' not in st.session_state:
-            st.session_state.session_id = str(uuid.uuid4())
-    
-    def mostrar_login(self):
-        """Mostrar formulario de login con seguridad mejorada"""
-        with st.container():
-            st.markdown("""
-            <div style="background-color: #f0f2f6; padding: 30px; border-radius: 10px; 
-                        max-width: 400px; margin: 50px auto; border: 1px solid #ddd;">
-                <h2 style="text-align: center; color: #2E86AB;">🔐 Acceso Administrativo</h2>
-                <p style="text-align: center; color: #666;">Ingresa tus credenciales para acceder al sistema</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            col1, col2, col3 = st.columns([1, 2, 1])
-            
-            with col2:
-                with st.form("form_login", clear_on_submit=True):
-                    usuario = st.text_input("Usuario", placeholder="admin", key="login_usuario")
-                    password = st.text_input("Contraseña", type="password", 
-                                           placeholder="Admin123!", key="login_password")
-                    enviar = st.form_submit_button("Iniciar Sesión", type="primary", use_container_width=True)
-                    
-                    if enviar:
-                        # Verificar timeout de login
-                        start_time = time.time()
-                        
-                        if self.validar_credenciales(usuario, password):
-                            login_time = time.time() - start_time
-                            
-                            # Verificar si el login tomó demasiado tiempo (posible ataque de timing)
-                            if login_time > APP_CONFIG['login_timeout']:
-                                logger.warning(f"⚠️ Login sospechosamente lento: {login_time:.2f}s para usuario {usuario}")
-                                st.error("❌ Error de seguridad. Intente nuevamente.")
-                            else:
-                                st.session_state.autenticado = True
-                                st.session_state.usuario = usuario
-                                st.session_state.rol = self.rol_actual
-                                st.success(f"✅ Bienvenido, {usuario}!")
-                                time.sleep(1)
-                                st.session_state['needs_refresh'] = True
-                        else:
-                            # Obtener IP para logging
-                            ip = SistemaSeguridad.get_client_ip()
-                            
-                            # Verificar si está bloqueado
-                            allowed, time_left = SistemaSeguridad.check_login_attempts(ip)
-                            if not allowed:
-                                st.error(f"❌ Demasiados intentos fallidos. Espere {time_left} segundos.")
-                            else:
-                                st.error("❌ Usuario o contraseña incorrectos")
-                            
-                            # Información de debug temporal (eliminar después)
-                            with st.expander("🔍 Información de depuración (temporal)"):
-                                st.info("Credenciales por defecto:")
-                                st.code("Usuario: admin\nContraseña: Admin123!")
-    
-    def validar_credenciales(self, usuario, password):
-        """Validar credenciales usando el método seguro con bcrypt"""
-        try:
-            # Aplicar timeout a la validación
-            start_time = time.time()
-            
-            usuario_data = db_completa.verificar_usuario(usuario, password)
-            
-            if usuario_data:
-                self.usuario_actual = usuario_data
-                self.rol_actual = usuario_data['rol']
-                
-                # Log de login exitoso (sin password)
-                login_time = time.time() - start_time
-                logger.info(f"✅ Autenticación exitosa para: {usuario} en {login_time:.2f}s")
-                return True
-            
-            logger.warning(f"❌ Autenticación fallida para: {usuario}")
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ Error validando credenciales: {e}")
-            return False
-    
-    def verificar_autenticacion(self, rol_requerido=None):
-        """Verificar si el usuario está autenticado y tiene el rol requerido"""
-        if not st.session_state.autenticado:
-            return False
-        
-        if rol_requerido and st.session_state.rol != rol_requerido:
-            st.error(f"❌ No tienes permisos para acceder a esta sección. Rol requerido: {rol_requerido}")
-            return False
-        
-        return True
-    
-    def cerrar_sesion(self):
-        """Cerrar sesión del usuario"""
-        st.session_state.autenticado = False
-        st.session_state.usuario = None
-        st.session_state.rol = None
-        st.success("✅ Sesión cerrada exitosamente")
-        time.sleep(1)
-        st.session_state['needs_refresh'] = True
-    
-    def mostrar_cerrar_sesion(self):
-        """Mostrar botón para cerrar sesión"""
-        if st.session_state.autenticado:
-            col1, col2, col3 = st.columns([3, 1, 3])
-            with col2:
-                if st.button("🚪 Cerrar Sesión", use_container_width=True):
-                    self.cerrar_sesion()
-
-# ============================================================================
-# CAPA 10: SISTEMA DE BACKUPS, CORREOS Y GESTIÓN REMOTA
+# CAPA 8: SISTEMA DE BACKUPS, CORREOS Y GESTIÓN REMOTA
 # ============================================================================
 
 class SistemaBackupAutomatico:
-    """Sistema de backup automático remoto con timeout"""
+    """Sistema de backup automático remoto"""
     
     def __init__(self, gestor_ssh):
         self.gestor_ssh = gestor_ssh
         self.backup_dir = APP_CONFIG['backup_dir']
         self.max_backups = APP_CONFIG['max_backups']
         
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['db_download_timeout'])
     def crear_backup(self, tipo_operacion, detalles):
         try:
             if not os.path.exists(self.backup_dir):
@@ -2189,11 +1814,7 @@ class SistemaBackupAutomatico:
                                 'fecha_backup': datetime.now().isoformat(),
                                 'tipo_operacion': tipo_operacion,
                                 'detalles': detalles,
-                                'usuario': 'sistema',
-                                'seguridad': {
-                                    'password_hash_type': 'bcrypt',
-                                    'hash_rounds': APP_CONFIG['password_hash_rounds']
-                                }
+                                'usuario': 'sistema'
                             }
                             
                             metadata_str = json.dumps(metadata, indent=2, default=str)
@@ -2259,7 +1880,7 @@ class SistemaBackupAutomatico:
             return []
 
 class SistemaCorreosCompleto:
-    """Sistema de envío de correos completo con timeout"""
+    """Sistema de envío de correos completo"""
     
     def __init__(self):
         try:
@@ -2279,7 +1900,6 @@ class SistemaCorreosCompleto:
             logger.warning(f"⚠️ Configuración de correo no disponible: {e}")
             self.correos_habilitados = False
     
-    @SistemaSeguridad.timeout_decorator(TIME_CONFIG['request_timeout'])
     def enviar_correo_confirmacion_completo(self, destinatario, nombre_estudiante, matricula, folio, programa, tipo_programa):
         if not self.correos_habilitados:
             return False, "Sistema de correos no configurado"
@@ -2371,11 +1991,120 @@ class SistemaCorreosCompleto:
             return False, f"Error: {str(e)}"
 
 # ============================================================================
-# CAPA 11: COMPONENTES UI REUTILIZABLES CON RATE LIMITING
+# CAPA 9: SISTEMA DE AUTENTICACIÓN CORREGIDO
+# ============================================================================
+
+class SistemaAutenticacion:
+    """Sistema de autenticación para usuarios administrativos - CORREGIDO"""
+    
+    def __init__(self):
+        self.usuario_actual = None
+        self.rol_actual = None
+        
+        if 'autenticado' not in st.session_state:
+            st.session_state.autenticado = False
+            st.session_state.usuario = None
+            st.session_state.rol = None
+    
+    def mostrar_login(self):
+        """Mostrar formulario de login"""
+        with st.container():
+            st.markdown("""
+            <div style="background-color: #f0f2f6; padding: 30px; border-radius: 10px; 
+                        max-width: 400px; margin: 50px auto; border: 1px solid #ddd;">
+                <h2 style="text-align: center; color: #2E86AB;">🔐 Acceso Administrativo</h2>
+                <p style="text-align: center; color: #666;">Ingresa tus credenciales para acceder al sistema</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            col1, col2, col3 = st.columns([1, 2, 1])
+            
+            with col2:
+                with st.form("form_login", clear_on_submit=True):
+                    usuario = st.text_input("Usuario", placeholder="admin", key="login_usuario")
+                    password = st.text_input("Contraseña", type="password", 
+                                           placeholder="Admin123!", key="login_password")
+                    enviar = st.form_submit_button("Iniciar Sesión", type="primary", use_container_width=True)
+                    
+                    if enviar:
+                        if self.validar_credenciales(usuario, password):
+                            st.session_state.autenticado = True
+                            st.session_state.usuario = usuario
+                            st.session_state.rol = self.rol_actual
+                            st.success(f"✅ Bienvenido, {usuario}!")
+                            time.sleep(1)
+                            st.session_state['needs_refresh'] = True  # SOLUCIÓN 1: En lugar de st.rerun()
+                        else:
+                            st.error("❌ Usuario o contraseña incorrectos")
+                            
+                            # Información de debug temporal (eliminar después)
+                            with st.expander("🔍 Información de depuración (temporal)"):
+                                st.info("Credenciales por defecto:")
+                                st.code("Usuario: admin\nContraseña: Admin123!")
+                                
+                                # Verificar si hay usuarios en la base de datos
+                                try:
+                                    query = "SELECT usuario, LENGTH(password) as pass_len FROM usuarios"
+                                    usuarios = db_completa.ejecutar_query(query)
+                                    if usuarios:
+                                        st.write("Usuarios en base de datos:", usuarios)
+                                    else:
+                                        st.warning("No hay usuarios en la base de datos")
+                                except Exception as e:
+                                    st.error(f"Error consultando usuarios: {e}")
+    
+    def validar_credenciales(self, usuario, password):
+        """Validar credenciales usando el método corregido de la base de datos"""
+        try:
+            usuario_data = db_completa.verificar_usuario(usuario, password)
+            
+            if usuario_data:
+                self.usuario_actual = usuario_data
+                self.rol_actual = usuario_data['rol']
+                logger.info(f"✅ Autenticación exitosa para: {usuario}")
+                return True
+            
+            logger.warning(f"❌ Autenticación fallida para: {usuario}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error validando credenciales: {e}")
+            return False
+    
+    def verificar_autenticacion(self, rol_requerido=None):
+        """Verificar si el usuario está autenticado y tiene el rol requerido"""
+        if not st.session_state.autenticado:
+            return False
+        
+        if rol_requerido and st.session_state.rol != rol_requerido:
+            st.error(f"❌ No tienes permisos para acceder a esta sección. Rol requerido: {rol_requerido}")
+            return False
+        
+        return True
+    
+    def cerrar_sesion(self):
+        """Cerrar sesión del usuario"""
+        st.session_state.autenticado = False
+        st.session_state.usuario = None
+        st.session_state.rol = None
+        st.success("✅ Sesión cerrada exitosamente")
+        time.sleep(1)
+        st.session_state['needs_refresh'] = True  # SOLUCIÓN 1: En lugar de st.rerun()
+    
+    def mostrar_cerrar_sesion(self):
+        """Mostrar botón para cerrar sesión"""
+        if st.session_state.autenticado:
+            col1, col2, col3 = st.columns([3, 1, 3])
+            with col2:
+                if st.button("🚪 Cerrar Sesión", use_container_width=True):
+                    self.cerrar_sesion()
+
+# ============================================================================
+# CAPA 10: COMPONENTES UI REUTILIZABLES
 # ============================================================================
 
 class ComponentesUI:
-    """Componentes UI reutilizables con protección de rate limiting"""
+    """Componentes UI reutilizables"""
     
     @staticmethod
     def mostrar_header(titulo, subtitulo=""):
@@ -2419,14 +2148,7 @@ class ComponentesUI:
     
     @staticmethod
     def crear_sidebar(sistema_auth):
-        """Crear sidebar con autenticación y rate limiting"""
-        # Verificar rate limiting para acceso al sidebar
-        ip = SistemaSeguridad.get_client_ip()
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "sidebar")
-        if not allowed:
-            st.error(f"⚠️ Demasiadas solicitudes. Espere {wait_time} segundos.")
-            return None
-        
+        """Crear sidebar con autenticación - SIN PESTAÑAS, solo selectbox"""
         with st.sidebar:
             st.title("🏥 Sistema de Pre-Inscripción")
             st.markdown(f"**Versión {APP_CONFIG['version']}**")
@@ -2454,18 +2176,6 @@ class ComponentesUI:
             with col_stat2:
                 recordatorios = estado_sistema.estado.get('recordatorios_enviados', 0)
                 st.metric("Recordatorios", recordatorios)
-            
-            # Mostrar estadísticas de seguridad
-            with st.expander("🛡️ Estadísticas de Seguridad"):
-                intentos_fallidos = estado_sistema.estado.get('seguridad', {}).get('intentos_fallidos', 0)
-                bloqueos = estado_sistema.estado.get('seguridad', {}).get('bloqueos_ip', 0)
-                passwords_migrados = estado_sistema.estado.get('seguridad', {}).get('passwords_migrados', 0)
-                
-                st.write(f"**Intentos fallidos:** {intentos_fallidos}")
-                st.write(f"**Bloqueos IP:** {bloqueos}")
-                st.write(f"**Passwords migrados:** {passwords_migrados}")
-                st.write(f"**Hash type:** bcrypt")
-                st.write(f"**Hash rounds:** {APP_CONFIG['password_hash_rounds']}")
             
             st.markdown("---")
             st.subheader("📱 Navegación")
@@ -2545,7 +2255,7 @@ class ComponentesUI:
         return st.button(texto, type=tipo, use_container_width=container)
 
 # ============================================================================
-# CAPA 12: SERVICIOS DE DATOS Y LÓGICA
+# CAPA 11: SERVICIOS DE DATOS Y LÓGICA
 # ============================================================================
 
 class ServicioProgramas:
@@ -2836,11 +2546,11 @@ class ServicioValidacionCompleto(ValidadorDatos):
         return True, ""
 
 # ============================================================================
-# CAPA 13: SISTEMA DE INSCRITOS COMPLETO TRABAJANDO EN REMOTO - VERSIÓN SEGURA
+# CAPA 12: SISTEMA DE INSCRITOS COMPLETO TRABAJANDO EN REMOTO - VERSIÓN CORREGIDA
 # ============================================================================
 
 class SistemaInscritosCompleto:
-    """Sistema principal de gestión de inscritos COMPLETO con seguridad mejorada"""
+    """Sistema principal de gestión de inscritos COMPLETO que trabaja en remoto - VERSIÓN CORREGIDA"""
     
     def __init__(self):
         self.base_datos = db_completa
@@ -2864,17 +2574,10 @@ class SistemaInscritosCompleto:
         if 'documentos_subidos_info' not in st.session_state:
             st.session_state.documentos_subidos_info = []
         
-        logger.info("🚀 Sistema de inscritos COMPLETO (remoto) inicializado - SEGURIDAD MEJORADA v4.0")
+        logger.info("🚀 Sistema de inscritos COMPLETO (remoto) inicializado - CONTADOR DE DOCUMENTOS CORREGIDO")
     
     def mostrar_formulario_completo_interactivo(self):
-        """Formulario interactivo con seguridad mejorada"""
-        # Verificar rate limiting para acceso al formulario
-        ip = SistemaSeguridad.get_client_ip()
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "formulario")
-        if not allowed:
-            st.error(f"⚠️ Demasiadas solicitudes. Espere {wait_time} segundos.")
-            return
-        
+        """Formulario interactivo CORREGIDO - Con contador de documentos funcional"""
         ComponentesUI.mostrar_header("📝 Formulario Completo de Pre-Inscripción", 
                                     "Escuela de Enfermería - Convocatoria Febrero 2026")
         
@@ -2889,7 +2592,7 @@ class SistemaInscritosCompleto:
             if st.session_state.formulario_estado['programa_info']:
                 programa_info = st.session_state.formulario_estado['programa_info']
                 
-                with st.form("formulario_completo_interactivo", clear_on_submit=False):
+                with st.form("formulario_completo_interactivo", clear_on_submit=False):  # IMPORTANTE: clear_on_submit=False
                     # Pasar la información del programa al resto del formulario
                     seleccion_programa = {
                         "categoria": programa_info['categoria'],
@@ -3604,7 +3307,7 @@ class SistemaInscritosCompleto:
             st.rerun()
 
 # ============================================================================
-# CAPA 14: PÁGINAS/VISTAS PRINCIPALES CON SEGURIDAD
+# CAPA 13: PÁGINAS/VISTAS PRINCIPALES
 # ============================================================================
 
 class PaginaInscripcion:
@@ -3614,14 +3317,7 @@ class PaginaInscripcion:
         self.sistema_inscritos = SistemaInscritosCompleto()
 
     def mostrar(self):
-        """Mostrar formulario de pre-inscripción con rate limiting"""
-        # Verificar rate limiting para acceso a la página de inscripción
-        ip = SistemaSeguridad.get_client_ip()
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "pagina_inscripcion")
-        if not allowed:
-            st.error(f"⚠️ Demasiadas solicitudes. Espere {wait_time} segundos.")
-            return
-        
+        """Mostrar formulario de pre-inscripción"""
         self.sistema_inscritos.mostrar_formulario_completo_interactivo()
 
 
@@ -3630,13 +3326,6 @@ class PaginaPrincipal:
     
     @staticmethod
     def mostrar():
-        # Verificar rate limiting para acceso a la página principal
-        ip = SistemaSeguridad.get_client_ip()
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "pagina_principal")
-        if not allowed:
-            st.error(f"⚠️ Demasiadas solicitudes. Espere {wait_time} segundos.")
-            return
-        
         ComponentesUI.mostrar_header(
             "🏥 Sistema Completo de Pre-Inscripción",
             f"Versión {APP_CONFIG['version']} - Convocatoria Febrero 2026"
@@ -3672,16 +3361,17 @@ class PaginaPrincipal:
             backups = estado_sistema.estado.get('backups_realizados', 0)
             
             st.markdown(f"""
-            #### 🛡️ **SEGURIDAD MEJORADA v4.0**
+            #### 🌐 **TRABAJO REMOTO COMPLETO**
             
-            16. **Passwords bcrypt con {APP_CONFIG['password_hash_rounds']} rondas**
-            17. **Timeout en operaciones críticas**
-            18. **Rate limiting inteligente**
-            19. **Protección contra fuerza bruta**
-            20. **Migración automática de passwords**
-            21. **Bloqueo por IP tras {APP_CONFIG['max_login_attempts']} intentos**
-            22. **Límite de {APP_CONFIG['request_rate_limit']} solicitudes/minuto**
-            23. **Timeout de login: {APP_CONFIG['login_timeout']}s**
+            16. **Base de datos en servidor remoto**
+            17. **Archivos subidos directamente al servidor**
+            18. **Sincronización automática**
+            19. **Backup automático remoto**
+            20. **Conexión SSH permanente**
+            21. **Gestión centralizada**
+            22. **Acceso desde cualquier lugar**
+            23. **Seguridad mejorada**
+            24. **Rendimiento optimizado**
             
             ---
             
@@ -3698,13 +3388,6 @@ class PaginaConsulta:
     
     @staticmethod
     def mostrar():
-        # Verificar rate limiting para acceso a consulta
-        ip = SistemaSeguridad.get_client_ip()
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "pagina_consulta")
-        if not allowed:
-            st.error(f"⚠️ Demasiadas solicitudes. Espere {wait_time} segundos.")
-            return
-        
         ComponentesUI.mostrar_header("📋 Consulta de Inscritos")
         
         try:
@@ -3801,17 +3484,10 @@ class PaginaConsulta:
                     """)
 
 class PaginaConfiguracion:
-    """Página de configuración del sistema con seguridad"""
+    """Página de configuración del sistema"""
     
     @staticmethod
     def mostrar():
-        # Verificar rate limiting para acceso a configuración
-        ip = SistemaSeguridad.get_client_ip()
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "pagina_configuracion")
-        if not allowed:
-            st.error(f"⚠️ Demasiadas solicitudes. Espere {wait_time} segundos.")
-            return
-        
         ComponentesUI.mostrar_header("⚙️ Configuración del Sistema")
         
         with st.expander("🔗 Estado de Conexión Remota", expanded=True):
@@ -3855,27 +3531,6 @@ class PaginaConfiguracion:
                     else:
                         st.error("❌ Error creando estructura de directorios remota")
         
-        with st.expander("🛡️ Configuración de Seguridad", expanded=True):
-            st.info(f"**Configuración actual de seguridad:**")
-            st.caption(f"🔐 Hash de passwords: bcrypt ({APP_CONFIG['password_hash_rounds']} rondas)")
-            st.caption(f"⏱️ Timeout de login: {APP_CONFIG['login_timeout']} segundos")
-            st.caption(f"🚫 Intentos máximos de login: {APP_CONFIG['max_login_attempts']}")
-            st.caption(f"⏳ Tiempo de bloqueo: {APP_CONFIG['login_block_time']} segundos")
-            st.caption(f"📊 Rate limiting: {APP_CONFIG['request_rate_limit']} solicitudes/minuto")
-            
-            # Estadísticas de seguridad
-            intentos_fallidos = estado_sistema.estado.get('seguridad', {}).get('intentos_fallidos', 0)
-            bloqueos = estado_sistema.estado.get('seguridad', {}).get('bloqueos_ip', 0)
-            passwords_migrados = estado_sistema.estado.get('seguridad', {}).get('passwords_migrados', 0)
-            
-            col_sec1, col_sec2, col_sec3 = st.columns(3)
-            with col_sec1:
-                st.metric("Intentos fallidos", intentos_fallidos)
-            with col_sec2:
-                st.metric("Bloqueos IP", bloqueos)
-            with col_sec3:
-                st.metric("Passwords migrados", passwords_migrados)
-        
         with st.expander("🔄 Mantenimiento del Sistema", expanded=True):
             col_mant1, col_mant2 = st.columns(2)
             
@@ -3912,13 +3567,6 @@ class PaginaReportes:
     
     @staticmethod
     def mostrar():
-        # Verificar rate limiting para acceso a reportes
-        ip = SistemaSeguridad.get_client_ip()
-        allowed, wait_time = SistemaSeguridad.check_rate_limit(ip, "pagina_reportes")
-        if not allowed:
-            st.error(f"⚠️ Demasiadas solicitudes. Espere {wait_time} segundos.")
-            return
-        
         ComponentesUI.mostrar_header("📊 Reportes y Sistema de Backups")
         
         st.subheader("📈 Estadísticas del Sistema")
@@ -4007,11 +3655,11 @@ class PaginaReportes:
                         st.rerun()
 
 # ============================================================================
-# CAPA 15: CONTROLADOR PRINCIPAL CON SEGURIDAD
+# CAPA 14: CONTROLADOR PRINCIPAL
 # ============================================================================
 
 class ControladorPrincipal:
-    """Controlador principal de la aplicación con seguridad"""
+    """Controlador principal de la aplicación"""
     
     def __init__(self):
         self.sistema_auth = SistemaAutenticacion()
@@ -4061,10 +3709,8 @@ class ControladorPrincipal:
         else:
             mapeo_menu = self.mapeo_menu_no_autenticado
         
-        # Obtener selección del sidebar con rate limiting
+        # Obtener selección del sidebar
         seleccion_menu = ComponentesUI.crear_sidebar(self.sistema_auth)
-        if seleccion_menu is None:  # Si el rate limiting bloqueó el acceso
-            return
         
         # Obtener página seleccionada
         pagina_seleccionada = mapeo_menu.get(seleccion_menu, "inicio")
@@ -4093,28 +3739,23 @@ class ControladorPrincipal:
             self.paginas["inicio"].mostrar()
 
 # ============================================================================
-# CAPA 16: PUNTO DE ENTRADA PRINCIPAL CON SEGURIDAD
+# CAPA 15: PUNTO DE ENTRADA PRINCIPAL
 # ============================================================================
 
 def main():
-    """Función principal de la aplicación con seguridad mejorada"""
+    """Función principal de la aplicación"""
     
     try:
-        # Generar UUID para sesión si no existe
-        import uuid
-        if 'session_id' not in st.session_state:
-            st.session_state.session_id = str(uuid.uuid4())
-        
         controlador = ControladorPrincipal()
         
-        # Mostrar encabezado con información de seguridad
+        # Mostrar encabezado
         st.markdown(f"""
         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 20px; 
                     border-left: 5px solid #2E86AB;">
-            <h3 style="margin: 0; color: #2E86AB;">🏥 Sistema de Pre-Inscripción (SEGURIDAD MEJORADA v4.0)</h3>
+            <h3 style="margin: 0; color: #2E86AB;">🏥 Sistema de Pre-Inscripción (REMOTO)</h3>
             <p style="margin: 5px 0; color: #666;">Escuela de Enfermería - Versión {APP_CONFIG['version']}</p>
             <p style="margin: 0; font-size: 0.9em; color: #888;">
-                🔐 Passwords bcrypt | ⏱️ Timeout protegido | 🚫 Rate limiting | 🌐 Trabajo 100% Remoto
+                🌐 Trabajo 100% en Servidor Remoto | 📁 Archivos Directos al SSH | 🔄 Sincronización Automática
             </p>
         </div>
         """, unsafe_allow_html=True)
