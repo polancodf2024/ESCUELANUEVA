@@ -2,7 +2,7 @@
 escuela35.py - Sistema Escuela Enfermería 100% REMOTO
 Versión unificada para trabajar con UNA SOLA base de datos
 Configuración optimizada para secrets.toml unificado
-VERSIÓN COMPLETA CON TODAS LAS FUNCIONALIDADES
+VERSIÓN COMPLETA CON TODAS LAS FUNCIONALIDADES - LOGIN CORREGIDO
 """
 
 # =============================================================================
@@ -891,19 +891,49 @@ class SistemaBaseDatos:
             logger.error(f"❌ Error ejecutando modificación remota: {e}")
             return False
     
+    def debug_verificar_usuarios(self):
+        """Función de debugging para verificar usuarios"""
+        try:
+            consulta = """
+            SELECT id, usuario, rol, nombre_completo, email, activo, 
+                   CASE 
+                       WHEN password_hash LIKE '$2%' THEN 'bcrypt'
+                       ELSE 'other'
+                   END as hash_type,
+                   LENGTH(password_hash) as hash_length
+            FROM usuarios
+            ORDER BY id
+            """
+            
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if resultado:
+                logger.info("🔍 DEBUG - Usuarios en la base de datos:")
+                for user in resultado:
+                    logger.info(f"  ID: {user['id']}, Usuario: '{user['usuario']}', Rol: {user['rol']}, "
+                              f"Activo: {user['activo']}, Hash: {user['hash_type']} ({user['hash_length']} chars)")
+                return resultado
+            else:
+                logger.warning("DEBUG - No hay usuarios en la base de datos")
+                return []
+                
+        except Exception as e:
+            logger.error(f"DEBUG Error verificando usuarios: {e}")
+            return []
+    
     # =============================================================================
     # MÉTODOS DE CONSULTA CON PAGINACIÓN
     # =============================================================================
     
     def obtener_usuario(self, usuario):
-        """Obtener usuario por nombre de usuario o matrícula"""
+        """Obtener usuario por nombre de usuario - CORREGIDO"""
         try:
-            logger.info(f"🔍 Buscando usuario en base de datos única: {usuario}")
+            logger.info(f"🔍 Buscando usuario: {usuario}")
             
+            # IMPORTANTE: La columna se llama 'usuario' no 'username'
             consulta = f"""
             SELECT * FROM usuarios 
-            WHERE (usuario = '{usuario}' OR email = '{usuario}' OR matricula = '{usuario}')
-            AND activo = 1
+            WHERE usuario = '{usuario}' AND activo = 1
             LIMIT 1
             """
             
@@ -920,30 +950,37 @@ class SistemaBaseDatos:
             return None
     
     def verificar_login(self, usuario, password):
-        """Verificar credenciales de login contra base de datos remota CON BCRYPT"""
+        """Verificar credenciales de login contra base de datos remota CON BCRYPT - CORREGIDO"""
         try:
             logger.info(f"🔐 Intentando login para usuario: {usuario}")
             
-            # Primero obtener el usuario desde la base de datos remota
-            usuario_data = self.obtener_usuario(usuario)
+            # Buscar usuario por la columna 'usuario' (no 'username')
+            consulta = f"""
+            SELECT id, usuario, password_hash, rol, nombre_completo, email, activo 
+            FROM usuarios 
+            WHERE usuario = '{usuario}' AND activo = 1
+            LIMIT 1
+            """
             
-            if not usuario_data:
-                logger.warning(f"Usuario no encontrado en base de datos remota: {usuario}")
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if not resultado or len(resultado) == 0:
+                logger.warning(f"Usuario no encontrado o no activo: {usuario}")
                 return None
             
-            # Obtener el hash almacenado (puede estar en 'password' o 'password_hash')
-            stored_hash = usuario_data.get('password_hash', '') or usuario_data.get('password', '')
+            usuario_data = resultado[0]
+            stored_hash = usuario_data.get('password_hash', '')
             
             if not stored_hash:
                 logger.error(f"❌ No hay hash de contraseña para usuario: {usuario}")
                 return None
             
-            logger.debug(f"Hash almacenado para {usuario}: {stored_hash[:20]}...")
+            logger.debug(f"Hash almacenado para {usuario}: {stored_hash[:50]}...")
             
-            # VERIFICACIÓN CON BCRYPT
+            # VERIFICACIÓN CORRECTA CON BCRYPT
             try:
-                # bcrypt puede manejar hashes que comienzan con $2b$, $2a$, etc.
-                if stored_hash.startswith('$2'):
+                # Verificar si es un hash bcrypt válido
+                if stored_hash.startswith(('$2b$', '$2a$', '$2y$')):
                     # Es un hash bcrypt
                     if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
                         logger.info(f"✅ Login exitoso para usuario: {usuario} (bcrypt)")
@@ -952,10 +989,12 @@ class SistemaBaseDatos:
                         logger.warning(f"❌ Contraseña incorrecta para usuario: {usuario} (bcrypt)")
                         return None
                 else:
-                    # NO es un hash bcrypt, podría ser texto plano (para compatibilidad)
-                    logger.warning(f"⚠️ Hash no parece ser bcrypt para usuario: {usuario}")
+                    # NO es un hash bcrypt - verificar como texto plano (solo para compatibilidad)
+                    logger.warning(f"⚠️ Hash no es bcrypt para usuario: {usuario}")
                     if stored_hash == password:
                         logger.info(f"✅ Login exitoso (texto plano) para usuario: {usuario}")
+                        # Opcional: Actualizar a bcrypt automáticamente
+                        # self.actualizar_password_a_bcrypt(usuario, password)
                         return usuario_data
                     else:
                         logger.warning(f"❌ Contraseña incorrecta para usuario: {usuario}")
@@ -964,7 +1003,7 @@ class SistemaBaseDatos:
             except Exception as bcrypt_error:
                 logger.error(f"❌ Error en verificación bcrypt: {bcrypt_error}")
                 
-                # Fallback a comparación directa
+                # Fallback: comparación directa si bcrypt falla
                 if stored_hash == password:
                     logger.info(f"✅ Login exitoso (fallback) para usuario: {usuario}")
                     return usuario_data
@@ -975,6 +1014,72 @@ class SistemaBaseDatos:
         except Exception as e:
             logger.error(f"❌ Error verificando login: {e}", exc_info=True)
             return None
+    
+    def crear_usuario_admin_si_no_existe(self):
+        """Crear usuario admin por defecto si no existe"""
+        try:
+            logger.info("🔍 Verificando si existe usuario admin...")
+            
+            consulta = "SELECT COUNT(*) as count FROM usuarios WHERE usuario = 'admin'"
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if resultado and len(resultado) > 0:
+                count = resultado[0].get('count', 0)
+                
+                if count == 0:
+                    logger.info("🔄 Creando usuario admin por defecto...")
+                    
+                    # Crear usuario admin con contraseña 'Admin123!'
+                    password = "Admin123!"
+                    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+                    hashed_password_str = hashed_password.decode('utf-8')
+                    
+                    consulta_insert = f"""
+                    INSERT INTO usuarios (
+                        usuario, password_hash, salt, rol, nombre_completo, 
+                        email, activo, categoria, nombre
+                    ) VALUES (
+                        'admin',
+                        '{hashed_password_str}',
+                        '{hashed_password_str}',
+                        'administrador',
+                        'Administrador del Sistema',
+                        'admin@escuela.edu.mx',
+                        1,
+                        'administrativo',
+                        'Administrador'
+                    )
+                    """
+                    
+                    exito = self.ejecutar_modificacion_remota(consulta_insert)
+                    
+                    if exito:
+                        logger.info("✅ Usuario 'admin' creado exitosamente")
+                        logger.info(f"   Contraseña: {password}")
+                        return True
+                    else:
+                        logger.error("❌ Error creando usuario admin")
+                        return False
+                else:
+                    logger.info("✅ Usuario 'admin' ya existe en la base de datos")
+                    
+                    # Verificar si tiene contraseña válida
+                    consulta_hash = "SELECT password_hash FROM usuarios WHERE usuario = 'admin'"
+                    resultado_hash = self.ejecutar_consulta_remota(consulta_hash)
+                    
+                    if resultado_hash and len(resultado_hash) > 0:
+                        password_hash = resultado_hash[0].get('password_hash', '')
+                        if password_hash.startswith(('$2b$', '$2a$', '$2y$')):
+                            logger.info("✅ Usuario 'admin' tiene contraseña en formato bcrypt")
+                        elif password_hash:
+                            logger.warning(f"⚠️ Usuario 'admin' tiene contraseña no estándar: {password_hash[:30]}...")
+                        else:
+                            logger.warning("⚠️ Usuario 'admin' no tiene contraseña configurada")
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"❌ Error verificando/creando usuario admin: {e}", exc_info=True)
+            return False
     
     def obtener_inscritos(self, page=1, search_term=""):
         """Obtener inscritos con paginación y búsqueda"""
@@ -1418,13 +1523,18 @@ class SistemaBaseDatos:
     def agregar_usuario(self, usuario_data):
         """Agregar nuevo usuario"""
         try:
+            # Generar hash bcrypt para la contraseña
+            password = usuario_data.get('password', '')
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            hashed_password_str = hashed_password.decode('utf-8')
+            
             consulta = f"""
             INSERT INTO usuarios (
-                usuario, password, rol, nombre_completo, email,
+                usuario, password_hash, rol, nombre_completo, email,
                 matricula, activo, categoria_academica, tipo_programa
             ) VALUES (
                 '{usuario_data.get('usuario', '')}',
-                '{usuario_data.get('password', '')}',
+                '{hashed_password_str}',
                 '{usuario_data.get('rol', 'administrador')}',
                 '{usuario_data.get('nombre_completo', '')}',
                 '{usuario_data.get('email', '')}',
@@ -1741,24 +1851,18 @@ class SistemaAutenticacion:
         self.usuario_actual = None
         
     def verificar_login(self, usuario, password):
-        """Verificar credenciales de usuario contra base de datos remota"""
+        """Verificar credenciales de usuario contra base de datos remota - CORREGIDO"""
         try:
             if not usuario or not password:
                 st.error("❌ Usuario y contraseña son obligatorios")
                 return False
             
             with st.spinner("🔐 Verificando credenciales en servidor remoto..."):
-                # Primero verificar si la base de datos existe
-                if not gestor_remoto.verificar_existencia_db():
-                    st.error("❌ ERROR: Base de datos no encontrada en servidor remoto")
-                    st.info("""
-                    **Solución:**
-                    1. Verifica que la base de datos escuela.db existe en el servidor
-                    2. Confirma la ruta en secrets.toml: `db_principal`
-                    """)
-                    return False
+                # PRIMERO: Crear usuario admin si no existe
+                if usuario.lower() == "admin":
+                    db.crear_usuario_admin_si_no_existe()
                 
-                # Verificar credenciales usando la base de datos remota
+                # SEGUNDO: Verificar credenciales
                 usuario_data = db.verificar_login(usuario, password)
                 
                 if usuario_data:
@@ -1782,6 +1886,29 @@ class SistemaAutenticacion:
                     return True
                 else:
                     st.error("❌ Usuario o contraseña incorrectos")
+                    
+                    # Mostrar ayuda para debugging
+                    with st.expander("🔍 Ayuda para solución de problemas"):
+                        st.write("""
+                        **Posibles soluciones:**
+                        1. **Usuario 'admin' por defecto:** admin / Admin123!
+                        2. **Verificar base de datos:** Asegúrate que la tabla 'usuarios' existe
+                        3. **Verificar formato de contraseña:** El usuario debe tener password_hash en formato bcrypt
+                        """)
+                        
+                        if st.button("🔧 Verificar usuarios en base de datos"):
+                            try:
+                                consulta = "SELECT usuario, rol, activo FROM usuarios"
+                                usuarios = db.ejecutar_consulta_remota(consulta)
+                                if usuarios:
+                                    st.write("**👥 Usuarios en la base de datos:**")
+                                    for user in usuarios:
+                                        st.write(f"- {user['usuario']} ({user['rol']}) - Activo: {user['activo']}")
+                                else:
+                                    st.write("⚠️ No hay usuarios en la base de datos")
+                            except Exception as e:
+                                st.write(f"❌ Error: {e}")
+                    
                     return False
                     
         except Exception as e:
@@ -1908,7 +2035,7 @@ auth = SistemaAutenticacion()
 sistema_principal = None
 
 def mostrar_login():
-    """Interfaz de login"""
+    """Interfaz de login - MEJORADA"""
     st.title("🏥 Sistema Escuela Enfermería - Base de Datos Única")
     st.markdown("---")
     
@@ -1937,14 +2064,17 @@ def mostrar_login():
         with st.form("login_form"):
             st.subheader("Iniciar Sesión")
             
-            usuario = st.text_input("👤 Usuario", placeholder="usuario", key="login_usuario")
-            password = st.text_input("🔒 Contraseña", type="password", placeholder="contraseña", key="login_password")
+            usuario = st.text_input("👤 Usuario", placeholder="admin", key="login_usuario")
+            password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!", key="login_password")
             
             login_button = st.form_submit_button("🚀 Iniciar Sesión", use_container_width=True)
 
             if login_button:
                 if usuario and password:
                     with st.spinner("Verificando credenciales..."):
+                        # DEBUG: Mostrar qué está pasando
+                        st.write(f"🔍 Intentando login con usuario: '{usuario}'")
+                        
                         if auth.verificar_login(usuario, password):
                             st.success("✅ Login exitoso")
                             st.rerun()
@@ -1953,16 +2083,62 @@ def mostrar_login():
                 else:
                     st.warning("⚠️ Complete todos los campos")
             
-            with st.expander("ℹ️ Información de acceso"):
+            with st.expander("ℹ️ Información de acceso - IMPORTANTE"):
                 st.info("""
-                **Configuración del sistema:**
+                **Credenciales por defecto:**
+                - 👤 **Usuario:** `admin`
+                - 🔒 **Contraseña:** `Admin123!`
                 
+                **Si es la primera vez:**
+                1. El sistema creará automáticamente el usuario admin
+                2. Con contraseña: `Admin123!` en formato bcrypt
+                3. Rol: `administrador`
+                
+                **Configuración del sistema:**
                 1. ✅ **Base de datos única:** escuela.db
                 2. ✅ **Conexión SSH:** Al servidor remoto
-                3. ✅ **Usuario admin:** Debe existir en la tabla usuarios
+                3. ✅ **Tabla usuarios:** Debe existir en la base de datos
                 
                 **Base de datos:** Todos los datos se almacenan en el servidor remoto.
                 """)
+            
+            # Botón de debug
+            if st.form_submit_button("🔧 Debug: Verificar base de datos", type="secondary"):
+                try:
+                    st.write("🔍 Verificando base de datos...")
+                    
+                    # Verificar conexión SSH
+                    if gestor_remoto.verificar_conexion_ssh():
+                        st.success("✅ SSH Conectado")
+                    else:
+                        st.error("❌ SSH Desconectado")
+                    
+                    # Verificar base de datos
+                    if gestor_remoto.verificar_existencia_db():
+                        st.success("✅ Base de datos encontrada")
+                    else:
+                        st.error("❌ Base de datos NO encontrada")
+                    
+                    # Verificar tabla usuarios
+                    consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
+                    resultado = db.ejecutar_consulta_remota(consulta)
+                    if resultado and len(resultado) > 0:
+                        st.success("✅ Tabla 'usuarios' encontrada")
+                        
+                        # Verificar usuarios
+                        consulta_users = "SELECT usuario, rol, activo FROM usuarios"
+                        users_result = db.ejecutar_consulta_remota(consulta_users)
+                        if users_result:
+                            st.write("**👥 Usuarios registrados:**")
+                            for user in users_result:
+                                st.write(f"- {user['usuario']} ({user['rol']}) - Activo: {user['activo']}")
+                        else:
+                            st.warning("⚠️ No hay usuarios en la tabla")
+                    else:
+                        st.error("❌ Tabla 'usuarios' NO encontrada")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error en verificación: {e}")
 
 def mostrar_interfaz_principal():
     """Interfaz principal después del login"""
@@ -2595,6 +2771,30 @@ def main():
             """)
             return
 
+        # Inicialización automática del usuario admin
+        try:
+            if not gestor_remoto.verificar_conexion_ssh():
+                st.error("❌ No se pudo conectar al servidor SSH")
+                st.info("Verifica la configuración SSH en secrets.toml")
+                return
+            
+            # Verificar que la base de datos existe
+            if not gestor_remoto.verificar_existencia_db():
+                st.error("❌ Base de datos no encontrada en el servidor")
+                st.info(f"Ruta esperada: {gestor_remoto.db_path_remoto}")
+                return
+            
+            # Crear usuario admin si no existe
+            if not estado_sistema.esta_inicializada():
+                with st.spinner("🔄 Inicializando sistema..."):
+                    if db.crear_usuario_admin_si_no_existe():
+                        estado_sistema.marcar_db_inicializada()
+                        logger.info("✅ Sistema inicializado correctamente")
+                    
+        except Exception as e:
+            st.error(f"❌ Error en inicialización: {e}")
+            logger.error(f"Error en inicialización: {e}", exc_info=True)
+
         if not st.session_state.login_exitoso:
             mostrar_login()
         else:
@@ -2623,6 +2823,10 @@ if __name__ == "__main__":
         ✅ **Interfaz Streamlit** optimizada
         
         **Base de datos:** Todas las operaciones se realizan directamente en el servidor remoto.
+        
+        **Acceso por defecto:**
+        👤 Usuario: admin
+        🔒 Contraseña: Admin123!
         """)
 
         main()
