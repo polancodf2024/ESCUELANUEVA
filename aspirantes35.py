@@ -2392,14 +2392,30 @@ class ServicioProgramas:
     
     @staticmethod
     def obtener_documentos_por_tipo(tipo_programa):
+        """DEVUELVE EXACTAMENTE LOS DOCUMENTOS REQUERIDOS SIN INCONSISTENCIAS"""
         if tipo_programa == "LICENCIATURA":
-            return DOCUMENTOS_BASE + [
+            return [
+                "Certificado preparatoria (promedio ≥ 8.0)",
+                "Acta nacimiento (≤ 3 meses)",
+                "CURP (≤ 1 mes)",
+                "Cartilla Nacional de Salud",
+                "INE del tutor",
+                "Comprobante domicilio (≤ 3 meses)",
+                "Certificado médico institucional (≤ 1 mes)",
+                "12 fotografías infantiles B/N",
                 "Comprobante domicilio (adicional)",
-                "Carta de exposición de motivos",
-                "Certificado de bachillerato"
+                "Carta de exposición de motivos"
             ]
         elif tipo_programa == "ESPECIALIDAD":
-            return DOCUMENTOS_BASE + [
+            return [
+                "Certificado preparatoria (promedio ≥ 8.0)",
+                "Acta nacimiento (≤ 3 meses)",
+                "CURP (≤ 1 mes)",
+                "Cartilla Nacional de Salud",
+                "INE del tutor",
+                "Comprobante domicilio (≤ 3 meses)",
+                "Certificado médico institucional (≤ 1 mes)",
+                "12 fotografías infantiles B/N",
                 "Título profesional",
                 "Certificado de licenciatura",
                 "Cédula profesional",
@@ -2411,7 +2427,15 @@ class ServicioProgramas:
                 "Constancia de comprensión de textos"
             ]
         elif tipo_programa == "MAESTRIA":
-            return DOCUMENTOS_BASE + [
+            return [
+                "Certificado preparatoria (promedio ≥ 8.0)",
+                "Acta nacimiento (≤ 3 meses)",
+                "CURP (≤ 1 mes)",
+                "Cartilla Nacional de Salud",
+                "INE del tutor",
+                "Comprobante domicilio (≤ 3 meses)",
+                "Certificado médico institucional (≤ 1 mes)",
+                "12 fotografías infantiles B/N",
                 "Título profesional",
                 "Certificado de licenciatura",
                 "Cédula profesional",
@@ -2422,7 +2446,15 @@ class ServicioProgramas:
                 "2 cartas de recomendación"
             ]
         elif tipo_programa == "DIPLOMADO":
-            return DOCUMENTOS_BASE + [
+            return [
+                "Certificado preparatoria (promedio ≥ 8.0)",
+                "Acta nacimiento (≤ 3 meses)",
+                "CURP (≤ 1 mes)",
+                "Cartilla Nacional de Salud",
+                "INE del tutor",
+                "Comprobante domicilio (≤ 3 meses)",
+                "Certificado médico institucional (≤ 1 mes)",
+                "12 fotografías infantiles B/N",
                 "Título profesional",
                 "Cédula profesional",
                 "INE (vigente)",
@@ -2430,7 +2462,15 @@ class ServicioProgramas:
                 "Carta de exposición de motivos"
             ]
         else:  # CURSO
-            return DOCUMENTOS_BASE + [
+            return [
+                "Certificado preparatoria (promedio ≥ 8.0)",
+                "Acta nacimiento (≤ 3 meses)",
+                "CURP (≤ 1 mes)",
+                "Cartilla Nacional de Salud",
+                "INE del tutor",
+                "Comprobante domicilio (≤ 3 meses)",
+                "Certificado médico institucional (≤ 1 mes)",
+                "12 fotografías infantiles B/N",
                 "Identificación oficial",
                 "Comprobante de estudios",
                 "Currículum vitae"
@@ -2464,6 +2504,15 @@ class ServicioGeneradores:
 class ServicioValidacionCompleto(ValidadorDatos):
     """Servicio de validación extendido"""
     
+    # MÍNIMOS CONSISTENTES CON LOS DOCUMENTOS REALMENTE REQUERIDOS
+    minimos_consistente = {
+        "LICENCIATURA": 10,      # 10 documentos se muestran para LICENCIATURA
+        "ESPECIALIDAD": 17,      # 17 documentos se muestran para ESPECIALIDAD
+        "MAESTRIA": 16,          # 16 documentos se muestran para MAESTRIA
+        "DIPLOMADO": 13,         # 13 documentos se muestran para DIPLOMADO
+        "CURSO": 11              # 11 documentos se muestran para CURSO
+    }
+    
     @staticmethod
     def validar_campos_obligatorios(campos):
         errores = []
@@ -2474,18 +2523,23 @@ class ServicioValidacionCompleto(ValidadorDatos):
     
     @staticmethod
     def validar_documentos_minimos(documentos_subidos, tipo_programa):
-        minimos = {
-            "LICENCIATURA": 5,
-            "ESPECIALIDAD": 8,
-            "MAESTRIA": 6,
-            "DIPLOMADO": 4,
-            "CURSO": 3
-        }
+        """Validación CONSISTENTE: Si muestra X documentos, pide X documentos"""
+        minimo_requerido = ServicioValidacionCompleto.minimos_consistente.get(tipo_programa, 11)
         
-        minimo_requerido = minimos.get(tipo_programa, 3)
+        if not isinstance(documentos_subidos, list):
+            return False, f"❌ Error en el formato de documentos"
         
-        if len(documentos_subidos) < minimo_requerido:
-            return False, f"❌ Se requieren al menos {minimo_requerido} documentos para {tipo_programa}"
+        # Contar documentos únicos (evitar duplicados)
+        documentos_unicos = set()
+        for doc_info in documentos_subidos:
+            if 'archivo' in doc_info and doc_info['archivo'] is not None:
+                archivo = doc_info['archivo']
+                documentos_unicos.add(f"{archivo.name}_{archivo.size}")
+        
+        documentos_count = len(documentos_unicos)
+        
+        if documentos_count < minimo_requerido:
+            return False, f"❌ Se requieren TODOS los {minimo_requerido} documentos para {tipo_programa}. Subiste {documentos_count}."
         
         return True, ""
 
@@ -2566,6 +2620,10 @@ class SistemaInscritosCompleto:
             if st.session_state.programa_info:
                 programa_info = st.session_state.programa_info
                 
+                # Obtener documentos requeridos para este programa
+                documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(programa_info['tipo_programa'])
+                minimo_requerido = ServicioValidacionCompleto.minimos_consistente.get(programa_info['tipo_programa'], len(documentos_requeridos))
+                
                 # Mostrar detalles del programa seleccionado
                 with st.container():
                     # Encabezado con icono y colores
@@ -2588,7 +2646,7 @@ class SistemaInscritosCompleto:
                     
                     with col_info2:
                         st.markdown(f"**🎓 Modalidad:** `{programa_info['modalidad']}`")
-                        st.markdown("**📍 Sedes disponibles:** `Hospital Central, Campus Norte`")
+                        st.markdown(f"**📄 Documentos requeridos:** `{minimo_requerido}`")
                     
                     # Descripción en un recuadro destacado
                     with st.expander("📝 **DESCRIPCIÓN DETALLADA**", expanded=True):
@@ -2600,9 +2658,9 @@ class SistemaInscritosCompleto:
                             st.markdown(f"{i}. {req}")
                     
                     # Mostrar documentos específicos para este tipo de programa
-                    documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(programa_info['tipo_programa'])
-                    
-                    with st.expander(f"📄 **DOCUMENTOS REQUERIDOS** ({len(documentos_requeridos)} documentos)", expanded=False):
+                    with st.expander(f"📄 **DOCUMENTOS REQUERIDOS ({len(documentos_requeridos)} documentos - TODOS OBLIGATORIOS)**", expanded=False):
+                        st.info(f"**¡IMPORTANTE!** Debes subir **TODOS los {minimo_requerido} documentos** para completar tu pre-inscripción.")
+                        
                         # Dividir documentos en columnas para mejor visualización
                         col_doc1, col_doc2 = st.columns(2)
                         
@@ -2611,12 +2669,12 @@ class SistemaInscritosCompleto:
                         
                         with col_doc1:
                             for i, doc in enumerate(docs_col1, 1):
-                                st.markdown(f"• **{doc}**")
+                                st.markdown(f"**{i}. {doc}**")
                         
                         with col_doc2:
                             start_idx = len(docs_col1) + 1
                             for i, doc in enumerate(docs_col2, start_idx):
-                                st.markdown(f"• **{doc}**")
+                                st.markdown(f"**{i}. {doc}**")
                     
                     st.markdown("---")
             
@@ -2743,11 +2801,24 @@ class SistemaInscritosCompleto:
     
     def _mostrar_paso_documentacion_completa(self, tipo_programa, matricula):
         st.markdown("### 📄 **SUBA SUS DOCUMENTOS (DIRECTO AL SERVIDOR REMOTO)**")
-        st.info(f"**Matrícula:** `{matricula}` - Los documentos se subirán DIRECTAMENTE al servidor remoto")
         
         documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(tipo_programa)
+        minimo_requerido = ServicioValidacionCompleto.minimos_consistente.get(tipo_programa, len(documentos_requeridos))
+        
+        st.info(f"""
+        **Matrícula:** `{matricula}` 
+        **📋 Documentos requeridos:** **{minimo_requerido} documentos** (TODOS obligatorios)
+        **🌐 Los documentos se subirán DIRECTAMENTE al servidor remoto**
+        """)
         
         archivos_subidos_info = []
+        
+        # VERIFICACIÓN DE DIAGNÓSTICO: Crear un contador para monitorear
+        st.session_state['diagnostico_documentos'] = {
+            'total_requeridos': minimo_requerido,
+            'subidos': 0,
+            'archivos_detalles': []
+        }
         
         # Dividir documentos en grupos para mejor organización
         documentos_grupo1 = documentos_requeridos[:len(documentos_requeridos)//2]
@@ -2756,57 +2827,116 @@ class SistemaInscritosCompleto:
         col_doc1, col_doc2 = st.columns(2)
         
         with col_doc1:
-            for doc in documentos_grupo1:
-                with st.expander(f"📎 {doc}", expanded=False):
-                    archivo = st.file_uploader(
-                        f"Subir {doc}",
-                        type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
-                        key=f"file_{doc.replace(' ', '_')}_{matricula}"
+            for i, doc in enumerate(documentos_grupo1, 1):
+                # Usar una clave única basada en matrícula y documento
+                unique_key = f"doc_{matricula}_{doc.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')}_{i}"
+                
+                # PRUEBA: Mostrar el file_uploader FUERA del expander para diagnóstico
+                archivo = st.file_uploader(
+                    f"**{i}. {doc}**",
+                    type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
+                    key=unique_key,
+                    help=f"Documento {i} de {minimo_requerido}: {doc}"
+                )
+                
+                if archivo is not None:
+                    # Verificar duplicados por nombre y tamaño
+                    file_already_added = any(
+                        a['archivo'].name == archivo.name and 
+                        a['archivo'].size == archivo.size
+                        for a in archivos_subidos_info
                     )
                     
-                    if archivo is not None:
-                        # Mostrar información del archivo
-                        st.success(f"✅ **{archivo.name}** listo para subir ({archivo.size} bytes)")
+                    if not file_already_added:
+                        st.success(f"✅ **{archivo.name}** ({archivo.size:,} bytes)")
                         
-                        # Guardar información del archivo (sin subir aún)
                         archivos_subidos_info.append({
                             'nombre_documento': doc,
-                            'archivo': archivo
+                            'archivo': archivo,
+                            'indice': i
                         })
+                        
+                        # Actualizar diagnóstico
+                        st.session_state['diagnostico_documentos']['subidos'] += 1
+                        st.session_state['diagnostico_documentos']['archivos_detalles'].append({
+                            'documento': doc,
+                            'archivo': archivo.name,
+                            'tamaño': archivo.size
+                        })
+                    else:
+                        st.warning(f"⚠️ Este archivo ya fue seleccionado")
         
         with col_doc2:
-            for doc in documentos_grupo2:
-                with st.expander(f"📎 {doc}", expanded=False):
-                    archivo = st.file_uploader(
-                        f"Subir {doc}",
-                        type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
-                        key=f"file2_{doc.replace(' ', '_')}_{matricula}"
+            for i, doc in enumerate(documentos_grupo2, len(documentos_grupo1) + 1):
+                # Usar una clave única basada en matrícula y documento
+                unique_key = f"doc_{matricula}_{doc.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')}_{i}"
+                
+                archivo = st.file_uploader(
+                    f"**{i}. {doc}**",
+                    type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
+                    key=unique_key,
+                    help=f"Documento {i} de {minimo_requerido}: {doc}"
+                )
+                
+                if archivo is not None:
+                    # Verificar duplicados por nombre y tamaño
+                    file_already_added = any(
+                        a['archivo'].name == archivo.name and 
+                        a['archivo'].size == archivo.size
+                        for a in archivos_subidos_info
                     )
                     
-                    if archivo is not None:
-                        # Mostrar información del archivo
-                        st.success(f"✅ **{archivo.name}** listo para subir ({archivo.size} bytes)")
+                    if not file_already_added:
+                        st.success(f"✅ **{archivo.name}** ({archivo.size:,} bytes)")
                         
-                        # Guardar información del archivo (sin subir aún)
                         archivos_subidos_info.append({
                             'nombre_documento': doc,
-                            'archivo': archivo
+                            'archivo': archivo,
+                            'indice': i
                         })
+                        
+                        # Actualizar diagnóstico
+                        st.session_state['diagnostico_documentos']['subidos'] += 1
+                        st.session_state['diagnostico_documentos']['archivos_detalles'].append({
+                            'documento': doc,
+                            'archivo': archivo.name,
+                            'tamaño': archivo.size
+                        })
+                    else:
+                        st.warning(f"⚠️ Este archivo ya fue seleccionado")
         
-        # Mostrar resumen
-        if archivos_subidos_info:
-            st.success(f"✅ **{len(archivos_subidos_info)} documentos listos para subir al servidor remoto**")
+        # Mostrar resumen claro CON DIAGNÓSTICO
+        documentos_count = len(archivos_subidos_info)
+        
+        # MOSTRAR DIAGNÓSTICO DETALLADO
+        with st.expander("🔍 **DIAGNÓSTICO DE DOCUMENTOS**", expanded=True):
+            st.write(f"**Documentos requeridos:** {minimo_requerido}")
+            st.write(f"**Documentos subidos (según contador):** {documentos_count}")
             
-            with st.expander("📋 Ver documentos listos", expanded=False):
-                for info in archivos_subidos_info:
-                    st.markdown(f"• {info['nombre_documento']}: {info['archivo'].name}")
+            if documentos_count > 0:
+                st.write("**Detalles de archivos subidos:**")
+                for i, info in enumerate(archivos_subidos_info, 1):
+                    st.write(f"{i}. **{info['nombre_documento']}:** {info['archivo'].name} ({info['archivo'].size:,} bytes)")
+            
+            # Verificar si hay discrepancias
+            if documentos_count != st.session_state['diagnostico_documentos']['subidos']:
+                st.error(f"⚠️ **DISCREPANCIA DETECTADA:** Contador interno: {documentos_count} vs Diagnóstico: {st.session_state['diagnostico_documentos']['subidos']}")
+        
+        if documentos_count > 0:
+            if documentos_count == minimo_requerido:
+                st.success(f"✅ **¡PERFECTO!** Has subido {documentos_count} de {minimo_requerido} documentos requeridos")
+            elif documentos_count > minimo_requerido:
+                st.success(f"✅ **¡EXCELENTE!** Has subido {documentos_count} documentos (más de los {minimo_requerido} requeridos)")
+            else:
+                st.warning(f"⚠️ **FALTAN DOCUMENTOS:** Has subido {documentos_count} de {minimo_requerido} documentos requeridos")
         else:
-            st.warning("⚠️ **No has seleccionado ningún documento aún.**")
+            st.error(f"❌ **No has subido ningún documento.** Necesitas {minimo_requerido} documentos.")
         
         return {
             "documentos_requeridos": documentos_requeridos,
             "archivos_subidos_info": archivos_subidos_info,
-            "total_subidos": len(archivos_subidos_info)
+            "total_subidos": documentos_count,
+            "minimo_requerido": minimo_requerido
         }
     
     def _mostrar_paso_estudio_socioeconomico(self):
@@ -2925,6 +3055,21 @@ class SistemaInscritosCompleto:
     def _procesar_envio(self, programa, datos, documentos, estudio, aceptaciones, examen):
         errores = []
         
+        # Mostrar diagnóstico de documentos antes de validar
+        with st.expander("🔍 **DIAGNÓSTICO ANTES DE ENVIAR**", expanded=True):
+            st.write(f"**Tipo de programa:** {programa['tipo_programa']}")
+            st.write(f"**Documentos requeridos:** {documentos.get('minimo_requerido', '?')}")
+            st.write(f"**Documentos en lista 'archivos_subidos_info':** {len(documentos.get('archivos_subidos_info', []))}")
+            
+            # Mostrar detalles de archivos
+            if documentos.get('archivos_subidos_info'):
+                st.write("**Detalles de archivos:**")
+                for i, archivo_info in enumerate(documentos['archivos_subidos_info'], 1):
+                    if 'archivo' in archivo_info and archivo_info['archivo'] is not None:
+                        st.write(f"{i}. {archivo_info['nombre_documento']}: {archivo_info['archivo'].name}")
+                    else:
+                        st.write(f"{i}. {archivo_info['nombre_documento']}: ARCHIVO NO VÁLIDO")
+        
         campos_obligatorios = [
             (datos["nombre"], "Nombre completo"),
             (datos["email"], "Correo electrónico personal"),
@@ -2946,12 +3091,32 @@ class SistemaInscritosCompleto:
         if datos["telefono"] and not self.validador.validar_telefono(datos["telefono"]):
             errores.append("❌ Teléfono debe tener al menos 10 dígitos")
         
-        valido, mensaje = self.validador.validar_documentos_minimos(
-            documentos["archivos_subidos_info"],
-            programa["tipo_programa"]
-        )
-        if not valido:
-            errores.append(mensaje)
+        # Validar documentos - CON DIAGNÓSTICO MEJORADO
+        documentos_requeridos = documentos.get("minimo_requerido", 11)
+        documentos_subidos = documentos.get("archivos_subidos_info", [])
+        
+        # CONTAR DOCUMENTOS VÁLIDOS (ARCHIVOS REALES)
+        documentos_validos = []
+        for doc_info in documentos_subidos:
+            if 'archivo' in doc_info and doc_info['archivo'] is not None:
+                # Verificar que el archivo sea un objeto válido de Streamlit
+                if hasattr(doc_info['archivo'], 'name') and hasattr(doc_info['archivo'], 'size'):
+                    if doc_info['archivo'].size > 0:
+                        documentos_validos.append(doc_info)
+        
+        documentos_count = len(documentos_validos)
+        
+        # Mostrar diagnóstico de validación
+        with st.expander("🔍 **DIAGNÓSTICO DE VALIDACIÓN**", expanded=True):
+            st.write(f"**Documentos en lista original:** {len(documentos_subidos)}")
+            st.write(f"**Documentos válidos (con archivo):** {documentos_count}")
+            st.write(f"**Documentos requeridos:** {documentos_requeridos}")
+            
+            if documentos_count < documentos_requeridos:
+                st.error(f"❌ FALTAN DOCUMENTOS: {documentos_count} de {documentos_requeridos}")
+        
+        if documentos_count < documentos_requeridos:
+            errores.append(f"❌ Se requieren TODOS los {documentos_requeridos} documentos para {programa['tipo_programa']}. Subiste {documentos_count} documentos válidos.")
         
         if programa["tipo_programa"] == "ESPECIALIDAD" and not datos.get("licenciatura_origen"):
             errores.append("❌ Licenciatura de origen es obligatoria para especialidades")
@@ -2974,7 +3139,8 @@ class SistemaInscritosCompleto:
                 archivos_subidos = []
                 documentos_subidos_nombres = []
                 
-                for archivo_info in documentos.get("archivos_subidos_info", []):
+                # Usar SOLO documentos válidos
+                for archivo_info in documentos_validos:
                     archivo_subido = self.gestor_archivos.subir_documento_remoto(
                         archivo_info['archivo'],
                         archivo_info['nombre_documento'],
@@ -3026,6 +3192,7 @@ class SistemaInscritosCompleto:
                             'duracion': programa.get('duracion', ''),
                             'modalidad': programa.get('modalidad', ''),
                             'documentos': len(archivos_subidos),
+                            'documentos_requeridos': documentos_requeridos,
                             'estudio_socioeconomico': 'Sí' if any(estudio.values()) else 'No',
                             'examen_psicometrico': 'Sí' if examen else 'No',
                             'archivos_subidos': len(archivos_subidos),
@@ -3077,7 +3244,7 @@ class SistemaInscritosCompleto:
         with col_res2:
             st.info(f"**🎯 Programa:**\n\n{datos['programa']}")
             st.info(f"**📄 Categoría:**\n\n{datos['categoria']}")
-            st.info(f"**⏱️ Duración:**\n\n{datos.get('duracion', 'No especificada')}")
+            st.info(f"**📎 Documentos subidos:**\n\n{datos['documentos']} de {datos.get('documentos_requeridos', '?')}")
             st.info(f"**🏫 Modalidad:**\n\n{datos.get('modalidad', 'No especificada')}")
         
         # Información sobre la carpeta de documentos en el servidor remoto
@@ -3094,7 +3261,7 @@ class SistemaInscritosCompleto:
         2. **📋 Anonimato:** No se mostrarán nombres completos en la publicación de resultados
         3. **💾 Guarda este folio:** Es tu identificador único para consultar resultados
         4. **📧 Verificación:** Recibirás un correo de confirmación en {datos['email_gmail']}
-        5. **📄 Documentos subidos:** Has subido {datos.get('archivos_subidos', 0)} documento(s) **DIRECTAMENTE AL SERVIDOR REMOTO**
+        5. **📄 Documentos subidos:** Has subido {datos['documentos']} de {datos.get('documentos_requeridos', '?')} documento(s) **DIRECTAMENTE AL SERVIDOR REMOTO**
         6. **🌐 Acceso remoto:** Tus documentos están almacenados en el servidor seguro
         
         **Fecha límite para completar documentos:** {(datetime.now() + timedelta(days=14)).strftime('%d/%m/%Y')}
