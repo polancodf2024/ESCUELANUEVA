@@ -1,5 +1,5 @@
 """
-escuela30_remoto.py - Sistema Escuela Enfermería 100% REMOTO
+escuela35.py - Sistema Escuela Enfermería 100% REMOTO
 Versión modificada para trabajar EXCLUSIVAMENTE con servidor remoto
 Mismo modelo que aspirantes35.py - Sin archivos locales temporales
 """
@@ -631,7 +631,8 @@ class GestorConexionRemota:
         
         logger.info(f"🔗 Configuración SSH cargada para {self.config.get('host', 'No configurado')}")
         
-        if self.auto_connect and self.config.get('host'):
+        # Probar conexión inicial (solo verificación, no mantiene conexión abierta)
+        if self.config.get('host'):
             self.probar_conexion_inicial()
     
     def _cargar_configuracion_completa(self):
@@ -725,22 +726,24 @@ class GestorConexionRemota:
                 look_for_keys=False
             )
             
-            # Probar acceso a base de datos remota
+            # Verificar que la base de datos existe
             stdin, stdout, stderr = ssh_test.exec_command(
                 f"test -f '{self.db_path_remoto}' && echo 'EXISTS' || echo 'NOT_FOUND'",
                 timeout=self.timeouts['ssh_command']
             )
             output = stdout.read().decode().strip()
+            error = stderr.read().decode().strip()
             
             ssh_test.close()
             
             if output == 'EXISTS':
                 logger.info(f"✅ Conexión SSH exitosa y DB encontrada: {self.config['host']}")
+                estado_sistema.set_ssh_conectado(True, None)
+                return True
             else:
-                logger.warning(f"✅ Conexión SSH exitosa pero DB no encontrada: {self.config['host']}")
-            
-            estado_sistema.set_ssh_conectado(True, None)
-            return True
+                logger.warning(f"⚠️ Conexión SSH exitosa pero DB no encontrada: {self.config['host']}")
+                estado_sistema.set_ssh_conectado(False, "Base de datos no encontrada en servidor")
+                return False
             
         except socket.timeout:
             error_msg = f"Timeout conectando a {self.config['host']}"
@@ -934,6 +937,8 @@ EOF
                 return True
             else:
                 logger.warning(f"⚠️ Base de datos NO encontrada en servidor: {self.db_path_remoto}")
+                if error:
+                    logger.error(f"Error: {error}")
                 return False
                 
         except Exception as e:
@@ -976,7 +981,7 @@ EOF
             logger.info("📝 Inicializando estructura COMPLETA en servidor remoto...")
             
             # Crear script de inicialización
-            init_script = f"""
+            init_script = """
 -- Crear tabla de usuarios
 CREATE TABLE IF NOT EXISTS usuarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -993,6 +998,10 @@ CREATE TABLE IF NOT EXISTS usuarios (
     acepto_privacidad INTEGER DEFAULT 0,
     acepto_convocatoria INTEGER DEFAULT 0
 );
+
+-- Insertar usuario administrador por defecto (CONTRASEÑA: Admin123!)
+INSERT OR REPLACE INTO usuarios (id, usuario, password, rol, nombre_completo, email, matricula, activo)
+VALUES (1, 'admin', 'Admin123!', 'administrador', 'Administrador del Sistema', 'admin@escuela.edu.mx', 'ADMIN-001', 1);
 
 -- Crear tabla de inscritos
 CREATE TABLE IF NOT EXISTS inscritos (
@@ -1057,9 +1066,48 @@ CREATE TABLE IF NOT EXISTS estudiantes (
     materias_aprobadas INTEGER DEFAULT 0
 );
 
--- Insertar usuario administrador por defecto
-INSERT OR IGNORE INTO usuarios (usuario, password, rol, nombre_completo, email, matricula, activo)
-VALUES ('admin', 'Admin123!', 'administrador', 'Administrador del Sistema', 'admin@escuela.edu.mx', 'ADMIN-001', 1);
+-- Crear tabla de egresados
+CREATE TABLE IF NOT EXISTS egresados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    matricula TEXT UNIQUE NOT NULL,
+    nombre_completo TEXT NOT NULL,
+    programa_original TEXT,
+    fecha_graduacion DATE,
+    nivel_academico TEXT,
+    email TEXT,
+    telefono TEXT,
+    estado_laboral TEXT,
+    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    documentos_subidos TEXT
+);
+
+-- Crear tabla de contratados
+CREATE TABLE IF NOT EXISTS contratados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    matricula TEXT UNIQUE NOT NULL,
+    fecha_contratacion DATE,
+    puesto TEXT,
+    departamento TEXT,
+    estatus TEXT,
+    salario REAL,
+    tipo_contrato TEXT,
+    fecha_inicio DATE,
+    fecha_fin DATE,
+    documentos_subidos TEXT
+);
+
+-- Crear tabla de bitacora
+CREATE TABLE IF NOT EXISTS bitacora (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario TEXT,
+    accion TEXT,
+    detalles TEXT,
+    ip TEXT,
+    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Verificar que se insertó el admin
+SELECT '✅ Tablas creadas exitosamente' as mensaje;
 """
             
             # Ejecutar script de inicialización
@@ -1067,6 +1115,17 @@ VALUES ('admin', 'Admin123!', 'administrador', 'Administrador del Sistema', 'adm
             
             if exito:
                 logger.info("✅ Estructura de base de datos inicializada en servidor remoto")
+                
+                # Verificar que el admin existe
+                logger.info("🔍 Verificando usuario admin...")
+                comando = f"cd \"$(dirname \\\"{self.db_path_remoto}\\\")\" && sqlite3 \"{os.path.basename(self.db_path_remoto)}\" \"SELECT usuario, rol FROM usuarios WHERE usuario='admin'\""
+                salida, error = self.ejecutar_comando_remoto(comando)
+                
+                if salida and 'admin' in salida:
+                    logger.info(f"✅ Usuario admin confirmado: {salida}")
+                else:
+                    logger.warning(f"⚠️ Usuario admin no encontrado: {salida}")
+                
                 estado_sistema.marcar_db_inicializada()
                 return True
             else:
@@ -1165,8 +1224,23 @@ class SistemaBaseDatos:
                 # Verificar si ya existe
                 if self.gestor.verificar_existencia_db():
                     logger.info("✅ Base de datos ya existe en servidor")
-                    estado_sistema.marcar_db_inicializada()
-                    return True
+                    
+                    # Verificar si tiene la tabla usuarios
+                    consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
+                    resultado, error = self.gestor.ejecutar_sql_remoto(consulta)
+                    
+                    if resultado and len(resultado) > 0:
+                        logger.info("✅ Tabla 'usuarios' encontrada")
+                        estado_sistema.marcar_db_inicializada()
+                        return True
+                    else:
+                        logger.warning("⚠️ Tabla 'usuarios' no encontrada, creando estructura...")
+                        if self.gestor._inicializar_estructura_db_remota():
+                            st.success("✅ Base de datos inicializada con estructura completa")
+                            return True
+                        else:
+                            st.error("❌ Error creando estructura de base de datos")
+                            return False
                 
                 # Crear nueva base de datos
                 if self.gestor.crear_db_remota():
@@ -1235,43 +1309,55 @@ class SistemaBaseDatos:
     # =============================================================================
     
     def obtener_usuario(self, usuario):
-        """Obtener usuario por nombre de usuario o matrícula"""
+        """Obtener usuario por nombre de usuario o matrícula DESDE SERVIDOR REMOTO"""
         try:
+            logger.info(f"🔍 Buscando usuario en servidor remoto: {usuario}")
+            
             consulta = f"""
             SELECT * FROM usuarios 
-            WHERE usuario = '{usuario}' OR matricula = '{usuario}' OR email = '{usuario}'
+            WHERE (usuario = '{usuario}' OR email = '{usuario}' OR matricula = '{usuario}')
+            AND activo = 1
             LIMIT 1
             """
             
             resultado = self.ejecutar_consulta_remota(consulta)
             
             if resultado and len(resultado) > 0:
+                logger.info(f"✅ Usuario encontrado: {usuario}")
                 return resultado[0]
-            return None
+            else:
+                logger.warning(f"Usuario no encontrado: {usuario}")
+                return None
         except Exception as e:
             logger.error(f"Error obteniendo usuario {usuario}: {e}", exc_info=True)
             return None
     
     def verificar_login(self, usuario, password):
-        """Verificar credenciales de login"""
+        """Verificar credenciales de login contra base de datos remota"""
         try:
+            logger.info(f"🔐 Intentando login para usuario: {usuario}")
+            
+            # Primero obtener el usuario desde la base de datos remota
             usuario_data = self.obtener_usuario(usuario)
+            
             if not usuario_data:
-                logger.warning(f"Usuario no encontrado: {usuario}")
+                logger.warning(f"Usuario no encontrado en base de datos remota: {usuario}")
                 return None
             
             stored_password = usuario_data.get('password', '')
             
-            # Verificar contraseña (simple para demo)
+            logger.debug(f"Contraseña almacenada: {stored_password}, Contraseña ingresada: {password}")
+            
+            # Verificar contraseña (comparación directa)
             if stored_password == password:
-                logger.info(f"Login exitoso: {usuario}")
+                logger.info(f"✅ Login exitoso para usuario: {usuario}")
                 return usuario_data
             else:
-                logger.warning(f"Password incorrecto: {usuario}")
+                logger.warning(f"❌ Contraseña incorrecta para usuario: {usuario}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error verificando login: {e}", exc_info=True)
+            logger.error(f"❌ Error verificando login: {e}", exc_info=True)
             return None
     
     def obtener_inscritos(self, page=1, search_term=""):
@@ -2048,13 +2134,25 @@ class SistemaAutenticacion:
         self.usuario_actual = None
         
     def verificar_login(self, usuario, password):
-        """Verificar credenciales de usuario"""
+        """Verificar credenciales de usuario contra base de datos remota"""
         try:
             if not usuario or not password:
                 st.error("❌ Usuario y contraseña son obligatorios")
                 return False
             
-            with st.spinner("🔐 Verificando credenciales..."):
+            with st.spinner("🔐 Verificando credenciales en servidor remoto..."):
+                # Primero verificar si la base de datos existe
+                if not gestor_remoto.verificar_existencia_db():
+                    st.error("❌ ERROR: Base de datos no encontrada en servidor remoto")
+                    st.info("""
+                    **Solución:**
+                    1. Verifica que la base de datos existe en la ruta configurada
+                    2. Asegúrate que el archivo escuela.db está en el servidor
+                    3. Confirma la ruta en secrets.toml: `remote_db_escuela`
+                    """)
+                    return False
+                
+                # Verificar credenciales usando la base de datos remota
                 usuario_data = db.verificar_login(usuario, password)
                 
                 if usuario_data:
@@ -2067,12 +2165,14 @@ class SistemaAutenticacion:
                     self.sesion_activa = True
                     self.usuario_actual = usuario_data
                     
+                    # Registrar en bitácora
                     db.registrar_bitacora(
                         usuario_data['usuario'],
                         'LOGIN',
-                        f'Usuario {usuario_data["usuario"]} inició sesión'
+                        f'Usuario {usuario_data["usuario"]} inició sesión desde sistema 100% remoto'
                     )
                     
+                    estado_sistema.registrar_sesion(exitosa=True)
                     return True
                 else:
                     st.error("❌ Usuario o contraseña incorrectos")
@@ -2207,13 +2307,14 @@ def mostrar_login():
     st.title("🏥 Sistema Escuela Enfermería - 100% REMOTO")
     st.markdown("---")
     
+    # Mostrar estado de conexión
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if estado_sistema.esta_inicializada():
-            st.success("✅ Base de datos inicializada")
+        if gestor_remoto.verificar_existencia_db():
+            st.success("✅ Base de datos remota encontrada")
         else:
-            st.warning("⚠️ Base de datos NO inicializada")
+            st.error("❌ Base de datos NO encontrada en servidor")
     
     with col2:
         if estado_sistema.estado.get('ssh_conectado'):
@@ -2234,54 +2335,62 @@ def mostrar_login():
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         with st.form("login_form"):
-            st.subheader("Iniciar Sesión")
+            st.subheader("Iniciar Sesión - 100% REMOTO")
             
             usuario = st.text_input("👤 Usuario", placeholder="admin", key="login_usuario")
             password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!", key="login_password")
             
-            col_a, col_b = st.columns(2)
-            with col_a:
-                login_button = st.form_submit_button("🚀 Iniciar Sesión", use_container_width=True)
-            with col_b:
-                inicializar_button = st.form_submit_button("🔄 Inicializar DB Remota", use_container_width=True, type="secondary")
+            login_button = st.form_submit_button("🚀 Iniciar Sesión", use_container_width=True)
 
             if login_button:
                 if usuario and password:
-                    with st.spinner("Verificando credenciales..."):
-                        if auth.verificar_login(usuario, password):
+                    with st.spinner("Verificando credenciales en servidor remoto..."):
+                        # Verificar primero si la base de datos existe
+                        if not gestor_remoto.verificar_existencia_db():
+                            st.error("❌ ERROR: Base de datos no encontrada en servidor remoto")
+                            st.info("""
+                            **Solución:**
+                            1. Asegúrate que la base de datos existe en el servidor
+                            2. Verifica que el usuario 'admin' esté creado con contraseña 'Admin123!'
+                            3. Confirma la ruta en secrets.toml: `remote_db_escuela`
+                            """)
+                        elif auth.verificar_login(usuario, password):
+                            st.success("✅ Login exitoso")
                             st.rerun()
                         else:
-                            st.error("❌ Credenciales incorrectas")
+                            st.error("❌ Credenciales incorrectas o usuario no existe")
                 else:
                     st.warning("⚠️ Complete todos los campos")
             
-            if inicializar_button:
-                with st.spinner("Inicializando base de datos en servidor remoto..."):
-                    if db.inicializar_db_remota():
-                        st.success("✅ Base de datos remota inicializada")
-                        st.info("Ahora puedes iniciar sesión con:")
-                        st.info("👤 Usuario: admin")
-                        st.info("🔒 Contraseña: Admin123!")
-                        st.rerun()
-                    else:
-                        st.error("❌ Error inicializando base de datos remota")
-            
-            with st.expander("ℹ️ Información de acceso"):
+            with st.expander("ℹ️ Información de acceso 100% REMOTO"):
                 st.info("""
-                **Primer uso (100% REMOTO):**
-                1. Haz clic en **"Inicializar DB Remota"** para crear la base de datos en el servidor
-                2. Usa las credenciales por defecto que se crearán automáticamente
-                3. Inicia sesión con esas credenciales
+                **Configuración necesaria para login 100% REMOTO:**
                 
-                **Credenciales por defecto (después de inicializar):**
+                1. ✅ **Base de datos debe existir** en servidor remoto
+                2. ✅ **Tabla 'usuarios' debe existir** con estructura correcta
+                3. ✅ **Usuario admin debe estar creado** en la tabla usuarios
+                
+                **Credenciales por defecto (deben existir en el servidor):**
                 - 👤 Usuario: **admin**
                 - 🔒 Contraseña: **Admin123!**
                 
-                **Verificación del sistema 100% REMOTO:**
-                - ✅ SSH debe estar conectado
-                - ✅ Base de datos debe estar inicializada en servidor remoto
-                - 💾 Debe haber suficiente espacio en disco temporal
-                - 🌐 Todos los datos se manejan directamente en servidor remoto
+                **Estructura mínima de tabla usuarios:**
+                ```sql
+                CREATE TABLE usuarios (
+                    id INTEGER PRIMARY KEY,
+                    usuario TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    rol TEXT,
+                    nombre_completo TEXT,
+                    email TEXT,
+                    activo INTEGER DEFAULT 1
+                );
+                
+                INSERT INTO usuarios (usuario, password, rol, nombre_completo, email)
+                VALUES ('admin', 'Admin123!', 'administrador', 'Administrador', 'admin@escuela.edu.mx');
+                ```
+                
+                **IMPORTANTE:** La base de datos y usuario deben crearse MANUALMENTE en el servidor.
                 """)
 
 def mostrar_interfaz_principal():
@@ -2415,10 +2524,10 @@ def mostrar_dashboard():
             except:
                 pass
         
-        if estado_sistema.esta_inicializada():
+        if gestor_remoto.verificar_existencia_db():
             st.success("✅ Base de datos en servidor remoto")
         else:
-            st.error("❌ Base de datos NO inicializada en servidor")
+            st.error("❌ Base de datos NO encontrada en servidor")
         
         backups = sistema_principal.backup_system.listar_backups()
         if backups:
@@ -2823,13 +2932,20 @@ def mostrar_configuracion():
 
     with col_info1:
         st.write("**📊 Estado del Sistema:**")
-        if estado_sistema.esta_inicializada():
-            st.success("✅ Base de datos inicializada en servidor remoto")
-            fecha_inicializacion = estado_sistema.obtener_fecha_inicializacion()
-            if fecha_inicializacion:
-                st.write(f"📅 Fecha inicialización: {fecha_inicializacion.strftime('%Y-%m-%d %H:%M')}")
+        if gestor_remoto.verificar_existencia_db():
+            st.success("✅ Base de datos encontrada en servidor remoto")
+            # Verificar tablas básicas
+            try:
+                consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
+                resultado = db.ejecutar_consulta_remota(consulta)
+                if resultado and len(resultado) > 0:
+                    st.write("✅ Tabla 'usuarios' encontrada")
+                else:
+                    st.error("❌ Tabla 'usuarios' no encontrada")
+            except:
+                pass
         else:
-            st.warning("⚠️ Base de datos NO inicializada en servidor")
+            st.error("❌ Base de datos NO encontrada en servidor")
 
         if estado_sistema.estado.get('ssh_conectado'):
             st.success("✅ SSH Conectado")
@@ -2910,7 +3026,7 @@ def mostrar_configuracion():
     with col_tool3:
         if st.button("📊 Ver Tablas DB", use_container_width=True):
             try:
-                consulta = "SELECT name FROM sqlite_master WHERE type='table'"
+                consulta = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
                 resultado = db.ejecutar_consulta_remota(consulta)
                 
                 if resultado:
@@ -2939,13 +3055,10 @@ def main():
 
         st.subheader("🔗 Estado de Conexión SSH")
 
-        if estado_sistema.esta_inicializada():
-            st.success("✅ Base de datos remota inicializada")
-            fecha_inicializacion = estado_sistema.obtener_fecha_inicializacion()
-            if fecha_inicializacion:
-                st.caption(f"📅 Inicializada: {fecha_inicializacion.strftime('%Y-%m-%d %H:%M')}")
+        if gestor_remoto.verificar_existencia_db():
+            st.success("✅ Base de datos remota encontrada")
         else:
-            st.warning("⚠️ Base de datos NO inicializada")
+            st.error("❌ Base de datos NO encontrada")
 
         if estado_sistema.estado.get('ssh_conectado'):
             st.success("✅ SSH Conectado")
@@ -3153,7 +3266,7 @@ if __name__ == "__main__":
         
         **Para comenzar en modo 100% REMOTO:**
         1. Configura secrets.toml con tus credenciales SSH (solo rutas remotas)
-        2. Haz clic en "Inicializar DB Remota" para crear la base de datos en el servidor
+        2. Asegúrate que la base de datos ya existe en el servidor con el usuario 'admin'
         3. Inicia sesión con las credenciales por defecto
         4. Todos los datos se manejarán DIRECTAMENTE en el servidor remoto
         
