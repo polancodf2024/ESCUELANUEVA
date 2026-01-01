@@ -1869,62 +1869,93 @@ class SistemaAutenticacion:
         self.sesion_activa = False
         self.usuario_actual = None
         
-    def verificar_login(self, usuario, password):
-        """Verificar credenciales de usuario contra base de datos remota - CORREGIDO"""
-        try:
-            if not usuario or not password:
-                st.error("❌ Usuario y contraseña son obligatorios")
-                return False
-            
-            with st.spinner("🔐 Verificando credenciales en servidor remoto..."):
-                # PRIMERO: Crear usuario admin si no existe
-                if usuario.lower() == "admin":
-                    db.crear_usuario_admin_si_no_existe()
-                
-                # SEGUNDO: Verificar credenciales
-                usuario_data = db.verificar_login(usuario, password)
-                
-                if usuario_data:
-                    nombre_real = usuario_data.get('nombre_completo', usuario_data.get('usuario', 'Usuario'))
-                    
-                    st.success(f"✅ ¡Bienvenido(a), {nombre_real}!")
-                    st.session_state.login_exitoso = True
-                    st.session_state.usuario_actual = usuario_data
-                    st.session_state.rol_usuario = usuario_data.get('rol', 'usuario')
-                    self.sesion_activa = True
-                    self.usuario_actual = usuario_data
-                    
-                    # Registrar en bitácora
-                    db.registrar_bitacora(
-                        usuario_data['usuario'],
-                        'LOGIN',
-                        f'Usuario {usuario_data["usuario"]} inició sesión desde sistema 100% remoto'
-                    )
-                    
-                    estado_sistema.registrar_sesion(exitosa=True)
-                    return True
-                else:
-                    st.error("❌ Usuario o contraseña incorrectos")
-                    
-                    # Mostrar ayuda para debugging
-                    with st.expander("🔍 Ayuda para solución de problemas"):
-                        st.write("""
-                        **Credenciales por defecto:**
-                        - 👤 **Usuario:** admin
-                        - 🔒 **Contraseña:** Admin123!
-                        
-                        **Verificación de base de datos:**
-                        1. Asegúrate que la tabla 'usuarios' existe
-                        2. Verifica que el usuario 'admin' está activo (activo = 1)
-                        3. La contraseña debe ser 'Admin123!' (se acepta en texto plano, SHA256 o bcrypt)
-                        """)
-                    
-                    return False
-                    
-        except Exception as e:
-            st.error(f"❌ Error en el proceso de login: {e}")
-            logger.error(f"Error en login: {e}", exc_info=True)
+def verificar_login(self, usuario, password):
+    """Verificar credenciales de usuario contra base de datos remota - CORREGIDO según aspirantes35.py"""
+    try:
+        if not usuario or not password:
+            st.error("❌ Usuario y contraseña son obligatorios")
             return False
+        
+        with st.spinner("🔐 Verificando credenciales en servidor remoto..."):
+            # Importar db_completa como en aspirantes35.py
+            from aspirantes35 import db_completa
+            
+            # VERIFICACIÓN SIGUIENDO EL PATRÓN DE aspirantes35.py
+            usuario_data = db_completa.verificar_usuario(usuario, password)
+            
+            if usuario_data:
+                nombre_real = usuario_data.get('nombre_completo', usuario_data.get('usuario', 'Usuario'))
+                rol_usuario = usuario_data.get('rol', 'usuario')
+                
+                st.success(f"✅ ¡Bienvenido(a), {nombre_real}!")
+                st.session_state.login_exitoso = True
+                st.session_state.usuario_actual = usuario_data
+                st.session_state.rol_usuario = rol_usuario
+                self.sesion_activa = True
+                self.usuario_actual = usuario_data
+                
+                # Registrar en bitácora (si existe en tu sistema)
+                try:
+                    if hasattr(db_completa, 'registrar_bitacora'):
+                        db_completa.registrar_bitacora(
+                            usuario_data['usuario'],
+                            'LOGIN',
+                            f'Usuario {usuario_data["usuario"]} inició sesión desde sistema 100% remoto'
+                        )
+                except Exception as e:
+                    logger.warning(f"No se pudo registrar en bitácora: {e}")
+                
+                # Registrar sesión en estado_sistema
+                from aspirantes35 import estado_sistema
+                estado_sistema.registrar_sesion(exitosa=True)
+                
+                return True
+            else:
+                st.error("❌ Usuario o contraseña incorrectos")
+                
+                # Mostrar ayuda para debugging con información de aspirantes35.py
+                with st.expander("🔍 Ayuda para solución de problemas"):
+                    st.write("""
+                    **Credenciales por defecto (según aspirantes35.py):**
+                    - 👤 **Usuario:** admin
+                    - 🔒 **Contraseña:** Admin123!
+                    
+                    **Sistema de verificación:**
+                    1. Busca el usuario en la tabla 'usuarios'
+                    2. Verifica contraseña en hash SHA256 o texto plano
+                    3. Si la contraseña estaba en texto plano, se actualiza automáticamente a hash
+                    
+                    **Verificación de base de datos:**
+                    1. Asegúrate que la tabla 'usuarios' existe
+                    2. Verifica que el usuario 'admin' está activo (activo = 1)
+                    3. La contraseña se almacena como hash SHA256 o texto plano temporalmente
+                    """)
+                    
+                    # Diagnóstico adicional
+                    try:
+                        from aspirantes35 import logger
+                        query = "SELECT usuario, LENGTH(password) as pass_len FROM usuarios WHERE usuario = ?"
+                        resultado = db_completa.ejecutar_query(query, (usuario,))
+                        if resultado:
+                            st.write(f"Usuario encontrado en BD: {resultado}")
+                        else:
+                            st.warning(f"Usuario '{usuario}' no encontrado en base de datos")
+                    except Exception as e:
+                        st.error(f"Error en diagnóstico: {e}")
+                
+                return False
+                
+    except Exception as e:
+        st.error(f"❌ Error en el proceso de login: {e}")
+        
+        # Importar logger de aspirantes35.py si está disponible
+        try:
+            from aspirantes35 import logger
+            logger.error(f"Error en login: {e}", exc_info=True)
+        except:
+            pass
+            
+        return False
     
     def cerrar_sesion(self):
         """Cerrar sesión del usuario"""
