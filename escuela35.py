@@ -1,8 +1,8 @@
 """
 escuela35.py - Sistema Escuela Enfermería 100% REMOTO
-Versión modificada para trabajar EXCLUSIVAMENTE con servidor remoto
-Mismo modelo que aspirantes35.py - Sin archivos locales temporales
-Versión con Logger optimizado
+Versión unificada para trabajar con UNA SOLA base de datos
+Configuración optimizada para secrets.toml unificado
+VERSIÓN COMPLETA CON TODAS LAS FUNCIONALIDADES
 """
 
 # =============================================================================
@@ -58,7 +58,7 @@ except ImportError:
         st.stop()
 
 # =============================================================================
-# 1.1 LOGGING MEJORADO - VERSIÓN OPTIMIZADA
+# 1.1 LOGGING MEJORADO
 # =============================================================================
 
 class EnhancedLogger:
@@ -77,9 +77,9 @@ class EnhancedLogger:
             self.logger = logging.getLogger('escuela_app')
             # Solo configurar si no tiene handlers
             if not self.logger.handlers:
-                self.logger.setLevel(logging.INFO)  # Cambiado a INFO para reducir archivos
+                self.logger.setLevel(logging.INFO)
                 
-                # Solo UN handler de consola
+                # Handler de consola
                 console_handler = logging.StreamHandler()
                 console_handler.setLevel(logging.INFO)
                 
@@ -91,17 +91,8 @@ class EnhancedLogger:
                 
                 self.logger.addHandler(console_handler)
                 
-                # Archivo de log opcional - solo si es necesario
-                try:
-                    file_handler = logging.FileHandler('escuela_app.log', encoding='utf-8')
-                    file_handler.setLevel(logging.WARNING)  # Solo errores
-                    file_handler.setFormatter(formatter)
-                    self.logger.addHandler(file_handler)
-                except Exception:
-                    pass  # Si no puede crear archivo, solo consola
-                
             self._initialized = True
-            self.logger.propagate = False  # Evita propagación a root logger
+            self.logger.propagate = False
     
     def debug(self, message, extra=None):
         self.logger.debug(message, extra=extra)
@@ -117,38 +108,6 @@ class EnhancedLogger:
     
     def critical(self, message, exc_info=False, extra=None):
         self.logger.critical(message, exc_info=exc_info, extra=extra)
-    
-    def log_operation(self, operation, status, details):
-        """Registrar operación importante en archivo JSON separado"""
-        log_entry = {
-            'timestamp': datetime.now().isoformat(),
-            'operation': operation,
-            'status': status,
-            'details': details
-        }
-        
-        log_file = 'system_operations.json'
-        try:
-            if os.path.exists(log_file):
-                with open(log_file, 'r') as f:
-                    try:
-                        logs = json.load(f)
-                    except json.JSONDecodeError:
-                        logs = []
-            else:
-                logs = []
-            
-            logs.append(log_entry)
-            
-            # Mantener solo las últimas 100 operaciones
-            if len(logs) > 100:
-                logs = logs[-100:]
-            
-            with open(log_file, 'w') as f:
-                json.dump(logs, f, indent=2, default=str)
-                
-        except Exception as e:
-            self.error(f"Error guardando log de operación: {e}")
 
 logger = EnhancedLogger()
 
@@ -157,7 +116,7 @@ logger = EnhancedLogger()
 # =============================================================================
 
 st.set_page_config(
-    page_title="Sistema Escuela Enfermería - 100% REMOTO",
+    page_title="Sistema Escuela Enfermería - Base de Datos Única",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -175,47 +134,47 @@ def obtener_programas_academicos():
                 "nombre": "Licenciatura en Enfermería",
                 "duracion": "4 años",
                 "modalidad": "Presencial",
-                "descripcion": "Formación integral en enfermería con enfoque en cardiología.",
+                "descripcion": "Formación integral en enfermería con enfoque especializado.",
                 "requisitos": ["Bachillerato terminado", "Promedio mínimo 8.0"],
                 "categoria": "licenciatura"
             }
         ],
         "ESPECIALIDAD": [
             {
-                "nombre": "Especialidad en Enfermería Cardiovascular",
+                "nombre": "Especialidad en Enfermería Clínica",
                 "duracion": "2 años",
                 "modalidad": "Presencial",
-                "descripcion": "Formación especializada en el cuidado de pacientes con patologías cardiovasculares.",
+                "descripcion": "Formación especializada en el cuidado de pacientes.",
                 "requisitos": ["Licenciatura en Enfermería", "Cédula profesional", "2 años de experiencia"],
                 "categoria": "posgrado"
             }
         ],
         "MAESTRIA": [
             {
-                "nombre": "Maestría en Ciencias Cardiológicas",
+                "nombre": "Maestría en Ciencias de la Salud",
                 "duracion": "2 años",
                 "modalidad": "Presencial",
-                "descripcion": "Formación de investigadores en el área de ciencias cardiológicas.",
+                "descripcion": "Formación de investigadores en el área de ciencias de la salud.",
                 "requisitos": ["Licenciatura en áreas afines", "Promedio mínimo 8.5"],
                 "categoria": "posgrado"
             }
         ],
         "DIPLOMADO": [
             {
-                "nombre": "Diplomado de Cardiología Básica",
+                "nombre": "Diplomado en Salud Pública",
                 "duracion": "6 meses",
                 "modalidad": "Híbrida",
-                "descripcion": "Actualización en fundamentos de cardiología para profesionales de la salud.",
+                "descripcion": "Actualización en fundamentos de salud pública para profesionales.",
                 "requisitos": ["Título profesional en área de la salud"],
                 "categoria": "educacion_continua"
             }
         ],
         "CURSO": [
             {
-                "nombre": "Curso de RCP Avanzado",
+                "nombre": "Curso de RCP Básico",
                 "duracion": "40 horas",
                 "modalidad": "Presencial",
-                "descripcion": "Certificación en Reanimación Cardiopulmonar Avanzada.",
+                "descripcion": "Certificación en Reanimación Cardiopulmonar Básica.",
                 "requisitos": ["Título en área de la salud"],
                 "categoria": "educacion_continua"
             }
@@ -235,13 +194,13 @@ def obtener_documentos_requeridos(tipo_programa):
     """Obtener documentos requeridos según tipo de programa"""
     documentos_base = [
         "Certificado preparatoria (promedio ≥ 8.0)",
-        "Acta nacimiento (≤ 3 meses)",
-        "CURP (≤ 1 mes)",
+        "Acta nacimiento",
+        "CURP",
         "Cartilla Nacional de Salud",
         "INE del tutor",
-        "Comprobante domicilio (≤ 3 meses)",
-        "Certificado médico institucional (≤ 1 mes)",
-        "12 fotografías infantiles B/N"
+        "Comprobante domicilio",
+        "Certificado médico institucional",
+        "12 fotografías tamaño infantil"
     ]
     
     if tipo_programa == "LICENCIATURA":
@@ -269,35 +228,12 @@ def obtener_documentos_requeridos(tipo_programa):
     else:
         return documentos_base
 
-def obtener_testimonios():
-    """Obtener testimonios de estudiantes y egresados"""
-    return [
-        {
-            "nombre": "Dra. Ana Martínez",
-            "programa": "Especialidad en Enfermería Cardiovascular",
-            "testimonio": "La especialidad me dio las herramientas para trabajar en la unidad de cardiología del hospital más importante del país.",
-            "foto": "👩‍⚕️"
-        },
-        {
-            "nombre": "Lic. Carlos Rodríguez",
-            "programa": "Licenciatura en Enfermería",
-            "testimonio": "La formación con enfoque cardiológico me diferenció en el mercado laboral. ¡Altamente recomendable!",
-            "foto": "👨‍⚕️"
-        },
-        {
-            "nombre": "Dr. Miguel Torres",
-            "programa": "Diplomado de Cardiología Básica",
-            "testimonio": "Perfecto para actualizarse sin dejar de trabajar. Los profesores son expertos en su área.",
-            "foto": "🧑‍⚕️"
-        }
-    ]
-
 # =============================================================================
-# 1.4 FUNCIÓN PARA LEER SECRETS.TOML - VERSIÓN 100% REMOTO
+# 1.4 FUNCIÓN PARA LEER SECRETS.TOML
 # =============================================================================
 
-def cargar_configuracion_secrets():
-    """Cargar configuración desde secrets.toml - VERSIÓN 100% REMOTO"""
+def cargar_configuracion_completa():
+    """Cargar configuración completa desde secrets.toml"""
     try:
         if not HAS_TOMLLIB:
             logger.error("❌ ERROR: No se puede cargar secrets.toml sin tomllib/tomli")
@@ -326,7 +262,7 @@ def cargar_configuracion_secrets():
         
         with open(ruta_encontrada, 'rb') as f:
             config = tomllib.load(f)
-            logger.info(f"✅ Configuración cargada desde: {ruta_encontrada}")
+            logger.info(f"✅ Configuración completa cargada desde: {ruta_encontrada}")
             return config
         
     except Exception as e:
@@ -454,11 +390,11 @@ class UtilidadesSistema:
             return False
 
 # =============================================================================
-# 1.7 ARCHIVO DE ESTADO PERSISTENTE - MODIFICADO PARA 100% REMOTO
+# 1.7 ARCHIVO DE ESTADO PERSISTENTE
 # =============================================================================
 
 class EstadoPersistente:
-    """Maneja el estado persistente para el sistema 100% REMOTO"""
+    """Maneja el estado persistente para el sistema"""
     
     def __init__(self, archivo_estado="estado_sistema.json"):
         self.archivo_estado = archivo_estado
@@ -486,12 +422,11 @@ class EstadoPersistente:
             return self._estado_por_defecto()
     
     def _estado_por_defecto(self):
-        """Estado por defecto - 100% REMOTO"""
+        """Estado por defecto"""
         return {
             'db_inicializada': False,
             'fecha_inicializacion': None,
             'ultima_sincronizacion': None,
-            'modo_operacion': '100%_remoto',
             'sesiones_iniciadas': 0,
             'ultima_sesion': None,
             'ssh_conectado': False,
@@ -503,9 +438,6 @@ class EstadoPersistente:
                 'total_tiempo': 0
             },
             'backups_realizados': 0,
-            'salones_reservados': [],
-            'minutas_generadas': 0,
-            'cartas_compromiso': 0,
             'total_inscritos': 0,
             'recordatorios_enviados': 0,
             'duplicados_eliminados': 0,
@@ -527,11 +459,6 @@ class EstadoPersistente:
         self.estado['fecha_inicializacion'] = datetime.now().isoformat()
         self.guardar_estado()
     
-    def marcar_sincronizacion(self):
-        """Marcar última sincronización"""
-        self.estado['ultima_sincronizacion'] = datetime.now().isoformat()
-        self.guardar_estado()
-    
     def registrar_sesion(self, exitosa=True, tiempo_ejecucion=0):
         """Registrar una sesión"""
         self.estado['sesiones_iniciadas'] = self.estado.get('sesiones_iniciadas', 0) + 1
@@ -548,36 +475,6 @@ class EstadoPersistente:
         self.estado['backups_realizados'] = self.estado.get('backups_realizados', 0) + 1
         self.guardar_estado()
     
-    def registrar_salon_reservado(self, salon, fecha, hora):
-        """Registrar reserva de salón"""
-        reserva = {
-            'salon': salon,
-            'fecha': fecha,
-            'hora': hora,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        if 'salones_reservados' not in self.estado:
-            self.estado['salones_reservados'] = []
-        
-        self.estado['salones_reservados'].append(reserva)
-        self.guardar_estado()
-    
-    def registrar_minuta(self):
-        """Registrar minuta generada"""
-        self.estado['minutas_generadas'] = self.estado.get('minutas_generadas', 0) + 1
-        self.guardar_estado()
-    
-    def registrar_carta_compromiso(self):
-        """Registrar carta compromiso generada"""
-        self.estado['cartas_compromiso'] = self.estado.get('cartas_compromiso', 0) + 1
-        self.guardar_estado()
-    
-    def registrar_recordatorio(self):
-        """Registrar envío de recordatorio"""
-        self.estado['recordatorios_enviados'] = self.estado.get('recordatorios_enviados', 0) + 1
-        self.guardar_estado()
-    
     def registrar_duplicado_eliminado(self):
         """Registrar duplicado eliminado"""
         self.estado['duplicados_eliminados'] = self.estado.get('duplicados_eliminados', 0) + 1
@@ -586,11 +483,6 @@ class EstadoPersistente:
     def registrar_registro_incompleto_eliminado(self, cantidad=1):
         """Registrar registros incompletos eliminados"""
         self.estado['registros_incompletos_eliminados'] = self.estado.get('registros_incompletos_eliminados', 0) + cantidad
-        self.guardar_estado()
-    
-    def set_total_inscritos(self, total):
-        """Establecer total de inscritos"""
-        self.estado['total_inscritos'] = total
         self.guardar_estado()
     
     def set_ssh_conectado(self, conectado, error=None):
@@ -603,167 +495,114 @@ class EstadoPersistente:
     def esta_inicializada(self):
         """Verificar si la BD está inicializada"""
         return self.estado.get('db_inicializada', False)
-    
-    def obtener_fecha_inicializacion(self):
-        """Obtener fecha de inicialización"""
-        fecha_str = self.estado.get('fecha_inicializacion')
-        if fecha_str:
-            try:
-                return datetime.fromisoformat(fecha_str)
-            except:
-                return None
-        return None
 
 # =============================================================================
-# 2. CAPA DE DATOS (MODELO) - 100% REMOTO
-# =============================================================================
-
-# =============================================================================
-# 2.1 GESTOR DE CONEXIÓN REMOTA VIA SSH - 100% REMOTO
+# 2. GESTOR DE CONEXIÓN REMOTA VIA SSH
 # =============================================================================
 
 class GestorConexionRemota:
-    """Gestor de conexión SSH al servidor remoto - 100% REMOTO"""
+    """Gestor de conexión SSH al servidor remoto - Base de datos única"""
     
     def __init__(self):
         self.ssh = None
         self.sftp = None
-        self.conn_remota = None  # Conexión directa a DB remota
+        self.config = None
         
         logger.info("📋 Cargando configuración desde secrets.toml...")
-        self.config_completa = cargar_configuracion_secrets()
+        self.config_completa = cargar_configuracion_completa()
         
         if not self.config_completa:
             logger.error("❌ No se pudo cargar configuración de secrets.toml")
             return
             
-        self.config = self._cargar_configuracion_completa()
+        self.config = self._cargar_configuracion()
         
-        self.config_sistema = self.config_completa.get('system', {})
-        self.auto_connect = self.config_sistema.get('auto_connect', True)
-        self.retry_attempts = self.config_sistema.get('retry_attempts', 3)
-        self.retry_delay_base = self.config_sistema.get('retry_delay', 5)
-        
-        self.timeouts = {
-            'ssh_connect': self.config_sistema.get('ssh_connect_timeout', 30),
-            'ssh_command': self.config_sistema.get('ssh_command_timeout', 60),
-            'sftp_transfer': self.config_sistema.get('sftp_transfer_timeout', 300),
-            'db_operation': self.config_sistema.get('db_operation_timeout', 30)
-        }
-        
-        if not self.config.get('host'):
+        if not self.config.get('ssh_host'):
             logger.warning("⚠️ No hay configuración SSH en secrets.toml")
             return
         
-        # 🔴🔴🔴 CORRECCIÓN CRÍTICA: Usar usuarios.db para autenticación
-        self.db_path_remoto = self.config.get('remote_db_usuarios')  # CAMBIADO
+        # Base de datos única
+        self.db_path_remoto = self.config.get('db_principal')
         
         if not self.db_path_remoto:
-            logger.error("❌ ERROR: No se encontró remote_db_usuarios en la configuración")
-            # Fallback a remote_db_escuela si existe (para compatibilidad)
-            self.db_path_remoto = self.config.get('remote_db_escuela')
-            if self.db_path_remoto:
-                logger.warning(f"⚠️ Usando remote_db_escuela como fallback: {self.db_path_remoto}")
-            else:
-                logger.critical("❌ ERROR CRÍTICO: No hay base de datos configurada para autenticación")
-                return
+            logger.critical("❌ ERROR CRÍTICO: No hay base de datos configurada")
+            return
         
-        self.uploads_path_remoto = self.config.get('remote_uploads_path')
-        
-        logger.info(f"🔗 Configuración SSH cargada para {self.config.get('host', 'No configurado')}")
-        logger.info(f"📁 Usando base de datos de autenticación: {self.db_path_remoto}")
+        logger.info(f"🔗 Configuración SSH cargada para servidor remoto")
+        logger.info(f"📁 Usando base de datos única: {self.db_path_remoto}")
         
         # Probar conexión inicial
-        if self.config.get('host'):
-            self.probar_conexion_inicial()
+        self.probar_conexion_inicial()
     
-    def _cargar_configuracion_completa(self):
-        """Cargar toda la configuración necesaria - VERSIÓN 100% REMOTO"""
+    def _cargar_configuracion(self):
+        """Cargar configuración desde secrets.toml"""
         config = {}
         
         try:
-            # PRIMERO intentar leer de sección [ssh]
+            # Configuración SSH
             ssh_config = self.config_completa.get('ssh', {})
-            
-            # SI no hay, leer de la raíz del archivo
-            if not ssh_config:
-                ssh_config = {
-                    'host': self.config_completa.get('remote_host', ''),
-                    'port': self.config_completa.get('remote_port', 22),
-                    'username': self.config_completa.get('remote_user', ''),
-                    'password': self.config_completa.get('remote_password', ''),
-                    'enabled': True
-                }
-            
             config.update({
-                'host': ssh_config.get('host', ''),
-                'port': int(ssh_config.get('port', 22)),
-                'username': ssh_config.get('username', ''),
-                'password': ssh_config.get('password', ''),
-                'timeout': int(ssh_config.get('timeout', 30)),
-                'remote_dir': ssh_config.get('remote_dir', ''),
-                'enabled': bool(ssh_config.get('enabled', True))
+                'ssh_host': ssh_config.get('host', self.config_completa.get('remote_host', '')),
+                'ssh_port': int(ssh_config.get('port', self.config_completa.get('remote_port', 22))),
+                'ssh_username': ssh_config.get('username', self.config_completa.get('remote_user', '')),
+                'ssh_password': ssh_config.get('password', self.config_completa.get('remote_password', '')),
+                'ssh_enabled': bool(ssh_config.get('enabled', True)),
+                'ssh_timeout': int(ssh_config.get('timeout', 30))
             })
             
-            # IMPORTANTE: SOLO RUTAS REMOTAS, SIN LOCALES
+            # Configuración de rutas
             paths_config = self.config_completa.get('paths', {})
             config.update({
-                'remote_db_usuarios': paths_config.get('remote_db_usuarios', ''),
-                'remote_db_aspirantes': paths_config.get('remote_db_aspirantes', ''),
-                'remote_uploads_path': paths_config.get('remote_uploads_path', ''),
+                'db_principal': paths_config.get('db_principal', ''),
+                'base_path': paths_config.get('base_path', ''),
+                'uploads_path': paths_config.get('uploads_path', ''),
+                'backup_path': paths_config.get('backup_path', ''),
+                'logs_path': paths_config.get('logs_path', '')
             })
             
             # Configuración SMTP
-            smtp_config = {
+            config.update({
                 'smtp_server': self.config_completa.get('smtp_server', ''),
                 'smtp_port': self.config_completa.get('smtp_port', 587),
                 'email_user': self.config_completa.get('email_user', ''),
                 'email_password': self.config_completa.get('email_password', ''),
-                'notification_email': self.config_completa.get('notification_email', ''),
-                'supervisor_mode': bool(self.config_completa.get('supervisor_mode', False)),
-                'debug_mode': bool(self.config_completa.get('debug_mode', False))
-            }
-            config['smtp'] = smtp_config
+                'notification_email': self.config_completa.get('notification_email', '')
+            })
             
-            logger.info(f"✅ Configuración 100% REMOTO cargada. Host: {config.get('host', 'No configurado')}")
-            logger.info(f"📁 Ruta DB usuarios: {config.get('remote_db_usuarios', 'No configurada')}")
+            # Configuración del sistema
+            system_config = self.config_completa.get('system', {})
+            config.update({
+                'auto_connect': system_config.get('auto_connect', True),
+                'retry_attempts': system_config.get('retry_attempts', 3),
+                'retry_delay': system_config.get('retry_delay', 5),
+                'max_login_attempts': system_config.get('max_login_attempts', 5)
+            })
+            
+            logger.info("✅ Configuración cargada correctamente")
             
         except Exception as e:
             logger.error(f"❌ Error cargando configuración: {e}", exc_info=True)
         
         return config
     
-    def _intento_conexion_con_backoff(self, attempt):
-        """Calcular tiempo de espera con backoff exponencial"""
-        wait_time = min(self.retry_delay_base * (2 ** attempt), 60)
-        jitter = wait_time * 0.1 * np.random.random()
-        return wait_time + jitter
-    
     def probar_conexion_inicial(self):
         """Probar la conexión SSH al inicio"""
         try:
-            if not self.config.get('host'):
+            if not self.config.get('ssh_host'):
                 return False
                 
-            logger.info(f"🔍 Probando conexión SSH a {self.config['host']}...")
-            
-            if not UtilidadesSistema.verificar_conectividad_red():
-                logger.warning("⚠️ No hay conectividad de red")
-                return False
+            logger.info(f"🔍 Probando conexión SSH...")
             
             ssh_test = paramiko.SSHClient()
             ssh_test.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
-            port = self.config.get('port', 22)
-            timeout = self.timeouts['ssh_connect']
-            
             ssh_test.connect(
-                hostname=self.config['host'],
-                port=port,
-                username=self.config['username'],
-                password=self.config['password'],
-                timeout=timeout,
-                banner_timeout=timeout,
+                hostname=self.config['ssh_host'],
+                port=self.config['ssh_port'],
+                username=self.config['ssh_username'],
+                password=self.config['ssh_password'],
+                timeout=self.config['ssh_timeout'],
+                banner_timeout=self.config['ssh_timeout'],
                 allow_agent=False,
                 look_for_keys=False
             )
@@ -771,32 +610,21 @@ class GestorConexionRemota:
             # Verificar que la base de datos existe
             stdin, stdout, stderr = ssh_test.exec_command(
                 f"test -f '{self.db_path_remoto}' && echo 'EXISTS' || echo 'NOT_FOUND'",
-                timeout=self.timeouts['ssh_command']
+                timeout=self.config['ssh_timeout']
             )
             output = stdout.read().decode().strip()
-            error = stderr.read().decode().strip()
             
             ssh_test.close()
             
             if output == 'EXISTS':
-                logger.info(f"✅ Conexión SSH exitosa y DB encontrada: {self.config['host']}")
+                logger.info(f"✅ Conexión SSH exitosa y DB encontrada")
                 estado_sistema.set_ssh_conectado(True, None)
                 return True
             else:
-                logger.warning(f"⚠️ Conexión SSH exitosa pero DB no encontrada: {self.config['host']}")
+                logger.warning(f"⚠️ Conexión SSH exitosa pero DB no encontrada")
                 estado_sistema.set_ssh_conectado(False, "Base de datos no encontrada en servidor")
                 return False
             
-        except socket.timeout:
-            error_msg = f"Timeout conectando a {self.config['host']}"
-            logger.error(f"❌ {error_msg}")
-            estado_sistema.set_ssh_conectado(False, error_msg)
-            return False
-        except paramiko.AuthenticationException:
-            error_msg = "Error de autenticación SSH - Credenciales incorrectas"
-            logger.error(f"❌ {error_msg}")
-            estado_sistema.set_ssh_conectado(False, error_msg)
-            return False
         except Exception as e:
             error_msg = f"Error de conexión SSH: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -806,57 +634,32 @@ class GestorConexionRemota:
     def conectar_ssh(self):
         """Establecer conexión SSH con el servidor remoto"""
         try:
-            if not self.config.get('host'):
+            if not self.config.get('ssh_host'):
                 logger.error("No hay configuración SSH disponible")
                 return False
                 
-            logger.info(f"🔗 Conectando SSH a {self.config['host']}:{self.config.get('port', 22)}...")
+            logger.info(f"🔗 Conectando SSH...")
             
             self.ssh = paramiko.SSHClient()
             self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
-            port = self.config.get('port', 22)
-            timeout = self.timeouts['ssh_connect']
-            
-            temp_dir = tempfile.gettempdir()
-            espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-            if not espacio_ok:
-                logger.warning(f"⚠️ Espacio en disco bajo: {espacio_mb:.1f} MB disponible en {temp_dir}")
-            
             self.ssh.connect(
-                hostname=self.config['host'],
-                port=port,
-                username=self.config['username'],
-                password=self.config['password'],
-                timeout=timeout,
-                banner_timeout=timeout,
+                hostname=self.config['ssh_host'],
+                port=self.config['ssh_port'],
+                username=self.config['ssh_username'],
+                password=self.config['ssh_password'],
+                timeout=self.config['ssh_timeout'],
+                banner_timeout=self.config['ssh_timeout'],
                 allow_agent=False,
                 look_for_keys=False
             )
             
             self.sftp = self.ssh.open_sftp()
-            self.sftp.get_channel().settimeout(self.timeouts['sftp_transfer'])
             
-            logger.info(f"✅ Conexión SSH establecida a {self.config['host']}")
-            
+            logger.info(f"✅ Conexión SSH establecida")
             estado_sistema.set_ssh_conectado(True, None)
             return True
             
-        except socket.timeout:
-            error_msg = f"Timeout conectando a {self.config['host']}"
-            logger.error(f"❌ {error_msg}")
-            estado_sistema.set_ssh_conectado(False, error_msg)
-            return False
-        except paramiko.AuthenticationException:
-            error_msg = "Error de autenticación SSH - Credenciales incorrectas"
-            logger.error(f"❌ {error_msg}")
-            estado_sistema.set_ssh_conectado(False, error_msg)
-            return False
-        except paramiko.SSHException as ssh_exc:
-            error_msg = f"Error SSH: {str(ssh_exc)}"
-            logger.error(f"❌ {error_msg}")
-            estado_sistema.set_ssh_conectado(False, error_msg)
-            return False
         except Exception as e:
             error_msg = f"Error de conexión: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -875,14 +678,14 @@ class GestorConexionRemota:
             logger.warning(f"⚠️ Error cerrando conexión SSH: {e}")
     
     def ejecutar_comando_remoto(self, comando, timeout=None):
-        """Ejecutar comando en servidor remoto - NUEVO para 100% remoto"""
+        """Ejecutar comando en servidor remoto"""
         try:
             if not self.ssh:
                 if not self.conectar_ssh():
                     return None, None
             
             if timeout is None:
-                timeout = self.timeouts['ssh_command']
+                timeout = self.config['ssh_timeout']
             
             stdin, stdout, stderr = self.ssh.exec_command(comando, timeout=timeout)
             
@@ -895,41 +698,12 @@ class GestorConexionRemota:
             logger.error(f"❌ Error ejecutando comando remoto: {e}")
             return None, str(e)
     
-    def ejecutar_sql_remoto(self, consulta_sql, parametros=None):
-        """Ejecutar SQL directamente en servidor remoto - 100% REMOTO"""
+    def ejecutar_sql_remoto(self, consulta_sql):
+        """Ejecutar SQL directamente en servidor remoto"""
         try:
-            # Crear script SQL temporal en servidor
-            temp_script = f"/tmp/sql_{int(time.time())}_{random.randint(1000, 9999)}.sql"
-            resultado_temp = f"/tmp/result_{int(time.time())}_{random.randint(1000, 9999)}.json"
+            comando = f"cd \"$(dirname \\\"{self.db_path_remoto}\\\")\" && sqlite3 -json \"{os.path.basename(self.db_path_remoto)}\" \"{consulta_sql.replace('\"', '\\\"')}\""
             
-            # Crear script SQL
-            script_content = f"""#!/bin/bash
-cd "$(dirname "{self.db_path_remoto}")"
-sqlite3 "{os.path.basename(self.db_path_remoto)}" << 'EOF'
-.headers on
-.mode json
-{consulta_sql}
-EOF
-"""
-            
-            # Subir script al servidor
-            with self.sftp.open(temp_script, 'w') as f:
-                f.write(script_content)
-            
-            # Hacer ejecutable
-            self.ssh.exec_command(f"chmod +x {temp_script}")
-            
-            # Ejecutar script
-            stdin, stdout, stderr = self.ssh.exec_command(
-                temp_script,
-                timeout=self.timeouts['db_operation']
-            )
-            
-            resultado = stdout.read().decode('utf-8', errors='ignore')
-            error = stderr.read().decode('utf-8', errors='ignore')
-            
-            # Limpiar archivo temporal
-            self.ssh.exec_command(f"rm -f {temp_script}")
+            salida, error = self.ejecutar_comando_remoto(comando)
             
             if error and "Error:" in error:
                 logger.error(f"❌ Error SQL remoto: {error}")
@@ -937,23 +711,21 @@ EOF
             
             # Parsear resultado JSON
             try:
-                if resultado.strip():
-                    resultado_json = json.loads(resultado)
+                if salida and salida.strip():
+                    resultado_json = json.loads(salida)
                     return resultado_json, None
                 else:
                     return [], None
             except json.JSONDecodeError:
-                logger.warning(f"⚠️ Resultado no JSON: {resultado[:100]}")
-                return resultado, None
+                return salida, None
                 
         except Exception as e:
             logger.error(f"❌ Error ejecutando SQL remoto: {e}", exc_info=True)
             return None, str(e)
     
     def ejecutar_sql_modificacion(self, consulta_sql):
-        """Ejecutar SQL de modificación (INSERT, UPDATE, DELETE) - 100% REMOTO"""
+        """Ejecutar SQL de modificación (INSERT, UPDATE, DELETE)"""
         try:
-            # Para modificaciones, usar método más simple
             comando = f"cd \"$(dirname \\\"{self.db_path_remoto}\\\")\" && sqlite3 \"{os.path.basename(self.db_path_remoto)}\" \"{consulta_sql.replace('\"', '\\\"')}\""
             
             salida, error = self.ejecutar_comando_remoto(comando)
@@ -975,211 +747,40 @@ EOF
             salida, error = self.ejecutar_comando_remoto(comando)
             
             if salida == 'EXISTS':
-                logger.info(f"✅ Base de datos encontrada en servidor: {self.db_path_remoto}")
+                logger.info(f"✅ Base de datos encontrada en servidor")
                 return True
             else:
-                logger.warning(f"⚠️ Base de datos NO encontrada en servidor: {self.db_path_remoto}")
-                if error:
-                    logger.error(f"Error: {error}")
+                logger.warning(f"⚠️ Base de datos NO encontrada en servidor")
                 return False
                 
         except Exception as e:
             logger.error(f"❌ Error verificando existencia DB: {e}")
             return False
     
-    def crear_db_remota(self):
-        """Crear base de datos en servidor remoto si no existe"""
+    def crear_backup_remoto(self):
+        """Crear backup de la base de datos en servidor remoto"""
         try:
-            logger.info(f"📝 Creando base de datos remota: {self.db_path_remoto}")
+            backup_dir = self.config.get('backup_path', '/tmp')
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_path = f"{backup_dir}/escuela_backup_{timestamp}.db"
             
-            # Crear directorio si no existe
-            remote_dir = os.path.dirname(self.db_path_remoto)
-            comando_mkdir = f"mkdir -p '{remote_dir}'"
-            salida_mkdir, error_mkdir = self.ejecutar_comando_remoto(comando_mkdir)
+            comando = f"cp '{self.db_path_remoto}' '{backup_path}' && echo 'BACKUP_CREADO:{backup_path}' || echo 'ERROR_BACKUP'"
+            salida, error = self.ejecutar_comando_remoto(comando)
             
-            if error_mkdir:
-                logger.warning(f"⚠️ Error creando directorio: {error_mkdir}")
-            
-            # Crear archivo de base de datos vacío
-            comando_touch = f"touch '{self.db_path_remoto}'"
-            salida_touch, error_touch = self.ejecutar_comando_remoto(comando_touch)
-            
-            if error_touch:
-                logger.error(f"❌ Error creando archivo DB: {error_touch}")
-                return False
-            
-            logger.info(f"✅ Archivo de base de datos creado: {self.db_path_remoto}")
-            
-            # Inicializar estructura
-            return self._inicializar_estructura_db_remota()
-            
-        except Exception as e:
-            logger.error(f"❌ Error creando DB remota: {e}", exc_info=True)
-            return False
-    
-    def _inicializar_estructura_db_remota(self):
-        """Inicializar estructura de base de datos en servidor remoto"""
-        try:
-            logger.info("📝 Inicializando estructura COMPLETA en servidor remoto...")
-            
-            # Crear script de inicialización
-            init_script = """
--- Crear tabla de usuarios
-CREATE TABLE IF NOT EXISTS usuarios (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    rol TEXT DEFAULT 'administrador',
-    nombre_completo TEXT,
-    email TEXT,
-    matricula TEXT UNIQUE,
-    activo INTEGER DEFAULT 1,
-    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    categoria_academica TEXT,
-    tipo_programa TEXT,
-    acepto_privacidad INTEGER DEFAULT 0,
-    acepto_convocatoria INTEGER DEFAULT 0
-);
-
--- Insertar usuario administrador por defecto (CONTRASEÑA: Admin123!)
-INSERT OR REPLACE INTO usuarios (id, usuario, password, rol, nombre_completo, email, matricula, activo)
-VALUES (1, 'admin', 'Admin123!', 'administrador', 'Administrador del Sistema', 'admin@escuela.edu.mx', 'ADMIN-001', 1);
-
--- Crear tabla de inscritos
-CREATE TABLE IF NOT EXISTS inscritos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    matricula TEXT UNIQUE NOT NULL,
-    folio_unico TEXT UNIQUE NOT NULL,
-    nombre_completo TEXT NOT NULL,
-    email TEXT NOT NULL,
-    email_gmail TEXT,
-    telefono TEXT,
-    tipo_programa TEXT NOT NULL,
-    categoria_academica TEXT,
-    programa_interes TEXT NOT NULL,
-    estado_civil TEXT,
-    edad INTEGER,
-    domicilio TEXT,
-    licenciatura_origen TEXT,
-    documentos_subidos INTEGER DEFAULT 0,
-    documentos_guardados TEXT,
-    documentos_faltantes TEXT,
-    fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_limite_registro DATE,
-    estatus TEXT DEFAULT 'Pre-inscrito',
-    estudio_socioeconomico TEXT,
-    acepto_privacidad INTEGER DEFAULT 0,
-    acepto_convocatoria INTEGER DEFAULT 0,
-    fecha_aceptacion_privacidad TIMESTAMP,
-    fecha_aceptacion_convocatoria TIMESTAMP,
-    duplicado_verificado INTEGER DEFAULT 0,
-    matricula_unam TEXT,
-    recordatorio_enviado INTEGER DEFAULT 0,
-    ultimo_recordatorio TIMESTAMP,
-    completado INTEGER DEFAULT 0,
-    observaciones TEXT,
-    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    usuario_actualizacion TEXT DEFAULT 'sistema'
-);
-
--- Crear tabla de estudiantes
-CREATE TABLE IF NOT EXISTS estudiantes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    matricula TEXT UNIQUE NOT NULL,
-    nombre_completo TEXT NOT NULL,
-    programa TEXT NOT NULL,
-    email TEXT,
-    telefono TEXT,
-    fecha_nacimiento DATE,
-    genero TEXT,
-    fecha_inscripcion TIMESTAMP,
-    estatus TEXT,
-    documentos_subidos TEXT,
-    fecha_registro TIMESTAMP,
-    programa_interes TEXT,
-    folio TEXT,
-    como_se_entero TEXT,
-    fecha_ingreso DATE,
-    usuario TEXT,
-    tipo_programa TEXT CHECK(tipo_programa IN ('Pregrado', 'Posgrado', 'Licenciatura', 'Educación Continua')),
-    matricula_unam TEXT,
-    promedio_general REAL DEFAULT 0.0,
-    materias_cursadas INTEGER DEFAULT 0,
-    materias_aprobadas INTEGER DEFAULT 0
-);
-
--- Crear tabla de egresados
-CREATE TABLE IF NOT EXISTS egresados (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    matricula TEXT UNIQUE NOT NULL,
-    nombre_completo TEXT NOT NULL,
-    programa_original TEXT,
-    fecha_graduacion DATE,
-    nivel_academico TEXT,
-    email TEXT,
-    telefono TEXT,
-    estado_laboral TEXT,
-    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    documentos_subidos TEXT
-);
-
--- Crear tabla de contratados
-CREATE TABLE IF NOT EXISTS contratados (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    matricula TEXT UNIQUE NOT NULL,
-    fecha_contratacion DATE,
-    puesto TEXT,
-    departamento TEXT,
-    estatus TEXT,
-    salario REAL,
-    tipo_contrato TEXT,
-    fecha_inicio DATE,
-    fecha_fin DATE,
-    documentos_subidos TEXT
-);
-
--- Crear tabla de bitacora
-CREATE TABLE IF NOT EXISTS bitacora (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario TEXT,
-    accion TEXT,
-    detalles TEXT,
-    ip TEXT,
-    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Verificar que se insertó el admin
-SELECT '✅ Tablas creadas exitosamente' as mensaje;
-"""
-            
-            # Ejecutar script de inicialización
-            exito, resultado = self.ejecutar_sql_modificacion(init_script)
-            
-            if exito:
-                logger.info("✅ Estructura de base de datos inicializada en servidor remoto")
-                
-                # Verificar que el admin existe
-                logger.info("🔍 Verificando usuario admin...")
-                comando = f"cd \"$(dirname \\\"{self.db_path_remoto}\\\")\" && sqlite3 \"{os.path.basename(self.db_path_remoto)}\" \"SELECT usuario, rol FROM usuarios WHERE usuario='admin'\""
-                salida, error = self.ejecutar_comando_remoto(comando)
-                
-                if salida and 'admin' in salida:
-                    logger.info(f"✅ Usuario admin confirmado: {salida}")
-                else:
-                    logger.warning(f"⚠️ Usuario admin no encontrado: {salida}")
-                
-                estado_sistema.marcar_db_inicializada()
+            if 'BACKUP_CREADO' in salida:
+                logger.info(f"✅ Backup remoto creado")
+                estado_sistema.registrar_backup()
                 return True
             else:
-                logger.error(f"❌ Error inicializando estructura: {resultado}")
+                logger.error(f"❌ Error creando backup remoto: {error}")
                 return False
-                
+            
         except Exception as e:
-            logger.error(f"❌ Error inicializando estructura DB remota: {e}", exc_info=True)
+            logger.error(f"❌ Error en backup remoto: {e}")
             return False
     
     def subir_archivo_remoto(self, archivo_local, ruta_remota):
-        """Subir archivo directamente al servidor remoto - 100% REMOTO"""
+        """Subir archivo directamente al servidor remoto"""
         try:
             if not self.sftp:
                 if not self.conectar_ssh():
@@ -1218,47 +819,21 @@ SELECT '✅ Tablas creadas exitosamente' as mensaje;
                 self.sftp.mkdir(remote_path)
                 logger.info(f"✅ Directorio remoto creado recursivamente: {remote_path}")
     
-    def crear_backup_remoto(self):
-        """Crear backup de la base de datos en servidor remoto"""
-        try:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            backup_path = f"{self.db_path_remoto}.backup_{timestamp}"
-            
-            comando = f"cp '{self.db_path_remoto}' '{backup_path}'"
-            salida, error = self.ejecutar_comando_remoto(comando)
-            
-            if error:
-                logger.error(f"❌ Error creando backup remoto: {error}")
-                return False
-            
-            logger.info(f"✅ Backup remoto creado: {backup_path}")
-            estado_sistema.registrar_backup()
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error en backup remoto: {e}")
-            return False
-    
     def verificar_conexion_ssh(self):
         """Verificar estado de conexión SSH"""
         return self.probar_conexion_inicial()
 
 # =============================================================================
-# 2.2 SISTEMA DE BASE DE DATOS SQLITE - 100% REMOTO
+# 3. SISTEMA DE BASE DE DATOS SQLITE - BASE DE DATOS ÚNICA
 # =============================================================================
 
 class SistemaBaseDatos:
-    """Sistema de base de datos SQLite 100% REMOTO"""
+    """Sistema de base de datos SQLite con base de datos única"""
     
     def __init__(self):
         self.gestor = gestor_remoto
-        self.page_size = 50
-        self.validador = ValidadorDatos()
+        self.page_size = 20
         
-        # No hay archivos locales en versión 100% remota
-        self.db_local_temp = None
-        self.ultima_sincronizacion = None
-    
     def inicializar_db_remota(self):
         """Inicializar base de datos en servidor remoto"""
         try:
@@ -1276,40 +851,20 @@ class SistemaBaseDatos:
                         estado_sistema.marcar_db_inicializada()
                         return True
                     else:
-                        logger.warning("⚠️ Tabla 'usuarios' no encontrada, creando estructura...")
-                        if self.gestor._inicializar_estructura_db_remota():
-                            st.success("✅ Base de datos inicializada con estructura completa")
-                            return True
-                        else:
-                            st.error("❌ Error creando estructura de base de datos")
-                            return False
-                
-                # Crear nueva base de datos
-                if self.gestor.crear_db_remota():
-                    st.success("✅ Base de datos remota creada e inicializada")
-                    return True
+                        logger.warning("⚠️ Tabla 'usuarios' no encontrada")
+                        return False
                 else:
-                    st.error("❌ Error creando base de datos remota")
+                    st.error("❌ Base de datos no encontrada en servidor")
                     return False
         except Exception as e:
             logger.error(f"❌ Error inicializando DB remota: {e}")
             st.error(f"❌ Error: {str(e)}")
             return False
     
-    def ejecutar_consulta_remota(self, consulta_sql, parametros=None):
+    def ejecutar_consulta_remota(self, consulta_sql):
         """Ejecutar consulta SQL en servidor remoto"""
         try:
-            if parametros:
-                # Convertir consulta con parámetros
-                consulta = consulta_sql
-                for i, param in enumerate(parametros):
-                    if isinstance(param, str):
-                        param = param.replace("'", "''")
-                    consulta = consulta.replace(f"?", f"'{param}'", 1)
-            else:
-                consulta = consulta_sql
-            
-            resultado, error = self.gestor.ejecutar_sql_remoto(consulta)
+            resultado, error = self.gestor.ejecutar_sql_remoto(consulta_sql)
             
             if error:
                 logger.error(f"❌ Error en consulta remota: {error}")
@@ -1321,20 +876,10 @@ class SistemaBaseDatos:
             logger.error(f"❌ Error ejecutando consulta remota: {e}")
             return None
     
-    def ejecutar_modificacion_remota(self, consulta_sql, parametros=None):
+    def ejecutar_modificacion_remota(self, consulta_sql):
         """Ejecutar modificación SQL en servidor remoto"""
         try:
-            if parametros:
-                # Convertir consulta con parámetros
-                consulta = consulta_sql
-                for i, param in enumerate(parametros):
-                    if isinstance(param, str):
-                        param = param.replace("'", "''").replace('"', '\\"')
-                    consulta = consulta.replace(f"?", f"'{param}'", 1)
-            else:
-                consulta = consulta_sql
-            
-            exito, resultado = self.gestor.ejecutar_sql_modificacion(consulta)
+            exito, resultado = self.gestor.ejecutar_sql_modificacion(consulta_sql)
             
             if not exito:
                 logger.error(f"❌ Error en modificación remota: {resultado}")
@@ -1347,13 +892,13 @@ class SistemaBaseDatos:
             return False
     
     # =============================================================================
-    # MÉTODOS DE CONSULTA CON PAGINACIÓN - 100% REMOTO
+    # MÉTODOS DE CONSULTA CON PAGINACIÓN
     # =============================================================================
     
     def obtener_usuario(self, usuario):
-        """Obtener usuario por nombre de usuario o matrícula DESDE SERVIDOR REMOTO"""
+        """Obtener usuario por nombre de usuario o matrícula"""
         try:
-            logger.info(f"🔍 Buscando usuario en servidor remoto: {usuario}")
+            logger.info(f"🔍 Buscando usuario en base de datos única: {usuario}")
             
             consulta = f"""
             SELECT * FROM usuarios 
@@ -1387,8 +932,6 @@ class SistemaBaseDatos:
                 return None
             
             stored_password = usuario_data.get('password', '')
-            
-            logger.debug(f"Password almacenado: {stored_password}, Password ingresada: {password}")
             
             # COMPARACIÓN DIRECTA (texto plano)
             if stored_password == password:
@@ -1697,7 +1240,7 @@ class SistemaBaseDatos:
                 random_num = ''.join(random.choices(string.digits, k=4))
                 inscrito_data['matricula'] = f"INS{fecha}{random_num}"
             
-            folio = self.generar_folio_unico()
+            folio = f"FOL{datetime.now().strftime('%y%m%d')}{random.randint(1000, 9999)}"
             
             consulta = f"""
             INSERT INTO inscritos (
@@ -1710,7 +1253,7 @@ class SistemaBaseDatos:
                 '{inscrito_data.get('email', '')}',
                 '{inscrito_data.get('telefono', '')}',
                 '{inscrito_data.get('programa_interes', '')}',
-                '{inscrito_data.get('fecha_registro', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}',
+                '{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}',
                 '{inscrito_data.get('estatus', 'Pre-inscrito')}',
                 '{folio}',
                 '{inscrito_data.get('fecha_nacimiento', '')}',
@@ -1749,14 +1292,14 @@ class SistemaBaseDatos:
                 '{estudiante_data.get('telefono', '')}',
                 '{estudiante_data.get('fecha_nacimiento', '')}',
                 '{estudiante_data.get('genero', '')}',
-                '{estudiante_data.get('fecha_inscripcion', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}',
+                '{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}',
                 '{estudiante_data.get('estatus', 'ACTIVO')}',
                 '{estudiante_data.get('documentos_subidos', '')}',
-                '{estudiante_data.get('fecha_registro', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}',
+                '{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}',
                 '{estudiante_data.get('programa_interes', '')}',
                 '{estudiante_data.get('folio', '')}',
                 '{estudiante_data.get('como_se_entero', '')}',
-                '{estudiante_data.get('fecha_ingreso', datetime.now().strftime('%Y-%m-%d'))}',
+                '{datetime.now().strftime('%Y-%m-%d')}',
                 '{estudiante_data.get('matricula', '')}'
             )
             """
@@ -1785,12 +1328,12 @@ class SistemaBaseDatos:
                 '{egresado_data.get('matricula', '')}',
                 '{egresado_data.get('nombre_completo', '')}',
                 '{egresado_data.get('programa_original', '')}',
-                '{egresado_data.get('fecha_graduacion', datetime.now().strftime('%Y-%m-%d'))}',
+                '{datetime.now().strftime('%Y-%m-%d')}',
                 '{egresado_data.get('nivel_academico', '')}',
                 '{egresado_data.get('email', '')}',
                 '{egresado_data.get('telefono', '')}',
                 '{egresado_data.get('estado_laboral', '')}',
-                '{egresado_data.get('fecha_actualizacion', datetime.now().strftime('%Y-%m-%d'))}',
+                '{datetime.now().strftime('%Y-%m-%d')}',
                 '{egresado_data.get('documentos_subidos', '')}'
             )
             """
@@ -1817,13 +1360,13 @@ class SistemaBaseDatos:
                 fecha_fin, documentos_subidos
             ) VALUES (
                 '{contratado_data.get('matricula', '')}',
-                '{contratado_data.get('fecha_contratacion', datetime.now().strftime('%Y-%m-%d'))}',
+                '{datetime.now().strftime('%Y-%m-%d')}',
                 '{contratado_data.get('puesto', '')}',
                 '{contratado_data.get('departamento', '')}',
                 '{contratado_data.get('estatus', '')}',
                 '{contratado_data.get('salario', '')}',
                 '{contratado_data.get('tipo_contrato', '')}',
-                '{contratado_data.get('fecha_inicio', datetime.now().strftime('%Y-%m-%d'))}',
+                '{datetime.now().strftime('%Y-%m-%d')}',
                 '{contratado_data.get('fecha_fin', datetime.now().strftime('%Y-%m-%d'))}',
                 '{contratado_data.get('documentos_subidos', '')}'
             )
@@ -1881,6 +1424,7 @@ class SistemaBaseDatos:
             
             if exito:
                 logger.info(f"Inscrito eliminado: {matricula}")
+                estado_sistema.registrar_registro_incompleto_eliminado()
                 return True
             return False
         except Exception as e:
@@ -1966,26 +1510,16 @@ class SistemaBaseDatos:
             logger.error(f"Error registrando en bitácora: {e}", exc_info=True)
             return False
     
-    def generar_folio_unico(self):
-        """Generar folio único para publicación anónima"""
-        fecha = datetime.now().strftime('%y%m%d')
-        random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        return f"FOL{fecha}{random_str}"
-    
     def crear_backup_remoto(self):
         """Crear backup en servidor remoto"""
         return self.gestor.crear_backup_remoto()
 
 # =============================================================================
-# 3. CAPA DE SERVICIOS (LÓGICA DE NEGOCIO)
-# =============================================================================
-
-# =============================================================================
-# 3.1 SISTEMA DE BACKUP AUTOMÁTICO - MODIFICADO PARA 100% REMOTO
+# 4. SISTEMA DE BACKUP AUTOMÁTICO
 # =============================================================================
 
 class SistemaBackupAutomatico:
-    """Sistema de backup automático - 100% REMOTO"""
+    """Sistema de backup automático"""
     
     def __init__(self, gestor_ssh):
         self.gestor_ssh = gestor_ssh
@@ -2084,7 +1618,7 @@ class SistemaBackupAutomatico:
             return []
 
 # =============================================================================
-# 3.2 SISTEMA DE NOTIFICACIONES
+# 5. SISTEMA DE NOTIFICACIONES
 # =============================================================================
 
 class SistemaNotificaciones:
@@ -2167,7 +1701,7 @@ class SistemaNotificaciones:
             st.info(f"ℹ️ {mensaje}")
 
 # =============================================================================
-# 3.3 SISTEMA DE AUTENTICACIÓN
+# 6. SISTEMA DE AUTENTICACIÓN
 # =============================================================================
 
 class SistemaAutenticacion:
@@ -2188,9 +1722,8 @@ class SistemaAutenticacion:
                     st.error("❌ ERROR: Base de datos no encontrada en servidor remoto")
                     st.info("""
                     **Solución:**
-                    1. Verifica que la base de datos existe en la ruta configurada
-                    2. Asegúrate que el archivo usuarios.db está en el servidor
-                    3. Confirma la ruta en secrets.toml: `remote_db_usuarios`
+                    1. Verifica que la base de datos escuela.db existe en el servidor
+                    2. Confirma la ruta en secrets.toml: `db_principal`
                     """)
                     return False
                 
@@ -2247,7 +1780,7 @@ class SistemaAutenticacion:
             logger.error(f"Error cerrando sesión: {e}", exc_info=True)
 
 # =============================================================================
-# 3.4 SISTEMA PRINCIPAL - MODIFICADO PARA 100% REMOTO
+# 7. SISTEMA PRINCIPAL
 # =============================================================================
 
 class SistemaPrincipal:
@@ -2256,7 +1789,7 @@ class SistemaPrincipal:
         self.db = db
         self.backup_system = SistemaBackupAutomatico(self.gestor)
         self.notificaciones = SistemaNotificaciones(
-            gestor_remoto.config.get('smtp', {})
+            gestor_remoto.config
         )
         self.validador = ValidadorDatos()
         
@@ -2264,16 +1797,34 @@ class SistemaPrincipal:
         self.current_page_estudiantes = 1
         self.current_page_egresados = 1
         self.current_page_contratados = 1
+        self.current_page_usuarios = 1
         
         self.search_term_inscritos = ""
         self.search_term_estudiantes = ""
         self.search_term_egresados = ""
         self.search_term_contratados = ""
+        self.search_term_usuarios = ""
         
-        # No hay carga inicial de datos - se cargan bajo demanda
+        self.df_inscritos = pd.DataFrame()
+        self.df_estudiantes = pd.DataFrame()
+        self.df_egresados = pd.DataFrame()
+        self.df_contratados = pd.DataFrame()
+        self.df_usuarios = pd.DataFrame()
+        
+        self.total_pages_inscritos = 0
+        self.total_pages_estudiantes = 0
+        self.total_pages_egresados = 0
+        self.total_pages_contratados = 0
+        self.total_pages_usuarios = 0
+        
+        self.total_inscritos = 0
+        self.total_estudiantes = 0
+        self.total_egresados = 0
+        self.total_contratados = 0
+        self.total_usuarios = 0
         
     def cargar_datos_paginados(self):
-        """Cargar datos desde la base de datos REMOTA con paginación"""
+        """Cargar datos desde la base de datos remota con paginación"""
         try:
             with st.spinner("📊 Cargando datos desde servidor remoto..."):
                 self.df_inscritos, self.total_pages_inscritos, self.total_inscritos = self.db.obtener_inscritos(
@@ -2297,39 +1848,25 @@ class SistemaPrincipal:
                 )
                 
                 self.df_usuarios, self.total_pages_usuarios, self.total_usuarios = self.db.obtener_usuarios(
-                    page=1, search_term=""
+                    page=self.current_page_usuarios,
+                    search_term=self.search_term_usuarios
                 )
                 
                 logger.info(f"""
-                📊 Datos cargados REMOTAMENTE:
+                📊 Datos cargados desde base de datos única:
                 - Inscritos: {self.total_inscritos} registros (página {self.current_page_inscritos}/{self.total_pages_inscritos})
                 - Estudiantes: {self.total_estudiantes} registros (página {self.current_page_estudiantes}/{self.total_pages_estudiantes})
                 - Egresados: {self.total_egresados} registros (página {self.current_page_egresados}/{self.total_pages_egresados})
                 - Contratados: {self.total_contratados} registros (página {self.current_page_contratados}/{self.total_pages_contratados})
+                - Usuarios: {self.total_usuarios} registros (página {self.current_page_usuarios}/{self.total_pages_usuarios})
                 """)
                 
         except Exception as e:
             logger.error(f"Error cargando datos remotos: {e}", exc_info=True)
-            self.df_inscritos = pd.DataFrame()
-            self.df_estudiantes = pd.DataFrame()
-            self.df_egresados = pd.DataFrame()
-            self.df_contratados = pd.DataFrame()
-            self.df_usuarios = pd.DataFrame()
-            
-            self.total_pages_inscritos = 0
-            self.total_pages_estudiantes = 0
-            self.total_pages_egresados = 0
-            self.total_pages_contratados = 0
-            self.total_pages_usuarios = 0
-            
-            self.total_inscritos = 0
-            self.total_estudiantes = 0
-            self.total_egresados = 0
-            self.total_contratados = 0
-            self.total_usuarios = 0
+            st.error(f"❌ Error cargando datos: {e}")
 
 # =============================================================================
-# 4. CAPA DE INTERFAZ (STREAMLIT UI)
+# 8. INTERFAZ STREAMLIT
 # =============================================================================
 
 # Instancias globales de los servicios
@@ -2339,13 +1876,9 @@ db = SistemaBaseDatos()
 auth = SistemaAutenticacion()
 sistema_principal = None
 
-# =============================================================================
-# 4.1 FUNCIONES DE INTERFAZ
-# =============================================================================
-
 def mostrar_login():
-    """Interfaz de login - SIEMPRE MOSTRAR FORMULARIO"""
-    st.title("🏥 Sistema Escuela Enfermería - 100% REMOTO")
+    """Interfaz de login"""
+    st.title("🏥 Sistema Escuela Enfermería - Base de Datos Única")
     st.markdown("---")
     
     # Mostrar estado de conexión
@@ -2353,9 +1886,9 @@ def mostrar_login():
     
     with col1:
         if gestor_remoto.verificar_existencia_db():
-            st.success("✅ Base de datos remota encontrada")
+            st.success("✅ Base de datos encontrada")
         else:
-            st.error("❌ Base de datos NO encontrada en servidor")
+            st.error("❌ Base de datos NO encontrada")
     
     with col2:
         if estado_sistema.estado.get('ssh_conectado'):
@@ -2364,108 +1897,40 @@ def mostrar_login():
             st.error("❌ SSH Desconectado")
     
     with col3:
-        temp_dir = tempfile.gettempdir()
-        espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-        if espacio_ok:
-            st.success(f"💾 Espacio: {espacio_mb:.0f} MB")
-        else:
-            st.warning(f"💾 Espacio: {espacio_mb:.0f} MB")
+        st.info(f"📁 DB: escuela.db")
     
     st.markdown("---")
     
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         with st.form("login_form"):
-            st.subheader("Iniciar Sesión - 100% REMOTO")
+            st.subheader("Iniciar Sesión")
             
-            usuario = st.text_input("👤 Usuario", placeholder="admin", key="login_usuario")
-            password = st.text_input("🔒 Contraseña", type="password", placeholder="Admin123!", key="login_password")
+            usuario = st.text_input("👤 Usuario", placeholder="usuario", key="login_usuario")
+            password = st.text_input("🔒 Contraseña", type="password", placeholder="contraseña", key="login_password")
             
             login_button = st.form_submit_button("🚀 Iniciar Sesión", use_container_width=True)
 
             if login_button:
                 if usuario and password:
-                    with st.spinner("Verificando credenciales en servidor remoto..."):
-                        # DIAGNÓSTICO DETALLADO
-                        st.info("🔍 Ejecutando diagnóstico de conexión...")
-                        
-                        # 1. Verificar conexión SSH
-                        if not gestor_remoto.conectar_ssh():
-                            st.error("❌ ERROR: No se puede conectar al servidor SSH")
-                            return
-                        
-                        # 2. Verificar si la base de datos existe
-                        if not gestor_remoto.verificar_existencia_db():
-                            st.error(f"""
-                            ❌ ERROR: Base de datos de autenticación no encontrada
-                            
-                            **Ruta esperada:** {gestor_remoto.db_path_remoto}
-                            **Modo 100% REMOTO:** Solo usa archivos en servidor
-                            
-                            **Solución:**
-                            1. Verifica que usuarios.db existe en el servidor
-                            2. Confirma la ruta en secrets.toml:
-                               remote_db_usuarios = "/home/POLANCO6/ESCUELANUEVA/datos/usuarios.db"
-                            3. Ejecuta el script de limpieza en el servidor
-                            """)
-                            return
-                        
-                        # 3. Intentar login
+                    with st.spinner("Verificando credenciales..."):
                         if auth.verificar_login(usuario, password):
                             st.success("✅ Login exitoso")
                             st.rerun()
                         else:
-                            st.error("❌ Credenciales incorrectas o usuario no existe")
-                            
-                            # Información adicional de diagnóstico
-                            with st.expander("🔧 Más información del error"):
-                                st.write(f"**Base de datos usada:** {gestor_remoto.db_path_remoto}")
-                                st.write(f"**Usuario intentado:** {usuario}")
-                                
-                                # Verificar si el usuario existe
-                                try:
-                                    usuario_data = db.obtener_usuario(usuario)
-                                    if usuario_data:
-                                        st.write("✅ Usuario encontrado en la base de datos")
-                                        stored_pass = usuario_data.get('password', '')
-                                        st.write(f"**Password almacenado:** {stored_pass}")
-                                        st.write(f"**Password ingresado:** {password}")
-                                    else:
-                                        st.write("❌ Usuario NO encontrado en la base de datos")
-                                except Exception as e:
-                                    st.write(f"⚠️ Error verificando usuario: {e}")
+                            st.error("❌ Credenciales incorrectas")
                 else:
                     st.warning("⚠️ Complete todos los campos")
             
-            with st.expander("ℹ️ Información de acceso 100% REMOTO"):
+            with st.expander("ℹ️ Información de acceso"):
                 st.info("""
-                **Configuración necesaria para login 100% REMOTO:**
+                **Configuración del sistema:**
                 
-                1. ✅ **Base de datos debe existir** en servidor remoto
-                2. ✅ **Tabla 'usuarios' debe existir** con estructura correcta
-                3. ✅ **Usuario admin debe estar creado** en la tabla usuarios
+                1. ✅ **Base de datos única:** escuela.db
+                2. ✅ **Conexión SSH:** Al servidor remoto
+                3. ✅ **Usuario admin:** Debe existir en la tabla usuarios
                 
-                **Credenciales por defecto (deben existir en el servidor):**
-                - 👤 Usuario: **admin**
-                - 🔒 Contraseña: **Admin123!**
-                
-                **Estructura mínima de tabla usuarios:**
-                ```sql
-                CREATE TABLE usuarios (
-                    id INTEGER PRIMARY KEY,
-                    usuario TEXT UNIQUE NOT NULL,
-                    password TEXT NOT NULL,
-                    rol TEXT,
-                    nombre_completo TEXT,
-                    email TEXT,
-                    activo INTEGER DEFAULT 1
-                );
-                
-                INSERT INTO usuarios (usuario, password, rol, nombre_completo, email)
-                VALUES ('admin', 'Admin123!', 'administrador', 'Administrador', 'admin@escuela.edu.mx');
-                ```
-                
-                **IMPORTANTE:** La base de datos y usuario deben crearse MANUALMENTE en el servidor.
+                **Base de datos:** Todos los datos se almacenan en el servidor remoto.
                 """)
 
 def mostrar_interfaz_principal():
@@ -2476,13 +1941,13 @@ def mostrar_interfaz_principal():
     col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
 
     with col1:
-        st.title("🏥 Sistema Escuela Enfermería - 100% REMOTO")
+        st.title("🏥 Sistema Escuela Enfermería - Base de Datos Única")
         nombre_usuario = usuario_actual.get('nombre_completo', usuario_actual.get('usuario', 'Usuario'))
         st.write(f"**👤 Usuario:** {nombre_usuario} | **🎭 Rol:** {usuario_actual.get('rol', 'usuario')}")
 
     with col2:
-        if gestor_remoto.config.get('host'):
-            st.write(f"**🔗 Servidor:** {gestor_remoto.config['host']}")
+        if gestor_remoto.config.get('ssh_host'):
+            st.write(f"**🔗 Conectado al servidor**")
 
     with col3:
         if st.button("🔄 Recargar Datos", use_container_width=True):
@@ -2530,7 +1995,7 @@ def mostrar_interfaz_principal():
 def mostrar_dashboard():
     """Dashboard principal"""
     global sistema_principal
-    st.header("📊 Dashboard - 100% REMOTO")
+    st.header("📊 Dashboard - Base de Datos Única")
     
     if sistema_principal is None:
         st.error("❌ Sistema principal no inicializado")
@@ -2540,7 +2005,7 @@ def mostrar_dashboard():
     if sistema_principal.total_inscritos == 0:
         sistema_principal.cargar_datos_paginados()
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("👥 Inscritos", sistema_principal.total_inscritos)
@@ -2554,124 +2019,89 @@ def mostrar_dashboard():
     with col4:
         st.metric("💼 Contratados", sistema_principal.total_contratados)
     
+    with col5:
+        st.metric("👤 Usuarios", sistema_principal.total_usuarios)
+    
     st.markdown("---")
     
-    col_left, col_right = st.columns(2)
+    # Información del sistema
+    col_info1, col_info2 = st.columns(2)
     
-    with col_left:
-        st.subheader("📈 Distribución por Categoría")
-        
-        datos_categorias = {
-            'Inscritos': sistema_principal.total_inscritos,
-            'Estudiantes': sistema_principal.total_estudiantes,
-            'Egresados': sistema_principal.total_egresados,
-            'Contratados': sistema_principal.total_contratados
-        }
-        
-        if sum(datos_categorias.values()) > 0:
-            import plotly.express as px
-            df_categorias = pd.DataFrame({
-                'Categoría': list(datos_categorias.keys()),
-                'Cantidad': list(datos_categorias.values())
-            })
-            
-            fig = px.pie(df_categorias, values='Cantidad', names='Categoría',
-                        title='Distribución de Personas por Categoría')
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("ℹ️ No hay datos para mostrar gráficos")
-    
-    with col_right:
-        st.subheader("🔗 Estado del Sistema 100% REMOTO")
+    with col_info1:
+        st.subheader("🔗 Estado del Sistema")
         
         if estado_sistema.estado.get('ssh_conectado'):
             st.success("✅ SSH Conectado")
-            if gestor_remoto.config.get('host'):
-                st.info(f"Servidor: {gestor_remoto.config['host']}")
         else:
             st.error("❌ SSH Desconectado")
-        
-        ultima_sync = estado_sistema.estado.get('ultima_sincronizacion')
-        if ultima_sync:
-            try:
-                fecha_sync = datetime.fromisoformat(ultima_sync)
-                st.info(f"🔄 Última operación: {fecha_sync.strftime('%Y-%m-%d %H:%M')}")
-            except:
-                pass
         
         if gestor_remoto.verificar_existencia_db():
             st.success("✅ Base de datos en servidor remoto")
         else:
             st.error("❌ Base de datos NO encontrada en servidor")
         
-        backups = sistema_principal.backup_system.listar_backups()
-        if backups:
-            st.success(f"💾 {len(backups)} backups registrados")
-        else:
-            st.info("💾 No hay backups registrados")
+        stats = estado_sistema.estado.get('estadisticas_sistema', {})
+        st.write(f"📈 Sesiones exitosas: {stats.get('sesiones', 0)}")
+        st.write(f"🔄 Backups realizados: {estado_sistema.estado.get('backups_realizados', 0)}")
+        st.write(f"🗑️ Registros eliminados: {estado_sistema.estado.get('registros_incompletos_eliminados', 0)}")
+    
+    with col_info2:
+        st.subheader("📋 Tablas Disponibles")
+        try:
+            consulta = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            resultado = db.ejecutar_consulta_remota(consulta)
+            
+            if resultado:
+                st.write(f"✅ {len(resultado)} tablas en base de datos:")
+                for tabla in resultado:
+                    nombre_tabla = tabla.get('name', '')
+                    count_consulta = f"SELECT COUNT(*) as total FROM {nombre_tabla}"
+                    count_result = db.ejecutar_consulta_remota(count_consulta)
+                    count = count_result[0].get('total', 0) if count_result else 0
+                    st.write(f"- **{nombre_tabla}**: {count} registros")
+            else:
+                st.info("ℹ️ No se pudieron obtener las tablas")
+        except:
+            st.info("ℹ️ No se pudieron obtener las tablas")
     
     st.markdown("---")
-    st.subheader("🚀 Acciones Rápidas 100% REMOTO")
+    st.subheader("🚀 Acciones Rápidas")
     
     col_act1, col_act2, col_act3 = st.columns(3)
     
     with col_act1:
         if st.button("📊 Cargar Datos", use_container_width=True):
-            with st.spinner("Cargando datos desde servidor remoto..."):
+            with st.spinner("Cargando datos desde servidor..."):
                 sistema_principal.cargar_datos_paginados()
-                st.success("✅ Datos cargados desde servidor remoto")
+                st.success("✅ Datos cargados")
                 st.rerun()
     
     with col_act2:
-        if st.button("💾 Crear Backup Remoto", use_container_width=True):
-            with st.spinner("Creando backup en servidor remoto..."):
-                backup_path = sistema_principal.backup_system.crear_backup(
-                    "MANUAL_DASHBOARD",
-                    "Backup manual creado desde dashboard"
-                )
-                if backup_path:
-                    st.success(f"✅ Backup creado en servidor remoto")
-                else:
-                    st.error("❌ Error creando backup remoto")
+        if st.button("💾 Crear Backup", use_container_width=True):
+            with st.spinner("Creando backup..."):
+                if sistema_principal:
+                    backup_path = sistema_principal.backup_system.crear_backup(
+                        "MANUAL_DASHBOARD",
+                        "Backup manual creado desde dashboard"
+                    )
+                    if backup_path:
+                        st.success(f"✅ Backup creado en servidor remoto")
+                    else:
+                        st.error("❌ Error creando backup")
     
     with col_act3:
         if st.button("🔗 Probar Conexión", use_container_width=True):
-            with st.spinner("Probando conexión SSH..."):
+            with st.spinner("Probando conexión..."):
                 if gestor_remoto.verificar_conexion_ssh():
                     st.success("✅ Conexión SSH exitosa")
                     st.rerun()
                 else:
                     st.error("❌ Conexión SSH fallida")
-    
-    st.markdown("---")
-    st.subheader("📋 Información del Sistema")
-    
-    with st.expander("🔍 Ver detalles técnicos"):
-        col_tech1, col_tech2 = st.columns(2)
-        
-        with col_tech1:
-            st.write("**Configuración SSH:**")
-            if gestor_remoto.config.get('host'):
-                st.write(f"- Host: {gestor_remoto.config['host']}")
-                st.write(f"- Puerto: {gestor_remoto.config.get('port', 22)}")
-                st.write(f"- Usuario: {gestor_remoto.config['username']}")
-            
-            st.write("**Rutas remotas:**")
-            st.write(f"- DB Usuarios: {gestor_remoto.config.get('remote_db_usuarios', 'No configurada')}")
-            st.write(f"- DB Aspirantes: {gestor_remoto.config.get('remote_db_aspirantes', 'No configurada')}")
-            st.write(f"- Uploads: {gestor_remoto.config.get('remote_uploads_path', 'No configurada')}")
-        
-        with col_tech2:
-            st.write("**Estadísticas del sistema:**")
-            stats = estado_sistema.estado.get('estadisticas_sistema', {})
-            st.write(f"- Sesiones exitosas: {stats.get('sesiones', 0)}")
-            st.write(f"- Backups realizados: {estado_sistema.estado.get('backups_realizados', 0)}")
-            st.write(f"- Total sesiones: {estado_sistema.estado.get('sesiones_iniciadas', 0)}")
 
 def mostrar_inscritos():
-    """Interfaz para gestión de inscritos - 100% REMOTO"""
+    """Interfaz para gestión de inscritos"""
     global sistema_principal
-    st.header("📝 Gestión de Inscritos - 100% REMOTO")
+    st.header("📝 Gestión de Inscritos")
     
     if sistema_principal is None:
         sistema_principal = SistemaPrincipal()
@@ -2680,7 +2110,7 @@ def mostrar_inscritos():
     if sistema_principal.df_inscritos.empty:
         sistema_principal.cargar_datos_paginados()
     
-    tab1, tab2 = st.tabs(["📋 Lista de Inscritos", "➕ Agregar Inscrito"])
+    tab1, tab2, tab3 = st.tabs(["📋 Lista de Inscritos", "➕ Agregar Inscrito", "⚡ Acciones Rápidas"])
     
     with tab1:
         if sistema_principal.total_inscritos == 0:
@@ -2702,7 +2132,7 @@ def mostrar_inscritos():
             search_term = st.text_input(
                 "Buscar por matrícula, nombre o email:", 
                 value=sistema_principal.search_term_inscritos,
-                key="search_inscritos_tabla"
+                key="search_inscritos"
             )
             
             if st.button("🔎 Buscar", key="btn_buscar_inscritos"):
@@ -2720,24 +2150,26 @@ def mostrar_inscritos():
             else:
                 st.info("ℹ️ No hay inscritos que coincidan con la búsqueda")
             
-            col_prev, col_page, col_next = st.columns([1, 2, 1])
-            
-            with col_prev:
-                if sistema_principal.current_page_inscritos > 1:
-                    if st.button("⬅️ Página Anterior", use_container_width=True):
-                        sistema_principal.current_page_inscritos -= 1
-                        sistema_principal.cargar_datos_paginados()
-                        st.rerun()
-            
-            with col_page:
-                st.write(f"**Página {sistema_principal.current_page_inscritos} de {max(1, sistema_principal.total_pages_inscritos)}**")
-            
-            with col_next:
-                if sistema_principal.current_page_inscritos < sistema_principal.total_pages_inscritos:
-                    if st.button("Página Siguiente ➡️", use_container_width=True):
-                        sistema_principal.current_page_inscritos += 1
-                        sistema_principal.cargar_datos_paginados()
-                        st.rerun()
+            # Navegación de páginas
+            if sistema_principal.total_pages_inscritos > 1:
+                col_prev, col_page, col_next = st.columns([1, 2, 1])
+                
+                with col_prev:
+                    if sistema_principal.current_page_inscritos > 1:
+                        if st.button("⬅️ Anterior", key="prev_inscritos"):
+                            sistema_principal.current_page_inscritos -= 1
+                            sistema_principal.cargar_datos_paginados()
+                            st.rerun()
+                
+                with col_page:
+                    st.write(f"**Página {sistema_principal.current_page_inscritos} de {sistema_principal.total_pages_inscritos}**")
+                
+                with col_next:
+                    if sistema_principal.current_page_inscritos < sistema_principal.total_pages_inscritos:
+                        if st.button("Siguiente ➡️", key="next_inscritos"):
+                            sistema_principal.current_page_inscritos += 1
+                            sistema_principal.cargar_datos_paginados()
+                            st.rerun()
     
     with tab2:
         st.subheader("➕ Agregar Nuevo Inscrito")
@@ -2746,16 +2178,14 @@ def mostrar_inscritos():
             col_i1, col_i2 = st.columns(2)
             
             with col_i1:
-                nombre_completo = st.text_input("Nombre Completo*", placeholder="Juan Pérez López")
-                email = st.text_input("Email*", placeholder="juan@ejemplo.com")
-                telefono = st.text_input("Teléfono", placeholder="5512345678")
-                programa_interes = st.selectbox("Programa de Interés*", ["", "Licenciatura en Enfermería", "Especialidad en Enfermería Cardiovascular", "Maestría en Ciencias Cardiológicas", "Diplomado de Cardiología Básica", "Curso de RCP Avanzado"])
+                nombre_completo = st.text_input("Nombre Completo*", placeholder="Nombre Apellidos")
+                email = st.text_input("Email*", placeholder="correo@ejemplo.com")
+                telefono = st.text_input("Teléfono", placeholder="Número telefónico")
             
             with col_i2:
+                programa_interes = st.selectbox("Programa de Interés*", ["", "Licenciatura en Enfermería", "Especialidad en Enfermería Clínica", "Maestría en Ciencias de la Salud", "Diplomado en Salud Pública", "Curso de RCP Básico"])
                 fecha_nacimiento = st.date_input("Fecha de Nacimiento", value=datetime(2000, 1, 1))
-                como_se_entero = st.selectbox("¿Cómo se enteró?", ["", "Internet", "Redes Sociales", "Amigo/Familiar", "Publicidad", "Otro"])
                 documentos_subidos = st.number_input("Documentos Subidos", min_value=0, max_value=20, value=0)
-                estatus = st.selectbox("Estatus", ["Pre-inscrito", "En revisión", "Aceptado", "Rechazado"])
             
             submit_inscrito = st.form_submit_button("📝 Registrar Inscrito")
             
@@ -2773,14 +2203,12 @@ def mostrar_inscritos():
                         'telefono': telefono,
                         'programa_interes': programa_interes,
                         'fecha_nacimiento': fecha_nacimiento.strftime('%Y-%m-%d') if fecha_nacimiento else None,
-                        'como_se_entero': como_se_entero,
                         'documentos_subidos': documentos_subidos,
-                        'estatus': estatus,
-                        'fecha_registro': datetime.now()
+                        'estatus': 'Pre-inscrito'
                     }
                     
                     if db.agregar_inscrito(inscrito_data):
-                        st.success("✅ Inscrito agregado exitosamente al servidor remoto")
+                        st.success("✅ Inscrito agregado exitosamente")
                         
                         # Crear backup automático
                         sistema_principal.backup_system.crear_backup(
@@ -2788,16 +2216,36 @@ def mostrar_inscritos():
                             f"Nuevo inscrito: {nombre_completo} - {email}"
                         )
                         
-                        # Recargar datos
+                        # Enviar notificación
+                        sistema_principal.notificaciones.mostrar_notificacion_streamlit(
+                            "success",
+                            f"Inscrito {nombre_completo} agregado exitosamente"
+                        )
+                        
                         sistema_principal.cargar_datos_paginados()
                         st.rerun()
                     else:
                         st.error("❌ Error agregando inscrito")
+    
+    with tab3:
+        st.subheader("⚡ Acciones Rápidas")
+        
+        col_acc1, col_acc2 = st.columns(2)
+        
+        with col_acc1:
+            if st.button("🗑️ Eliminar Duplicados", use_container_width=True):
+                with st.spinner("Buscando duplicados..."):
+                    st.info("🔍 Función de eliminación de duplicados en desarrollo")
+        
+        with col_acc2:
+            if st.button("📧 Enviar Recordatorios", use_container_width=True):
+                with st.spinner("Enviando recordatorios..."):
+                    st.info("📧 Función de recordatorios en desarrollo")
 
 def mostrar_estudiantes():
-    """Interfaz para gestión de estudiantes - 100% REMOTO"""
+    """Interfaz para gestión de estudiantes"""
     global sistema_principal
-    st.header("🎓 Gestión de Estudiantes - 100% REMOTO")
+    st.header("🎓 Gestión de Estudiantes")
     
     if sistema_principal is None:
         sistema_principal = SistemaPrincipal()
@@ -2809,63 +2257,18 @@ def mostrar_estudiantes():
     if sistema_principal.total_estudiantes == 0:
         st.warning("🎓 No hay estudiantes registrados")
     else:
-        col_stat1, col_stat2, col_stat3 = st.columns(3)
-        
-        with col_stat1:
-            st.metric("Total Estudiantes", sistema_principal.total_estudiantes)
-        
-        with col_stat2:
-            st.metric("Página Actual", f"{sistema_principal.current_page_estudiantes}/{max(1, sistema_principal.total_pages_estudiantes)}")
-        
-        with col_stat3:
-            registros_pagina = len(sistema_principal.df_estudiantes)
-            st.metric("En esta página", registros_pagina)
-        
-        st.subheader("🔍 Buscar Estudiante")
-        search_term = st.text_input(
-            "Buscar por matrícula, nombre o email:", 
-            value=sistema_principal.search_term_estudiantes,
-            key="search_estudiantes"
+        st.dataframe(
+            sistema_principal.df_estudiantes,
+            use_container_width=True,
+            hide_index=True
         )
         
-        if st.button("🔎 Buscar Estudiantes", key="btn_buscar_estudiantes"):
-            sistema_principal.search_term_estudiantes = search_term
-            sistema_principal.current_page_estudiantes = 1
-            sistema_principal.cargar_datos_paginados()
-            st.rerun()
-        
-        if not sistema_principal.df_estudiantes.empty:
-            st.dataframe(
-                sistema_principal.df_estudiantes,
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("ℹ️ No hay estudiantes que coincidan con la búsqueda")
-        
-        col_prev, col_page, col_next = st.columns([1, 2, 1])
-        
-        with col_prev:
-            if sistema_principal.current_page_estudiantes > 1:
-                if st.button("⬅️ Página Anterior", key="prev_estudiantes", use_container_width=True):
-                    sistema_principal.current_page_estudiantes -= 1
-                    sistema_principal.cargar_datos_paginados()
-                    st.rerun()
-        
-        with col_page:
-            st.write(f"**Página {sistema_principal.current_page_estudiantes} de {max(1, sistema_principal.total_pages_estudiantes)}**")
-        
-        with col_next:
-            if sistema_principal.current_page_estudiantes < sistema_principal.total_pages_estudiantes:
-                if st.button("Página Siguiente ➡️", key="next_estudiantes", use_container_width=True):
-                    sistema_principal.current_page_estudiantes += 1
-                    sistema_principal.cargar_datos_paginados()
-                    st.rerun()
+        st.info(f"📊 Total de estudiantes: {sistema_principal.total_estudiantes}")
 
 def mostrar_egresados():
-    """Interfaz para gestión de egresados - 100% REMOTO"""
+    """Interfaz para gestión de egresados"""
     global sistema_principal
-    st.header("🏆 Gestión de Egresados - 100% REMOTO")
+    st.header("🏆 Gestión de Egresados")
     
     if sistema_principal is None:
         sistema_principal = SistemaPrincipal()
@@ -2886,9 +2289,9 @@ def mostrar_egresados():
         st.info(f"📊 Total de egresados: {sistema_principal.total_egresados}")
 
 def mostrar_contratados():
-    """Interfaz para gestión de contratados - 100% REMOTO"""
+    """Interfaz para gestión de contratados"""
     global sistema_principal
-    st.header("💼 Gestión de Contratados - 100% REMOTO")
+    st.header("💼 Gestión de Contratados")
     
     if sistema_principal is None:
         sistema_principal = SistemaPrincipal()
@@ -2909,125 +2312,97 @@ def mostrar_contratados():
         st.info(f"📊 Total de contratados: {sistema_principal.total_contratados}")
 
 def mostrar_usuarios():
-    """Interfaz para gestión de usuarios - 100% REMOTO"""
+    """Interfaz para gestión de usuarios"""
     global sistema_principal
-    st.header("👥 Gestión de Usuarios - 100% REMOTO")
+    st.header("👥 Gestión de Usuarios")
     
     if sistema_principal is None:
         sistema_principal = SistemaPrincipal()
     
-    try:
-        df_usuarios, total_pages, total_usuarios = db.obtener_usuarios(page=1)
-
-        if total_usuarios == 0:
-            st.warning("📭 No hay usuarios registrados")
-        else:
-            st.subheader("📋 Lista de Usuarios")
-            st.dataframe(
-                df_usuarios[['usuario', 'nombre_completo', 'rol', 'email', 'matricula', 'activo']],
-                use_container_width=True,
-                hide_index=True
-            )
+    # Cargar datos si no están cargados
+    if sistema_principal.df_usuarios.empty:
+        sistema_principal.cargar_datos_paginados()
+    
+    if sistema_principal.total_usuarios == 0:
+        st.warning("📭 No hay usuarios registrados")
+    else:
+        st.dataframe(
+            sistema_principal.df_usuarios,
+            use_container_width=True,
+            hide_index=True
+        )
         
-        st.subheader("➕ Agregar Nuevo Usuario")
-
-        with st.form("form_agregar_usuario"):
-            col_u1, col_u2 = st.columns(2)
-
-            with col_u1:
-                usuario = st.text_input("Usuario*", placeholder="nuevo_usuario")
-                password = st.text_input("Contraseña*", type="password", placeholder="********")
-                rol = st.selectbox("Rol*", ["administrador", "usuario", "inscrito", "estudiante"])
-                nombre_completo = st.text_input("Nombre Completo*", placeholder="Nombre Apellido")
-
-            with col_u2:
-                email = st.text_input("Email*", placeholder="usuario@ejemplo.com")
-                matricula = st.text_input("Matrícula", placeholder="USR-001")
-                categoria_academica = st.selectbox("Categoría Académica", ["", "pregrado", "posgrado", "licenciatura", "educacion_continua"])
-                tipo_programa = st.selectbox("Tipo de Programa", ["", "LICENCIATURA", "ESPECIALIDAD", "MAESTRIA", "DIPLOMADO", "CURSO"])
-
-            submit_usuario = st.form_submit_button("👤 Crear Usuario")
-
-            if submit_usuario:
-                if not usuario or not password or not rol or not nombre_completo or not email:
-                    st.error("❌ Los campos marcados con * son obligatorios")
-                elif not ValidadorDatos.validar_email(email):
-                    st.error("❌ Formato de email inválido")
-                else:
-                    usuario_data = {
-                        'usuario': usuario,
-                        'password': password,
-                        'rol': rol,
-                        'nombre_completo': nombre_completo,
-                        'email': email,
-                        'matricula': matricula if matricula else None,
-                        'activo': True,
-                        'categoria_academica': categoria_academica if categoria_academica else None,
-                        'tipo_programa': tipo_programa if tipo_programa else None
-                    }
+        st.info(f"📊 Total de usuarios: {sistema_principal.total_usuarios}")
+    
+    st.subheader("➕ Agregar Nuevo Usuario")
+    
+    with st.form("form_agregar_usuario"):
+        col_u1, col_u2 = st.columns(2)
+        
+        with col_u1:
+            usuario = st.text_input("Usuario*", placeholder="nuevo_usuario")
+            password = st.text_input("Contraseña*", type="password", placeholder="********")
+            rol = st.selectbox("Rol*", ["administrador", "usuario", "estudiante"])
+        
+        with col_u2:
+            nombre_completo = st.text_input("Nombre Completo*", placeholder="Nombre Apellido")
+            email = st.text_input("Email*", placeholder="usuario@ejemplo.com")
+            matricula = st.text_input("Matrícula", placeholder="USR-001")
+        
+        submit_usuario = st.form_submit_button("👤 Crear Usuario")
+        
+        if submit_usuario:
+            if not usuario or not password or not rol or not nombre_completo or not email:
+                st.error("❌ Los campos marcados con * son obligatorios")
+            elif not ValidadorDatos.validar_email(email):
+                st.error("❌ Formato de email inválido")
+            else:
+                usuario_data = {
+                    'usuario': usuario,
+                    'password': password,
+                    'rol': rol,
+                    'nombre_completo': nombre_completo,
+                    'email': email,
+                    'matricula': matricula if matricula else None,
+                    'activo': True
+                }
+                
+                if db.agregar_usuario(usuario_data):
+                    st.success(f"✅ Usuario {usuario} creado exitosamente")
                     
-                    if db.agregar_usuario(usuario_data):
-                        st.success(f"✅ Usuario {usuario} creado exitosamente en servidor remoto")
-                        
-                        # Crear backup automático
-                        sistema_principal.backup_system.crear_backup(
-                            "AGREGAR_USUARIO",
-                            f"Nuevo usuario: {usuario} - {rol}"
-                        )
-                        
-                        st.rerun()
-                    else:
-                        st.error("❌ Error creando usuario")
-
-        with st.expander("🔐 Información de Seguridad 100% REMOTO"):
-            st.info("""
-            **Características de seguridad implementadas:**
-            ✅ **Operaciones 100% remotas** - Sin archivos locales
-            ✅ **Conexión SSH segura** con timeout configurable
-            ✅ **Backups automáticos** en servidor remoto
-            ✅ **Registro de bitácora** de todas las operaciones
-            ✅ **Contraseñas almacenadas** en servidor remoto
-            ✅ **Validaciones de datos** antes de operaciones
-            """)
-
-    except Exception as e:
-        st.error(f"❌ Error obteniendo usuarios: {e}")
+                    # Crear backup automático
+                    sistema_principal.backup_system.crear_backup(
+                        "AGREGAR_USUARIO",
+                        f"Nuevo usuario: {usuario} - {rol}"
+                    )
+                    
+                    sistema_principal.cargar_datos_paginados()
+                    st.rerun()
+                else:
+                    st.error("❌ Error creando usuario")
 
 def mostrar_configuracion():
-    """Interfaz para configuración del sistema - 100% REMOTO"""
+    """Interfaz para configuración del sistema"""
     global sistema_principal
-    st.header("⚙️ Configuración del Sistema - 100% REMOTO")
+    st.header("⚙️ Configuración del Sistema")
 
     if sistema_principal is None:
         st.error("❌ Sistema principal no inicializado")
         return
 
-    st.subheader("🔧 Información del Sistema 100% REMOTO")
+    st.subheader("🔧 Información del Sistema")
 
     col_info1, col_info2 = st.columns(2)
 
     with col_info1:
-        st.write("**📊 Estado del Sistema:**")
+        st.write("📊 Estado del Sistema:")
         if gestor_remoto.verificar_existencia_db():
             st.success("✅ Base de datos encontrada en servidor remoto")
-            # Verificar tablas básicas
-            try:
-                consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
-                resultado = db.ejecutar_consulta_remota(consulta)
-                if resultado and len(resultado) > 0:
-                    st.write("✅ Tabla 'usuarios' encontrada")
-                else:
-                    st.error("❌ Tabla 'usuarios' no encontrada")
-            except:
-                pass
         else:
             st.error("❌ Base de datos NO encontrada en servidor")
 
         if estado_sistema.estado.get('ssh_conectado'):
             st.success("✅ SSH Conectado")
-            if gestor_remoto.config.get('host'):
-                st.write(f"🌐 Servidor: {gestor_remoto.config['host']}")
-                st.write(f"🔌 Puerto: {gestor_remoto.config.get('port', 22)}")
         else:
             st.error("❌ SSH Desconectado")
             error_ssh = estado_sistema.estado.get('ssh_error')
@@ -3035,42 +2410,18 @@ def mostrar_configuracion():
                 st.error(f"⚠️ Error: {error_ssh}")
 
     with col_info2:
-        st.write("**💾 Recursos y Estadísticas:**")
-
-        temp_dir = tempfile.gettempdir()
-        espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-
-        if espacio_ok:
-            st.success(f"✅ Espacio temporal disponible: {espacio_mb:.0f} MB")
-        else:
-            st.warning(f"⚠️ Espacio temporal bajo: {espacio_mb:.0f} MB")
-
-        backups = sistema_principal.backup_system.listar_backups()
-        if backups:
-            st.success(f"✅ {len(backups)} backups registrados")
-        else:
-            st.info("ℹ️ No hay backups registrados")
-
-        stats = estado_sistema.estado.get('estadisticas_sistema', {})
-        st.write(f"📈 Sesiones exitosas: {stats.get('sesiones', 0)}")
-        st.write(f"🔄 Backups realizados: {estado_sistema.estado.get('backups_realizados', 0)}")
-        st.write(f"👥 Total sesiones: {estado_sistema.estado.get('sesiones_iniciadas', 0)}")
-    
-    st.markdown("---")
-    st.subheader("🔗 Configuración SSH")
-    
-    with st.expander("📋 Ver configuración actual"):
-        if gestor_remoto.config.get('host'):
-            config_show = gestor_remoto.config.copy()
-            # Ocultar información sensible
-            if 'password' in config_show:
-                config_show['password'] = '********'
-            if 'smtp' in config_show and 'email_password' in config_show['smtp']:
-                config_show['smtp']['email_password'] = '********'
-            
-            st.json(config_show)
-        else:
-            st.error("❌ No hay configuración SSH cargada")
+        st.write("💾 Base de Datos Única:")
+        db_path = gestor_remoto.db_path_remoto
+        st.write(f"📁 Ruta: {db_path}")
+        
+        try:
+            consulta = "SELECT COUNT(*) as total_tablas FROM sqlite_master WHERE type='table'"
+            resultado = db.ejecutar_consulta_remota(consulta)
+            if resultado and len(resultado) > 0:
+                total_tablas = resultado[0].get('total_tablas', 0)
+                st.write(f"📊 Tablas: {total_tablas}")
+        except:
+            pass
     
     st.markdown("---")
     st.subheader("🛠️ Herramientas del Sistema")
@@ -3078,21 +2429,16 @@ def mostrar_configuracion():
     col_tool1, col_tool2, col_tool3 = st.columns(3)
     
     with col_tool1:
-        if st.button("💾 Crear Backup Ahora", use_container_width=True):
-            with st.spinner("Creando backup en servidor remoto..."):
-                if sistema_principal:
-                    backup_path = sistema_principal.backup_system.crear_backup(
-                        "MANUAL_CONFIG",
-                        "Backup manual creado desde configuración"
-                    )
-                    if backup_path:
-                        st.success("✅ Backup creado en servidor remoto")
-                    else:
-                        st.error("❌ Error creando backup")
+        if st.button("💾 Crear Backup", use_container_width=True):
+            with st.spinner("Creando backup..."):
+                if gestor_remoto.crear_backup_remoto():
+                    st.success("✅ Backup creado en servidor remoto")
+                else:
+                    st.error("❌ Error creando backup")
     
     with col_tool2:
         if st.button("🔍 Verificar Conexión", use_container_width=True):
-            with st.spinner("Verificando conexión SSH..."):
+            with st.spinner("Verificando conexión..."):
                 if gestor_remoto.verificar_conexion_ssh():
                     st.success("✅ Conexión SSH verificada")
                     st.rerun()
@@ -3106,7 +2452,7 @@ def mostrar_configuracion():
                 resultado = db.ejecutar_consulta_remota(consulta)
                 
                 if resultado:
-                    st.success(f"✅ {len(resultado)} tablas en base de datos remota:")
+                    st.success(f"✅ {len(resultado)} tablas en base de datos:")
                     for tabla in resultado:
                         nombre_tabla = tabla.get('name', '')
                         count_consulta = f"SELECT COUNT(*) as total FROM {nombre_tabla}"
@@ -3114,53 +2460,44 @@ def mostrar_configuracion():
                         count = count_result[0].get('total', 0) if count_result else 0
                         st.write(f"- **{nombre_tabla}**: {count} registros")
                 else:
-                    st.error("❌ No hay tablas en la base de datos remota")
+                    st.error("❌ No hay tablas en la base de datos")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
+    
+    st.markdown("---")
+    st.subheader("📁 Sistema de Backups")
+    
+    backups = SistemaBackupAutomatico(gestor_remoto).listar_backups()
+    if backups:
+        st.write(f"📊 {len(backups)} backups registrados:")
+        for backup in backups[:5]:  # Mostrar solo los últimos 5
+            fecha_str = backup['fecha'].strftime('%Y-%m-%d %H:%M')
+            st.write(f"📅 {fecha_str} - {backup['tipo_operacion']}")
+    else:
+        st.info("ℹ️ No hay backups registrados")
 
 # =============================================================================
-# 5. EJECUCIÓN PRINCIPAL - 100% REMOTO
+# 9. EJECUCIÓN PRINCIPAL
 # =============================================================================
 
 def main():
-    """Función principal de la aplicación 100% REMOTO"""
+    """Función principal de la aplicación"""
     
     with st.sidebar:
-        st.title("🔧 Sistema Escuela - 100% REMOTO")
+        st.title("🔧 Sistema Escuela - DB Única")
         st.markdown("---")
 
-        st.subheader("🔗 Estado de Conexión SSH")
+        st.subheader("🔗 Estado de Conexión")
 
         if gestor_remoto.verificar_existencia_db():
-            st.success("✅ Base de datos remota encontrada")
+            st.success("✅ Base de datos remota")
         else:
             st.error("❌ Base de datos NO encontrada")
 
         if estado_sistema.estado.get('ssh_conectado'):
             st.success("✅ SSH Conectado")
-            if gestor_remoto.config.get('host'):
-                st.caption(f"🌐 Servidor: {gestor_remoto.config['host']}")
         else:
             st.error("❌ SSH Desconectado")
-            error_ssh = estado_sistema.estado.get('ssh_error')
-            if error_ssh:
-                st.caption(f"⚠️ Error: {error_ssh}")
-
-        st.subheader("💾 Estado del Sistema")
-        temp_dir = tempfile.gettempdir()
-        espacio_ok, espacio_mb = UtilidadesSistema.verificar_espacio_disco(temp_dir)
-
-        if espacio_ok:
-            st.success(f"Espacio temporal: {espacio_mb:.0f} MB")
-        else:
-            st.warning(f"Espacio temporal bajo: {espacio_mb:.0f} MB")
-
-        with st.expander("📋 Información del Servidor"):
-            if gestor_remoto.config.get('host'):
-                st.write(f"**Host:** {gestor_remoto.config['host']}")
-                st.write(f"**Puerto:** {gestor_remoto.config.get('port', 22)}")
-                st.write(f"**Usuario:** {gestor_remoto.config['username']}")
-                st.write(f"**Modo:** 100% REMOTO")
 
         st.markdown("---")
 
@@ -3173,46 +2510,28 @@ def main():
         with col_stat2:
             st.metric("Backups", estado_sistema.estado.get('backups_realizados', 0))
 
-        sesiones = estado_sistema.estado.get('sesiones_iniciadas', 0)
-        st.metric("Total Sesiones", sesiones)
-
-        ultima_verificacion = estado_sistema.estado.get('ultima_verificacion')
-        if ultima_verificacion:
-            try:
-                fecha_ver = datetime.fromisoformat(ultima_verificacion)
-                st.caption(f"🔄 Última verificación: {fecha_ver.strftime('%H:%M:%S')}")
-            except:
-                pass
-
         st.markdown("---")
 
-        st.subheader("💾 Sistema de Backups Remotos")
+        st.subheader("💾 Sistema de Backups")
 
-        if st.button("💾 Crear Backup Remoto", use_container_width=True):
+        if st.button("💾 Crear Backup", use_container_width=True):
             global sistema_principal
             if sistema_principal:
-                with st.spinner("Creando backup en servidor remoto..."):
+                with st.spinner("Creando backup..."):
                     backup_path = sistema_principal.backup_system.crear_backup(
                         "MANUAL_SIDEBAR",
                         "Backup manual creado desde sidebar"
                     )
                     if backup_path:
-                        st.success(f"✅ Backup creado en servidor remoto")
+                        st.success(f"✅ Backup creado")
                     else:
-                        st.error("❌ Error creando backup remoto")
-
-        backups = SistemaBackupAutomatico(gestor_remoto).listar_backups()
-        if backups and len(backups) > 0:
-            with st.expander(f"📂 Ver últimos {min(len(backups), 5)} backups"):
-                for backup in backups[:5]:
-                    fecha_str = backup['fecha'].strftime('%Y-%m-%d %H:%M')
-                    st.caption(f"📅 {fecha_str} - {backup['tipo_operacion']} ({backup['ubicacion']})")
+                        st.error("❌ Error creando backup")
 
         st.markdown("---")
 
-        st.caption("🏥 Sistema Escuela Enfermería v3.0 - 100% REMOTO")
-        st.caption("🔗 Conectado directamente a servidor via SSH")
-        st.caption("📚 Todos los datos almacenados en servidor remoto")
+        st.caption("🏥 Sistema Escuela Enfermería v3.0")
+        st.caption("📁 Base de datos única: escuela.db")
+        st.caption("🔗 Conexión SSH directa al servidor")
 
     try:
         session_defaults = {
@@ -3225,52 +2544,24 @@ def main():
             if key not in st.session_state:
                 st.session_state[key] = default_value
 
-        if not gestor_remoto.config.get('host'):
+        if not gestor_remoto.config.get('ssh_host'):
             st.error("""
-            ❌ **ERROR DE CONFIGURACIÓN 100% REMOTO**
+            ❌ **ERROR DE CONFIGURACIÓN**
 
             No se encontró configuración SSH en secrets.toml.
 
-            **Solución para modo 100% REMOTO:**
-            1. Asegúrate de tener un archivo `.streamlit/secrets.toml`
-            2. Agrega la configuración SSH (SOLO RUTAS REMOTAS):
+            **Verifica que secrets.toml contiene la configuración necesaria:**
             ```toml
             [ssh]
-            host = "tu.servidor.com"
+            host = "tu_servidor"
             port = 22
             username = "tu_usuario"
             password = "tu_contraseña"
-            enabled = true
 
             [paths]
-            remote_db_usuarios = "/ruta/remota/usuarios.db"
-            remote_db_aspirantes = "/ruta/remota/aspirantes.db"
-            remote_uploads_path = "/ruta/remota/uploads"
-            # NO incluir rutas locales
-
-            [system]
-            auto_connect = true
-            retry_attempts = 3
-            retry_delay = 5
+            db_principal = "/ruta/a/escuela.db"
             ```
-            
-            **IMPORTANTE:** Este sistema es 100% REMOTO. No descarga archivos locales.
             """)
-
-            with st.expander("🔍 Diagnóstico del Sistema"):
-                st.write("**Rutas buscadas para secrets.toml:**")
-                for ruta in [
-                    ".streamlit/secrets.toml",
-                    "secrets.toml",
-                    "./.streamlit/secrets.toml"
-                ]:
-                    existe = os.path.exists(ruta)
-                    estado = "✅ Existe" if existe else "❌ No existe"
-                    st.write(f"{estado}: `{ruta}`")
-                
-                st.write("**Modo de operación:** 100% REMOTO")
-                st.write("**Archivos locales temporales:** NO se utilizan")
-
             return
 
         if not st.session_state.login_exitoso:
@@ -3280,81 +2571,30 @@ def main():
 
     except Exception as e:
         logger.error(f"Error crítico en main(): {e}", exc_info=True)
-
-        st.error(f"❌ Error crítico en la aplicación 100% REMOTO: {str(e)}")
-
-        with st.expander("🔧 Información de diagnóstico detallada"):
-            st.write("**Estado persistente:**")
-            st.json(estado_sistema.estado)
-
-            st.write("**Configuración SSH cargada:**")
-            if gestor_remoto.config:
-                config_show = gestor_remoto.config.copy()
-                if 'password' in config_show:
-                    config_show['password'] = '********'
-                if 'smtp' in config_show and 'email_password' in config_show['smtp']:
-                    config_show['smtp']['email_password'] = '********'
-                st.json(config_show)
-            else:
-                st.write("No hay configuración SSH cargada")
-            
-            st.write("**Modo de operación:** 100% REMOTO")
-            st.write("**Archivos locales temporales:** NO se utilizan")
-
-        col_reset1, col_reset2 = st.columns(2)
-        with col_reset1:
-            if st.button("🔄 Reiniciar Aplicación", type="primary", use_container_width=True):
-                keys_to_keep = ['login_exitoso', 'usuario_actual', 'rol_usuario']
-                keys_to_delete = [k for k in st.session_state.keys() if k not in keys_to_keep]
-
-                for key in keys_to_delete:
-                    del st.session_state[key]
-
-                st.success("✅ Estado de sesión limpiado")
-                st.rerun()
-
-        with col_reset2:
-            if st.button("📋 Ver Logs Recientes", use_container_width=True):
-                try:
-                    if os.path.exists('escuela_app.log'):
-                        with open('escuela_app.log', 'r') as f:
-                            lines = f.readlines()[-50:]
-                            st.text_area("Últimas líneas del log:", ''.join(lines), height=300)
-                    else:
-                        st.warning("No se encontró archivo de log")
-                except Exception as log_error:
-                    st.error(f"Error leyendo logs: {log_error}")
+        st.error(f"❌ Error crítico en la aplicación: {str(e)}")
 
 # =============================================================================
-# PUNTO DE ENTRADA - 100% REMOTO
+# PUNTO DE ENTRADA
 # =============================================================================
 
 if __name__ == "__main__":
     try:
         st.info("""
-        🏥 **SISTEMA DE GESTIÓN ESCOLAR 100% REMOTO - VERSIÓN COMPLETA 3.0**
+        🏥 **SISTEMA DE GESTIÓN ESCOLAR - BASE DE DATOS ÚNICA**
 
-        **Características principales:**
-        ✅ **100% Operaciones remotas** - Sin descarga de archivos locales
-        ✅ **Base de datos directa en servidor** - Sin sincronización
-        ✅ **Backups automáticos en servidor remoto**
-        ✅ **Conexión SSH segura** con reintentos automáticos
-        ✅ **Interfaz Streamlit completa** con todas las funcionalidades
+        **Características:**
+        ✅ **Base de datos única:** escuela.db con todas las tablas
+        ✅ **Conexión SSH directa** al servidor remoto
+        ✅ **Gestión completa** de inscritos, estudiantes, egresados, contratados y usuarios
+        ✅ **Sistema de notificaciones** por email
+        ✅ **Backup automático** en servidor remoto
+        ✅ **Bitácora de auditoría** de todas las operaciones
+        ✅ **Interfaz Streamlit** optimizada
         
-        **Para comenzar en modo 100% REMOTO:**
-        1. Configura secrets.toml con tus credenciales SSH (solo rutas remotas)
-        2. Asegúrate que la base de datos ya existe en el servidor con el usuario 'admin'
-        3. Inicia sesión con las credenciales por defecto
-        4. Todos los datos se manejarán DIRECTAMENTE en el servidor remoto
-        
-        **IMPORTANTE:** Este sistema NO descarga archivos locales. Todo queda en el servidor.
+        **Base de datos:** Todas las operaciones se realizan directamente en el servidor remoto.
         """)
 
         main()
     except Exception as e:
-        st.error(f"❌ Error crítico en la aplicación 100% REMOTO: {e}")
-        logger.critical(f"Error crítico en sistema 100% remoto: {e}", exc_info=True)
-
-        with st.expander("🚨 Información de diagnóstico crítico"):
-            import traceback
-            st.code(traceback.format_exc())
+        st.error(f"❌ Error crítico en la aplicación: {e}")
+        logger.critical(f"Error crítico en sistema: {e}", exc_info=True)
