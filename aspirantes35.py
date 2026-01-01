@@ -2687,7 +2687,7 @@ class SistemaInscritosCompleto:
                 st.session_state.formulario_estado['programa_seleccionado'] = programa_seleccionado
                 st.success(f"✅ Programa seleccionado: {programa_seleccionado}")
                 # Usar st.experimental_rerun() en lugar de st.rerun() en este contexto
-                st.experimental_rerun()
+                st.rerun()
         
         # Mostrar información del programa seleccionado (si hay)
         if st.session_state.formulario_estado['programa_info']:
@@ -3211,7 +3211,7 @@ class SistemaInscritosCompleto:
                             'contador_documentos': 0
                         }
                         
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Error al sincronizar con el servidor remoto")
                 else:
@@ -3280,7 +3280,7 @@ class SistemaInscritosCompleto:
                 'documentos_subidos': [],
                 'contador_documentos': 0
             }
-            st.experimental_rerun()
+            st.rerun()
 
 # ============================================================================
 # CAPA 13: PÁGINAS/VISTAS PRINCIPALES
@@ -3490,7 +3490,7 @@ class PaginaConfiguracion:
                 with st.spinner("Probando conexión..."):
                     if gestor_remoto.verificar_conexion_ssh():
                         st.success("✅ Conexión SSH exitosa")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Conexión SSH fallida")
         
@@ -3503,7 +3503,7 @@ class PaginaConfiguracion:
                 with st.spinner("Creando/verificando estructura de directorios..."):
                     if gestor_remoto.crear_estructura_directorios_remota():
                         st.success("✅ Estructura de directorios remota verificada/creada")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Error creando estructura de directorios remota")
         
@@ -3516,7 +3516,7 @@ class PaginaConfiguracion:
                         eliminados = db_completa.limpiar_registros_incompletos()
                         if eliminados > 0:
                             st.success(f"✅ Eliminados {eliminados} registros incompletos")
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.info("ℹ️ No se encontraron registros incompletos para eliminar")
             
@@ -3597,7 +3597,7 @@ class PaginaReportes:
                         )
                         if backup_path:
                             st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
-                            st.experimental_rerun()
+                            st.rerun()
             
             with col_back2:
                 # Botón para descargar backup seleccionado
@@ -3628,7 +3628,7 @@ class PaginaReportes:
                     )
                     if backup_path:
                         st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
-                        st.experimental_rerun()
+                        st.rerun()
 
 # ============================================================================
 # CAPA 14: CONTROLADOR PRINCIPAL
