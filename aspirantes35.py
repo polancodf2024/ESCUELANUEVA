@@ -4,7 +4,7 @@
 SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 3.8 (TRABAJO REMOTO COMPLETO)
 Sistema completo que trabaja directamente en el servidor remoto
 VERSIÓN CORREGIDA: Solucionados problemas con st.rerun() y contador de documentos
-VERSIÓN 3.9.1: Corregidos todos los st.rerun() problemáticos
+VERSIÓN 3.9.2: CONTADOR DE DOCUMENTOS CORREGIDO - SOLUCIÓN COMPLETA
 """
 
 # ============================================================================
@@ -69,7 +69,7 @@ except ImportError:
 # Configuración de la aplicación
 APP_CONFIG = {
     'app_name': 'Sistema Escuela Enfermería',
-    'version': '3.9.1',  # Versión actualizada - CORREGIDA
+    'version': '3.9.2',  # Versión actualizada - CONTADOR DE DOCUMENTOS CORREGIDO
     'page_title': 'Sistema Escuela Enfermería - Pre-Inscripción',
     'page_icon': '🏥',
     'layout': 'wide',
@@ -2212,7 +2212,7 @@ class ComponentesUI:
             if ultima_sinc != 'Nunca':
                 try:
                     fecha_sinc = datetime.fromisoformat(ultima_sinc.replace('Z', '+00:00'))
-                    ultima_sinc = fecha_sinc.strftime('%Y-%m-%d %H:%M')
+                    ultima_sinc = fecha_sinc.strftime('%Y-%m-d %H:%M')
                 except:
                     pass
             
@@ -2561,7 +2561,7 @@ class SistemaInscritosCompleto:
         self.backup_system = SistemaBackupAutomatico(gestor_remoto)
         self.gestor_archivos = SistemaGestionArchivosRemotos()
         
-        # Inicializar estados específicos
+        # Inicializar estados específicos PARA CONTADOR DE DOCUMENTOS
         if 'formulario_estado' not in st.session_state:
             st.session_state.formulario_estado = {
                 'programa_seleccionado': None,
@@ -2571,13 +2571,13 @@ class SistemaInscritosCompleto:
                 'contador_documentos': 0
             }
         
-        if 'documentos_contador_global' not in st.session_state:
-            st.session_state.documentos_contador_global = 0
+        if 'documentos_subidos_info' not in st.session_state:
+            st.session_state.documentos_subidos_info = []
         
-        logger.info("🚀 Sistema de inscritos COMPLETO (remoto) inicializado - VERSIÓN CORREGIDA")
+        logger.info("🚀 Sistema de inscritos COMPLETO (remoto) inicializado - CONTADOR DE DOCUMENTOS CORREGIDO")
     
     def mostrar_formulario_completo_interactivo(self):
-        """Formulario interactivo CORREGIDO - Sin st.rerun() problemático"""
+        """Formulario interactivo CORREGIDO - Con contador de documentos funcional"""
         ComponentesUI.mostrar_header("📝 Formulario Completo de Pre-Inscripción", 
                                     "Escuela de Enfermería - Convocatoria Febrero 2026")
         
@@ -2585,14 +2585,14 @@ class SistemaInscritosCompleto:
             st.session_state.formulario_enviado = False
         
         if not st.session_state.formulario_enviado:
-            # Sección 1: Selección de programa (SIN st.rerun() problemático)
+            # Sección 1: Selección de programa
             self._mostrar_seleccion_programa()
             
             # Si hay programa seleccionado, mostrar el formulario
             if st.session_state.formulario_estado['programa_info']:
                 programa_info = st.session_state.formulario_estado['programa_info']
                 
-                with st.form("formulario_completo_interactivo", clear_on_submit=True):
+                with st.form("formulario_completo_interactivo", clear_on_submit=False):  # IMPORTANTE: clear_on_submit=False
                     # Pasar la información del programa al resto del formulario
                     seleccion_programa = {
                         "categoria": programa_info['categoria'],
@@ -2609,8 +2609,8 @@ class SistemaInscritosCompleto:
                     
                     st.markdown("---")
                     
-                    # PASO 3: Documentación (SUBIDA DIRECTA AL SERVIDOR REMOTO)
-                    documentos = self._mostrar_paso_documentacion_completa(
+                    # PASO 3: Documentación (SUBIDA DIRECTA AL SERVIDOR REMOTO) - CORREGIDO
+                    documentos = self._mostrar_paso_documentacion_completa_corregida(
                         seleccion_programa["tipo_programa"], 
                         datos_personales.get("matricula_generada", "")
                     )
@@ -2638,7 +2638,7 @@ class SistemaInscritosCompleto:
                     )
                     
                     if enviado:
-                        self._procesar_envio(
+                        self._procesar_envio_corregido(
                             seleccion_programa,
                             datos_personales,
                             documentos,
@@ -2653,7 +2653,7 @@ class SistemaInscritosCompleto:
             self._mostrar_resultado_exitoso()
     
     def _mostrar_seleccion_programa(self):
-        """Mostrar selección de programa SIN st.rerun() problemático - CORREGIDO"""
+        """Mostrar selección de programa"""
         st.markdown("### 🎓 Selecciona el programa de tu interés")
         
         # Obtener todos los programas
@@ -2681,37 +2681,26 @@ class SistemaInscritosCompleto:
         
         st.markdown("---")
         
-        # Actualizar estado inmediatamente cuando se selecciona - SOLUCIÓN 1
+        # Actualizar estado inmediatamente cuando se selecciona
         if programa_seleccionado and programa_seleccionado != st.session_state.get('ultimo_programa_seleccionado', ''):
             if programa_seleccionado in programas_dict:
                 st.session_state.formulario_estado['programa_info'] = programas_dict[programa_seleccionado]
                 st.session_state.formulario_estado['programa_seleccionado'] = programa_seleccionado
                 st.session_state.ultimo_programa_seleccionado = programa_seleccionado
                 st.success(f"✅ Programa seleccionado: {programa_seleccionado}")
-                # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                st.session_state['needs_form_refresh'] = True
         
-        # Botón para confirmar selección - SOLUCIÓN 1
-        if programa_seleccionado and st.button("✅ Confirmar Selección de Programa"):
+        # Botón para confirmar selección
+        if programa_seleccionado and st.button("✅ Confirmar Selección de Programa", key="confirmar_programa_btn"):
             if programa_seleccionado in programas_dict:
                 st.session_state.formulario_estado['programa_info'] = programas_dict[programa_seleccionado]
                 st.session_state.formulario_estado['programa_seleccionado'] = programa_seleccionado
                 st.session_state.ultimo_programa_seleccionado = programa_seleccionado
                 st.success(f"✅ Programa seleccionado: {programa_seleccionado}")
-                # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                st.session_state['needs_form_refresh'] = True
         
         # Mostrar información del programa seleccionado (si hay)
         if st.session_state.formulario_estado['programa_info']:
             programa_info = st.session_state.formulario_estado['programa_info']
             self._mostrar_info_programa(programa_info)
-            
-        # SOLUCIÓN 1: Manejar la necesidad de refresco
-        if st.session_state.get('needs_form_refresh', False):
-            st.session_state['needs_form_refresh'] = False
-            # En lugar de st.rerun(), podemos usar st.experimental_rerun() solo si es estrictamente necesario
-            # Para este caso, podemos dejar que el usuario continúe con el formulario naturalmente
-            pass
     
     def _mostrar_info_programa(self, programa_info):
         """Mostrar información del programa seleccionado"""
@@ -2783,27 +2772,27 @@ class SistemaInscritosCompleto:
         col_datos1, col_datos2 = st.columns(2)
         
         with col_datos1:
-            nombre_completo = st.text_input("**Nombre Completo ***", placeholder="Ej: María González López")
-            email = st.text_input("**Correo Electrónico Personal ***", placeholder="ejemplo@email.com")
+            nombre_completo = st.text_input("**Nombre Completo ***", placeholder="Ej: María González López", key="nombre_input")
+            email = st.text_input("**Correo Electrónico Personal ***", placeholder="ejemplo@email.com", key="email_input")
             email_gmail = st.text_input("**Correo Gmail ***", placeholder="ejemplo@gmail.com", 
-                                       help="Debe ser una cuenta @gmail.com - Se usará para comunicación oficial")
+                                       help="Debe ser una cuenta @gmail.com - Se usará para comunicación oficial", key="email_gmail_input")
         
         with col_datos2:
-            telefono = st.text_input("**Teléfono ***", placeholder="5512345678")
+            telefono = st.text_input("**Teléfono ***", placeholder="5512345678", key="telefono_input")
             
             if tipo_programa in ["LICENCIATURA", "MAESTRIA"]:
-                estado_civil = st.selectbox("**Estado Civil**", ["", "Soltero/a", "Casado/a", "Divorciado/a", "Viudo/a", "Unión libre"])
-                edad = st.number_input("**Edad**", min_value=17, max_value=60, value=18)
-                domicilio = st.text_area("**Domicilio Completo**", placeholder="Calle, número, colonia, ciudad, estado, código postal")
+                estado_civil = st.selectbox("**Estado Civil**", ["", "Soltero/a", "Casado/a", "Divorciado/a", "Viudo/a", "Unión libre"], key="estado_civil_input")
+                edad = st.number_input("**Edad**", min_value=17, max_value=60, value=18, key="edad_input")
+                domicilio = st.text_area("**Domicilio Completo**", placeholder="Calle, número, colonia, ciudad, estado, código postal", key="domicilio_input")
             
             elif tipo_programa == "ESPECIALIDAD":
                 licenciatura_origen = st.text_input("**Licenciatura de Origen ***", 
-                                                   placeholder="Ej: Licenciatura en Enfermería")
-                domicilio = st.text_area("**Domicilio Completo**", placeholder="Calle, número, colonia, ciudad, estado, código postal")
+                                                   placeholder="Ej: Licenciatura en Enfermería", key="licenciatura_input")
+                domicilio = st.text_area("**Domicilio Completo**", placeholder="Calle, número, colonia, ciudad, estado, código postal", key="domicilio_input2")
             else:
-                domicilio = st.text_area("**Domicilio**", placeholder="Calle, número, colonia, ciudad, estado, código postal")
+                domicilio = st.text_area("**Domicilio**", placeholder="Calle, número, colonia, ciudad, estado, código postal", key="domicilio_input3")
         
-        matricula_unam = st.text_input("Matrícula UNAM (si ya tienes)", placeholder="Dejar vacío si no aplica")
+        matricula_unam = st.text_input("Matrícula UNAM (si ya tienes)", placeholder="Dejar vacío si no aplica", key="matricula_unam_input")
         
         # Mostrar matrícula generada
         st.info(f"**🎫 Tu matrícula asignada:** `{matricula_generada}`")
@@ -2821,7 +2810,8 @@ class SistemaInscritosCompleto:
             "matricula_unam": matricula_unam
         }
     
-    def _mostrar_paso_documentacion_completa(self, tipo_programa, matricula):
+    def _mostrar_paso_documentacion_completa_corregida(self, tipo_programa, matricula):
+        """VERSIÓN CORREGIDA - Contador de documentos funcional"""
         st.markdown("### 📄 **SUBA SUS DOCUMENTOS (DIRECTO AL SERVIDOR REMOTO)**")
         
         documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(tipo_programa)
@@ -2837,13 +2827,13 @@ class SistemaInscritosCompleto:
         if 'archivos_subidos_info' not in st.session_state:
             st.session_state.archivos_subidos_info = []
         
-        archivos_subidos_info = []
-        
         # Dividir documentos en grupos para mejor organización
         documentos_grupo1 = documentos_requeridos[:len(documentos_requeridos)//2]
         documentos_grupo2 = documentos_requeridos[len(documentos_requeridos)//2:]
         
         col_doc1, col_doc2 = st.columns(2)
+        
+        archivos_subidos_info = []
         
         with col_doc1:
             for i, doc in enumerate(documentos_grupo1, 1):
@@ -2907,11 +2897,14 @@ class SistemaInscritosCompleto:
                     else:
                         st.warning(f"⚠️ Este archivo ya fue seleccionado")
         
-        # Actualizar el estado global
+        # ACTUALIZAR EL ESTADO GLOBAL - CORRECCIÓN CLAVE
         st.session_state.archivos_subidos_info = archivos_subidos_info
         
         # Mostrar resumen claro
         documentos_count = len(archivos_subidos_info)
+        
+        # Actualizar contador en estado del formulario
+        st.session_state.formulario_estado['contador_documentos'] = documentos_count
         
         # Mostrar diagnóstico detallado
         with st.expander("🔍 **RESUMEN DE DOCUMENTOS**", expanded=True):
@@ -2923,7 +2916,9 @@ class SistemaInscritosCompleto:
                 for i, info in enumerate(archivos_subidos_info, 1):
                     st.write(f"{i}. **{info['nombre_documento']}:** {info['archivo'].name} ({info['archivo'].size:,} bytes)")
         
-        # Mostrar estado actual
+        # Mostrar estado actual con contador
+        st.markdown(f"### 📊 **CONTADOR DE DOCUMENTOS:** `{documentos_count}/{minimo_requerido}`")
+        
         if documentos_count > 0:
             if documentos_count == minimo_requerido:
                 st.success(f"✅ **¡PERFECTO!** Has subido {documentos_count} de {minimo_requerido} documentos requeridos")
@@ -2934,9 +2929,13 @@ class SistemaInscritosCompleto:
         else:
             st.error(f"❌ **No has subido ningún documento.** Necesitas {minimo_requerido} documentos.")
         
+        # Mostrar gráfica de progreso
+        progreso = documentos_count / minimo_requerido if minimo_requerido > 0 else 0
+        st.progress(progreso, text=f"Progreso: {documentos_count}/{minimo_requerido} documentos")
+        
         return {
             "documentos_requeridos": documentos_requeridos,
-            "archivos_subidos_info": archivos_subidos_info,
+            "archivos_subidos_info": archivos_subidos_info,  # RETORNAR LA LISTA ACTUAL
             "total_subidos": documentos_count,
             "minimo_requerido": minimo_requerido
         }
@@ -2946,18 +2945,18 @@ class SistemaInscritosCompleto:
             col_soc1, col_soc2 = st.columns(2)
             
             with col_soc1:
-                ingreso_familiar = st.number_input("Ingreso Familiar Mensual (MXN)", min_value=0, value=0, step=1000)
-                personas_dependientes = st.number_input("Personas Dependientes", min_value=0, max_value=20, value=1)
-                vivienda_propia = st.checkbox("Vivienda Propia")
-                transporte_propio = st.checkbox("Transporte Propio")
+                ingreso_familiar = st.number_input("Ingreso Familiar Mensual (MXN)", min_value=0, value=0, step=1000, key="ingreso_input")
+                personas_dependientes = st.number_input("Personas Dependientes", min_value=0, max_value=20, value=1, key="dependientes_input")
+                vivienda_propia = st.checkbox("Vivienda Propia", key="vivienda_input")
+                transporte_propio = st.checkbox("Transporte Propio", key="transporte_input")
             
             with col_soc2:
-                seguro_medico = st.selectbox("Seguro Médico", ["", "IMSS", "ISSSTE", "Privado", "Ninguno"])
-                discapacidad = st.checkbox("Discapacidad o Condición Especial")
-                beca_solicitada = st.checkbox("Solicita Beca")
-                trabajo_estudiantil = st.checkbox("Trabajo Estudiantil")
+                seguro_medico = st.selectbox("Seguro Médico", ["", "IMSS", "ISSSTE", "Privado", "Ninguno"], key="seguro_input")
+                discapacidad = st.checkbox("Discapacidad o Condición Especial", key="discapacidad_input")
+                beca_solicitada = st.checkbox("Solicita Beca", key="beca_input")
+                trabajo_estudiantil = st.checkbox("Trabajo Estudiantil", key="trabajo_input")
             
-            detalles_socioeconomicos = st.text_area("Observaciones Adicionales")
+            detalles_socioeconomicos = st.text_area("Observaciones Adicionales", key="detalles_input")
         
         return {
             'ingreso_familiar': ingreso_familiar,
@@ -2993,7 +2992,8 @@ class SistemaInscritosCompleto:
             
             aviso_privacidad = st.checkbox(
                 "**He leído y acepto el Aviso de Privacidad ***",
-                help="El aviso de privacidad describe cómo se manejarán tus datos personales."
+                help="El aviso de privacidad describe cómo se manejarán tus datos personales.",
+                key="aviso_checkbox"
             )
         
         with col_acep2:
@@ -3017,7 +3017,8 @@ class SistemaInscritosCompleto:
             
             convocatoria_unam = st.checkbox(
                 "**He leído y acepto los términos de la Convocatoria UNAM Febrero 2026 ***",
-                help="Convocatoria oficial para el proceso de admisión Febrero 2026"
+                help="Convocatoria oficial para el proceso de admisión Febrero 2026",
+                key="convocatoria_checkbox"
             )
         
         return {
@@ -3028,19 +3029,20 @@ class SistemaInscritosCompleto:
     def _mostrar_paso_examen_psicometrico(self):
         with st.expander("🧠 Examen Psicométrico (Opcional)", expanded=False):
             realizar_examen = st.checkbox("Realizar Examen Psicométrico en Línea", 
-                                         help="Examen rápido para evaluación de aptitudes")
+                                         help="Examen rápido para evaluación de aptitudes",
+                                         key="examen_checkbox")
             
             resultado_psicometrico = None
             if realizar_examen:
                 col_apt1, col_apt2 = st.columns(2)
                 
                 with col_apt1:
-                    aptitud_1 = st.slider("Capacidad de trabajo bajo presión", 1, 10, 5)
-                    aptitud_2 = st.slider("Habilidades de comunicación", 1, 10, 5)
+                    aptitud_1 = st.slider("Capacidad de trabajo bajo presión", 1, 10, 5, key="aptitud1_slider")
+                    aptitud_2 = st.slider("Habilidades de comunicación", 1, 10, 5, key="aptitud2_slider")
                 
                 with col_apt2:
-                    aptitud_3 = st.slider("Empatía con pacientes", 1, 10, 5)
-                    aptitud_4 = st.slider("Capacidad de aprendizaje rápido", 1, 10, 5)
+                    aptitud_3 = st.slider("Empatía con pacientes", 1, 10, 5, key="aptitud3_slider")
+                    aptitud_4 = st.slider("Capacidad de aprendizaje rápido", 1, 10, 5, key="aptitud4_slider")
                 
                 aptitud_general = (aptitud_1 + aptitud_2 + aptitud_3 + aptitud_4) / 4
                 
@@ -3054,21 +3056,25 @@ class SistemaInscritosCompleto:
         
         return resultado_psicometrico
     
-    def _procesar_envio(self, programa, datos, documentos, estudio, aceptaciones, examen):
+    def _procesar_envio_corregido(self, programa, datos, documentos, estudio, aceptaciones, examen):
+        """VERSIÓN CORREGIDA - Manejo correcto de contador de documentos"""
         errores = []
         
         # Mostrar diagnóstico de documentos antes de validar
         with st.expander("🔍 **VALIDACIÓN DE DOCUMENTOS**", expanded=True):
             st.write(f"**Tipo de programa:** {programa['tipo_programa']}")
             st.write(f"**Documentos requeridos:** {documentos.get('minimo_requerido', '?')}")
-            st.write(f"**Documentos en lista 'archivos_subidos_info':** {len(documentos.get('archivos_subidos_info', []))}")
+            
+            # Usar la lista de archivos del estado de sesión - CORRECCIÓN CLAVE
+            archivos_subidos_info = st.session_state.archivos_subidos_info
+            st.write(f"**Documentos en session_state 'archivos_subidos_info':** {len(archivos_subidos_info)}")
             
             # Mostrar detalles de archivos
-            if documentos.get('archivos_subidos_info'):
+            if archivos_subidos_info:
                 st.write("**Detalles de archivos:**")
-                for i, archivo_info in enumerate(documentos['archivos_subidos_info'], 1):
+                for i, archivo_info in enumerate(archivos_subidos_info, 1):
                     if 'archivo' in archivo_info and archivo_info['archivo'] is not None:
-                        st.write(f"{i}. {archivo_info['nombre_documento']}: {archivo_info['archivo'].name}")
+                        st.write(f"{i}. {archivo_info['nombre_documento']}: {archivo_info['archivo'].name} ({archivo_info['archivo'].size:,} bytes)")
                     else:
                         st.write(f"{i}. {archivo_info['nombre_documento']}: ARCHIVO NO VÁLIDO")
         
@@ -3093,13 +3099,12 @@ class SistemaInscritosCompleto:
         if datos["telefono"] and not self.validador.validar_telefono(datos["telefono"]):
             errores.append("❌ Teléfono debe tener al menos 10 dígitos")
         
-        # Validar documentos - CON DIAGNÓSTICO MEJORADO
+        # Validar documentos - CORRECCIÓN: Usar archivos_subidos_info del session_state
         documentos_requeridos = documentos.get("minimo_requerido", 11)
-        documentos_subidos = documentos.get("archivos_subidos_info", [])
         
         # CONTAR DOCUMENTOS VÁLIDOS (ARCHIVOS REALES)
         documentos_validos = []
-        for doc_info in documentos_subidos:
+        for doc_info in archivos_subidos_info:
             if 'archivo' in doc_info and doc_info['archivo'] is not None:
                 # Verificar que el archivo sea un objeto válido de Streamlit
                 if hasattr(doc_info['archivo'], 'name') and hasattr(doc_info['archivo'], 'size'):
@@ -3110,7 +3115,7 @@ class SistemaInscritosCompleto:
         
         # Mostrar diagnóstico de validación
         with st.expander("🔍 **DIAGNÓSTICO DE VALIDACIÓN**", expanded=True):
-            st.write(f"**Documentos en lista original:** {len(documentos_subidos)}")
+            st.write(f"**Documentos en session_state:** {len(archivos_subidos_info)}")
             st.write(f"**Documentos válidos (con archivo):** {documentos_count}")
             st.write(f"**Documentos requeridos:** {documentos_requeridos}")
             
@@ -3218,8 +3223,7 @@ class SistemaInscritosCompleto:
                         st.session_state.datos_exitosos['mensaje_correo'] = mensaje_correo
                         
                         # Limpiar estado de archivos
-                        if 'archivos_subidos_info' in st.session_state:
-                            st.session_state.archivos_subidos_info = []
+                        st.session_state.archivos_subidos_info = []
                         
                         # Limpiar estado del formulario
                         st.session_state.formulario_estado = {
@@ -3230,9 +3234,7 @@ class SistemaInscritosCompleto:
                             'contador_documentos': 0
                         }
                         
-                        # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                        st.session_state['needs_form_refresh'] = True
-                        st.session_state['form_submitted'] = True
+                        st.rerun()
                     else:
                         st.error("❌ Error al sincronizar con el servidor remoto")
                 else:
@@ -3290,7 +3292,7 @@ class SistemaInscritosCompleto:
         else:
             st.warning(f"⚠️ **No se pudo enviar el correo de confirmación:** {datos.get('mensaje_correo', 'Razón desconocida')}")
         
-        if ComponentesUI.crear_boton_accion("📝 Realizar otra pre-inscripción"):
+        if st.button("📝 Realizar otra pre-inscripción", type="primary", use_container_width=True):
             # Limpiar el estado del formulario
             st.session_state.formulario_enviado = False
             st.session_state.datos_exitosos = None
@@ -3301,9 +3303,8 @@ class SistemaInscritosCompleto:
                 'documentos_subidos': [],
                 'contador_documentos': 0
             }
-            # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-            st.session_state['needs_form_reset'] = True
-            st.session_state['form_submitted'] = False
+            st.session_state.archivos_subidos_info = []
+            st.rerun()
 
 # ============================================================================
 # CAPA 13: PÁGINAS/VISTAS PRINCIPALES
@@ -3317,18 +3318,6 @@ class PaginaInscripcion:
 
     def mostrar(self):
         """Mostrar formulario de pre-inscripción"""
-        # SOLUCIÓN 1: Manejar refrescos necesarios
-        if st.session_state.get('needs_form_reset', False):
-            st.session_state['needs_form_reset'] = False
-            # Limpiar estado específico del formulario
-            st.session_state.formulario_enviado = False
-            st.session_state.datos_exitosos = None
-        
-        if st.session_state.get('needs_form_refresh', False):
-            st.session_state['needs_form_refresh'] = False
-            # Aquí podríamos forzar un refresco si es necesario
-            # Pero por ahora solo limpiamos el flag
-        
         self.sistema_inscritos.mostrar_formulario_completo_interactivo()
 
 
@@ -3521,31 +3510,24 @@ class PaginaConfiguracion:
                 else:
                     st.error("❌ SSH Desconectado")
             
-            if ComponentesUI.crear_boton_accion("🔗 Probar Conexión SSH"):
+            if st.button("🔗 Probar Conexión SSH", use_container_width=True):
                 with st.spinner("Probando conexión..."):
                     if gestor_remoto.verificar_conexion_ssh():
                         st.success("✅ Conexión SSH exitosa")
-                        # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                        st.session_state['needs_refresh_config'] = True
+                        st.rerun()
                     else:
                         st.error("❌ Conexión SSH fallida")
-            
-            # SOLUCIÓN 1: Manejar refresco de configuración
-            if st.session_state.get('needs_refresh_config', False):
-                st.session_state['needs_refresh_config'] = False
-                # Podríamos actualizar algunos elementos aquí si es necesario
         
         with st.expander("🌐 Gestión de Archivos Remotos", expanded=True):
             st.info("Los archivos se suben directamente al servidor remoto:")
             st.caption(f"📁 Ruta base: {gestor_remoto.uploads_path_remoto}")
             st.caption(f"📁 Ruta inscritos: {gestor_remoto.uploads_inscritos_remoto}")
             
-            if ComponentesUI.crear_boton_accion("🔄 Crear/Verificar Directorios Remotos"):
+            if st.button("🔄 Crear/Verificar Directorios Remotos", use_container_width=True):
                 with st.spinner("Creando/verificando estructura de directorios..."):
                     if gestor_remoto.crear_estructura_directorios_remota():
                         st.success("✅ Estructura de directorios remota verificada/creada")
-                        # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                        st.session_state['needs_refresh_config'] = True
+                        st.rerun()
                     else:
                         st.error("❌ Error creando estructura de directorios remota")
         
@@ -3553,18 +3535,17 @@ class PaginaConfiguracion:
             col_mant1, col_mant2 = st.columns(2)
             
             with col_mant1:
-                if ComponentesUI.crear_boton_accion("🧹 Limpiar Registros Incompletos"):
+                if st.button("🧹 Limpiar Registros Incompletos", use_container_width=True):
                     with st.spinner("Limpiando registros incompletos..."):
                         eliminados = db_completa.limpiar_registros_incompletos()
                         if eliminados > 0:
                             st.success(f"✅ Eliminados {eliminados} registros incompletos")
-                            # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                            st.session_state['needs_refresh_config'] = True
+                            st.rerun()
                         else:
                             st.info("ℹ️ No se encontraron registros incompletos para eliminar")
             
             with col_mant2:
-                if ComponentesUI.crear_boton_accion("📧 Enviar Recordatorios Automáticos"):
+                if st.button("📧 Enviar Recordatorios Automáticos", use_container_width=True):
                     with st.spinner("Enviando recordatorios..."):
                         try:
                             # Enviar recordatorios a todos los inscritos
@@ -3632,7 +3613,7 @@ class PaginaReportes:
             col_back1, col_back2 = st.columns(2)
             
             with col_back1:
-                if ComponentesUI.crear_boton_accion("💾 Crear Nuevo Backup", "primary"):
+                if st.button("💾 Crear Nuevo Backup", use_container_width=True, type="primary"):
                     with st.spinner("Creando backup..."):
                         backup_path = backup_system.crear_backup(
                             "REPORTE_MENSUAL",
@@ -3640,8 +3621,7 @@ class PaginaReportes:
                         )
                         if backup_path:
                             st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
-                            # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                            st.session_state['needs_refresh_reports'] = True
+                            st.rerun()
             
             with col_back2:
                 # Botón para descargar backup seleccionado
@@ -3664,7 +3644,7 @@ class PaginaReportes:
         else:
             st.info("ℹ️ No hay backups disponibles. Crea el primer backup.")
             
-            if ComponentesUI.crear_boton_accion("💾 Crear Primer Backup", "primary"):
+            if st.button("💾 Crear Primer Backup", use_container_width=True, type="primary"):
                 with st.spinner("Creando primer backup..."):
                     backup_path = backup_system.crear_backup(
                         "PRIMER_BACKUP",
@@ -3672,13 +3652,7 @@ class PaginaReportes:
                     )
                     if backup_path:
                         st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
-                        # SOLUCIÓN 1: En lugar de st.rerun(), marcamos que necesitamos actualización
-                        st.session_state['needs_refresh_reports'] = True
-        
-        # SOLUCIÓN 1: Manejar refresco de reportes
-        if st.session_state.get('needs_refresh_reports', False):
-            st.session_state['needs_refresh_reports'] = False
-            # Podríamos actualizar algunos elementos aquí si es necesario
+                        st.rerun()
 
 # ============================================================================
 # CAPA 14: CONTROLADOR PRINCIPAL
@@ -3717,10 +3691,6 @@ class ControladorPrincipal:
         
         if 'pagina_actual' not in st.session_state:
             st.session_state.pagina_actual = "inicio"
-        
-        # SOLUCIÓN 1: Inicializar flags de refresco
-        if 'needs_refresh' not in st.session_state:
-            st.session_state['needs_refresh'] = False
     
     def configurar_aplicacion(self):
         st.set_page_config(
@@ -3732,12 +3702,6 @@ class ControladorPrincipal:
     
     def ejecutar(self):
         self.configurar_aplicacion()
-        
-        # SOLUCIÓN 1: Verificar si necesitamos refrescar la página
-        if st.session_state.get('needs_refresh', False):
-            st.session_state['needs_refresh'] = False
-            # Aquí podríamos hacer alguna acción de refresco específica
-            # Por ahora solo limpiamos el flag
         
         # Determinar qué mapeo de menú usar
         if self.sistema_auth and st.session_state.autenticado:
