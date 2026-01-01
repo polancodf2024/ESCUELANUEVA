@@ -655,12 +655,25 @@ class GestorConexionRemota:
             logger.warning("⚠️ No hay configuración SSH en secrets.toml")
             return
         
-        self.db_path_remoto = self.config.get('remote_db_escuela')
+        # 🔴🔴🔴 CORRECCIÓN CRÍTICA: Usar usuarios.db para autenticación
+        self.db_path_remoto = self.config.get('remote_db_usuarios')  # CAMBIADO
+        
+        if not self.db_path_remoto:
+            logger.error("❌ ERROR: No se encontró remote_db_usuarios en la configuración")
+            # Fallback a remote_db_escuela si existe (para compatibilidad)
+            self.db_path_remoto = self.config.get('remote_db_escuela')
+            if self.db_path_remoto:
+                logger.warning(f"⚠️ Usando remote_db_escuela como fallback: {self.db_path_remoto}")
+            else:
+                logger.critical("❌ ERROR CRÍTICO: No hay base de datos configurada para autenticación")
+                return
+        
         self.uploads_path_remoto = self.config.get('remote_uploads_path')
         
         logger.info(f"🔗 Configuración SSH cargada para {self.config.get('host', 'No configurado')}")
+        logger.info(f"📁 Usando base de datos de autenticación: {self.db_path_remoto}")
         
-        # Probar conexión inicial (solo verificación, no mantiene conexión abierta)
+        # Probar conexión inicial
         if self.config.get('host'):
             self.probar_conexion_inicial()
     
@@ -695,9 +708,9 @@ class GestorConexionRemota:
             # IMPORTANTE: SOLO RUTAS REMOTAS, SIN LOCALES
             paths_config = self.config_completa.get('paths', {})
             config.update({
-                'remote_db_escuela': paths_config.get('remote_db_escuela', ''),
+                'remote_db_usuarios': paths_config.get('remote_db_usuarios', ''),
+                'remote_db_aspirantes': paths_config.get('remote_db_aspirantes', ''),
                 'remote_uploads_path': paths_config.get('remote_uploads_path', ''),
-                # NO hay rutas locales en versión 100% remota
             })
             
             # Configuración SMTP
@@ -713,7 +726,7 @@ class GestorConexionRemota:
             config['smtp'] = smtp_config
             
             logger.info(f"✅ Configuración 100% REMOTO cargada. Host: {config.get('host', 'No configurado')}")
-            logger.info(f"📁 Ruta DB remota: {config.get('remote_db_escuela', 'No configurada')}")
+            logger.info(f"📁 Ruta DB usuarios: {config.get('remote_db_usuarios', 'No configurada')}")
             
         except Exception as e:
             logger.error(f"❌ Error cargando configuración: {e}", exc_info=True)
@@ -1375,9 +1388,9 @@ class SistemaBaseDatos:
             
             stored_password = usuario_data.get('password', '')
             
-            logger.debug(f"Contraseña almacenada: {stored_password}, Contraseña ingresada: {password}")
+            logger.debug(f"Password almacenado: {stored_password}, Password ingresada: {password}")
             
-            # Verificar contraseña (comparación directa)
+            # COMPARACIÓN DIRECTA (texto plano)
             if stored_password == password:
                 logger.info(f"✅ Login exitoso para usuario: {usuario}")
                 return usuario_data
@@ -2176,8 +2189,8 @@ class SistemaAutenticacion:
                     st.info("""
                     **Solución:**
                     1. Verifica que la base de datos existe en la ruta configurada
-                    2. Asegúrate que el archivo escuela.db está en el servidor
-                    3. Confirma la ruta en secrets.toml: `remote_db_escuela`
+                    2. Asegúrate que el archivo usuarios.db está en el servidor
+                    3. Confirma la ruta en secrets.toml: `remote_db_usuarios`
                     """)
                     return False
                 
@@ -2373,20 +2386,54 @@ def mostrar_login():
             if login_button:
                 if usuario and password:
                     with st.spinner("Verificando credenciales en servidor remoto..."):
-                        # Verificar primero si la base de datos existe
+                        # DIAGNÓSTICO DETALLADO
+                        st.info("🔍 Ejecutando diagnóstico de conexión...")
+                        
+                        # 1. Verificar conexión SSH
+                        if not gestor_remoto.conectar_ssh():
+                            st.error("❌ ERROR: No se puede conectar al servidor SSH")
+                            return
+                        
+                        # 2. Verificar si la base de datos existe
                         if not gestor_remoto.verificar_existencia_db():
-                            st.error("❌ ERROR: Base de datos no encontrada en servidor remoto")
-                            st.info("""
+                            st.error(f"""
+                            ❌ ERROR: Base de datos de autenticación no encontrada
+                            
+                            **Ruta esperada:** {gestor_remoto.db_path_remoto}
+                            **Modo 100% REMOTO:** Solo usa archivos en servidor
+                            
                             **Solución:**
-                            1. Asegúrate que la base de datos existe en el servidor
-                            2. Verifica que el usuario 'admin' esté creado con contraseña 'Admin123!'
-                            3. Confirma la ruta en secrets.toml: `remote_db_escuela`
+                            1. Verifica que usuarios.db existe en el servidor
+                            2. Confirma la ruta en secrets.toml:
+                               remote_db_usuarios = "/home/POLANCO6/ESCUELANUEVA/datos/usuarios.db"
+                            3. Ejecuta el script de limpieza en el servidor
                             """)
-                        elif auth.verificar_login(usuario, password):
+                            return
+                        
+                        # 3. Intentar login
+                        if auth.verificar_login(usuario, password):
                             st.success("✅ Login exitoso")
                             st.rerun()
                         else:
                             st.error("❌ Credenciales incorrectas o usuario no existe")
+                            
+                            # Información adicional de diagnóstico
+                            with st.expander("🔧 Más información del error"):
+                                st.write(f"**Base de datos usada:** {gestor_remoto.db_path_remoto}")
+                                st.write(f"**Usuario intentado:** {usuario}")
+                                
+                                # Verificar si el usuario existe
+                                try:
+                                    usuario_data = db.obtener_usuario(usuario)
+                                    if usuario_data:
+                                        st.write("✅ Usuario encontrado en la base de datos")
+                                        stored_pass = usuario_data.get('password', '')
+                                        st.write(f"**Password almacenado:** {stored_pass}")
+                                        st.write(f"**Password ingresado:** {password}")
+                                    else:
+                                        st.write("❌ Usuario NO encontrado en la base de datos")
+                                except Exception as e:
+                                    st.write(f"⚠️ Error verificando usuario: {e}")
                 else:
                     st.warning("⚠️ Complete todos los campos")
             
@@ -2610,7 +2657,8 @@ def mostrar_dashboard():
                 st.write(f"- Usuario: {gestor_remoto.config['username']}")
             
             st.write("**Rutas remotas:**")
-            st.write(f"- DB: {gestor_remoto.config.get('remote_db_escuela', 'No configurada')}")
+            st.write(f"- DB Usuarios: {gestor_remoto.config.get('remote_db_usuarios', 'No configurada')}")
+            st.write(f"- DB Aspirantes: {gestor_remoto.config.get('remote_db_aspirantes', 'No configurada')}")
             st.write(f"- Uploads: {gestor_remoto.config.get('remote_uploads_path', 'No configurada')}")
         
         with col_tech2:
@@ -3195,7 +3243,8 @@ def main():
             enabled = true
 
             [paths]
-            remote_db_escuela = "/ruta/remota/escuela.db"
+            remote_db_usuarios = "/ruta/remota/usuarios.db"
+            remote_db_aspirantes = "/ruta/remota/aspirantes.db"
             remote_uploads_path = "/ruta/remota/uploads"
             # NO incluir rutas locales
 
