@@ -639,7 +639,19 @@ class GestorConexionRemota:
         config = {}
         
         try:
+            # PRIMERO intentar leer de sección [ssh]
             ssh_config = self.config_completa.get('ssh', {})
+            
+            # SI no hay, leer de la raíz del archivo
+            if not ssh_config:
+                ssh_config = {
+                    'host': self.config_completa.get('remote_host', ''),
+                    'port': self.config_completa.get('remote_port', 22),
+                    'username': self.config_completa.get('remote_user', ''),
+                    'password': self.config_completa.get('remote_password', ''),
+                    'enabled': True
+                }
+            
             config.update({
                 'host': ssh_config.get('host', ''),
                 'port': int(ssh_config.get('port', 22)),
@@ -658,6 +670,7 @@ class GestorConexionRemota:
                 # NO hay rutas locales en versión 100% remota
             })
             
+            # Configuración SMTP
             smtp_config = {
                 'smtp_server': self.config_completa.get('smtp_server', ''),
                 'smtp_port': self.config_completa.get('smtp_port', 587),
@@ -669,7 +682,8 @@ class GestorConexionRemota:
             }
             config['smtp'] = smtp_config
             
-            logger.info("✅ Configuración 100% REMOTO cargada")
+            logger.info(f"✅ Configuración 100% REMOTO cargada. Host: {config.get('host', 'No configurado')}")
+            logger.info(f"📁 Ruta DB remota: {config.get('remote_db_escuela', 'No configurada')}")
             
         except Exception as e:
             logger.error(f"❌ Error cargando configuración: {e}", exc_info=True)
