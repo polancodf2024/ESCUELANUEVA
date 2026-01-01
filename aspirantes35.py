@@ -3,6 +3,7 @@
 """
 SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 3.8 (TRABAJO REMOTO COMPLETO)
 Sistema completo que trabaja directamente en el servidor remoto
+VERSIÓN CORREGIDA: Solucionados problemas con st.rerun() y contador de documentos
 """
 
 # ============================================================================
@@ -67,7 +68,7 @@ except ImportError:
 # Configuración de la aplicación
 APP_CONFIG = {
     'app_name': 'Sistema Escuela Enfermería',
-    'version': '3.8',
+    'version': '3.9',  # Versión actualizada
     'page_title': 'Sistema Escuela Enfermería - Pre-Inscripción',
     'page_icon': '🏥',
     'layout': 'wide',
@@ -142,7 +143,7 @@ class EnhancedLogger:
         
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-            datefmt='%Y-%m-d %H:%M:%S'
+            datefmt='%Y-%m-%d %H:%M:%S'
         )
         
         console_handler = logging.StreamHandler()
@@ -2210,7 +2211,7 @@ class ComponentesUI:
             if ultima_sinc != 'Nunca':
                 try:
                     fecha_sinc = datetime.fromisoformat(ultima_sinc.replace('Z', '+00:00'))
-                    ultima_sinc = fecha_sinc.strftime('%Y-%m-d %H:%M')
+                    ultima_sinc = fecha_sinc.strftime('%Y-%m-%d %H:%M')
                 except:
                     pass
             
@@ -2544,11 +2545,11 @@ class ServicioValidacionCompleto(ValidadorDatos):
         return True, ""
 
 # ============================================================================
-# CAPA 12: SISTEMA DE INSCRITOS COMPLETO TRABAJANDO EN REMOTO
+# CAPA 12: SISTEMA DE INSCRITOS COMPLETO TRABAJANDO EN REMOTO - VERSIÓN CORREGIDA
 # ============================================================================
 
 class SistemaInscritosCompleto:
-    """Sistema principal de gestión de inscritos COMPLETO que trabaja en remoto"""
+    """Sistema principal de gestión de inscritos COMPLETO que trabaja en remoto - VERSIÓN CORREGIDA"""
     
     def __init__(self):
         self.base_datos = db_completa
@@ -2559,9 +2560,23 @@ class SistemaInscritosCompleto:
         self.backup_system = SistemaBackupAutomatico(gestor_remoto)
         self.gestor_archivos = SistemaGestionArchivosRemotos()
         
-        logger.info("🚀 Sistema de inscritos COMPLETO (remoto) inicializado")
+        # Inicializar estados específicos
+        if 'formulario_estado' not in st.session_state:
+            st.session_state.formulario_estado = {
+                'programa_seleccionado': None,
+                'programa_info': None,
+                'matricula_generada': None,
+                'documentos_subidos': [],
+                'contador_documentos': 0
+            }
+        
+        if 'documentos_contador_global' not in st.session_state:
+            st.session_state.documentos_contador_global = 0
+        
+        logger.info("🚀 Sistema de inscritos COMPLETO (remoto) inicializado - VERSIÓN CORREGIDA")
     
     def mostrar_formulario_completo_interactivo(self):
+        """Formulario interactivo CORREGIDO - Sin st.rerun() problemático"""
         ComponentesUI.mostrar_header("📝 Formulario Completo de Pre-Inscripción", 
                                     "Escuela de Enfermería - Convocatoria Febrero 2026")
         
@@ -2569,130 +2584,12 @@ class SistemaInscritosCompleto:
             st.session_state.formulario_enviado = False
         
         if not st.session_state.formulario_enviado:
-            # Inicializar estado del programa
-            if 'programa_seleccionado_key' not in st.session_state:
-                st.session_state.programa_seleccionado_key = None
-            if 'programa_info' not in st.session_state:
-                st.session_state.programa_info = None
+            # Sección 1: Selección de programa (SIN st.rerun() problemático)
+            self._mostrar_seleccion_programa()
             
-            # Primero, mostrar la selección de programa FUERA del formulario
-            st.markdown("### 🎓 Selecciona el programa de tu interés")
-            
-            # Obtener todos los programas
-            programas = self.servicio_programas.obtener_programas_completos()
-            
-            # Crear opciones formateadas para mostrar
-            opciones_programas = []
-            programas_dict = {}
-            
-            for programa in programas:
-                # Formato: "Categoría - Nombre del Programa (Tipo - Duración)"
-                opcion_formateada = f"{programa['categoria']} - {programa['nombre']} ({programa['tipo_programa']} - {programa['duracion']})"
-                opciones_programas.append(opcion_formateada)
-                programas_dict[opcion_formateada] = programa
-            
-            # Selectbox con callback para actualizar el estado
-            def actualizar_programa():
-                if st.session_state.programa_seleccionado_select:
-                    programa_seleccionado = st.session_state.programa_seleccionado_select
-                    if programa_seleccionado in programas_dict:
-                        st.session_state.programa_info = programas_dict[programa_seleccionado]
-                        st.session_state.programa_seleccionado_key = programa_seleccionado
-                        st.rerun()
-                else:
-                    st.session_state.programa_info = None
-                    st.session_state.programa_seleccionado_key = None
-            
-            # Selectbox para seleccionar programa
-            programa_seleccionado = st.selectbox(
-                "**Programa de Interés ***",
-                opciones_programas,
-                help="Selecciona el programa que deseas cursar",
-                key="programa_seleccionado_select",
-                index=None,
-                placeholder="Selecciona un programa...",
-                on_change=actualizar_programa
-            )
-            
-            st.markdown("---")
-            
-            # Mostrar información del programa seleccionado (si hay)
-            if st.session_state.programa_info:
-                programa_info = st.session_state.programa_info
-                
-                # Obtener documentos requeridos para este programa
-                documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(programa_info['tipo_programa'])
-                minimo_requerido = ServicioValidacionCompleto.minimos_consistente.get(programa_info['tipo_programa'], len(documentos_requeridos))
-                
-                # Mostrar detalles del programa seleccionado
-                with st.container():
-                    # Encabezado con icono y colores
-                    st.markdown(f"""
-                    <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; 
-                                border-left: 4px solid #2E86AB; margin-bottom: 15px;">
-                        <h3 style="color: #2E86AB; margin: 0;">
-                        📋 <strong>INFORMACIÓN DEL PROGRAMA SELECCIONADO</strong>
-                        </h3>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Usar columnas para mejor organización
-                    col_info1, col_info2 = st.columns(2)
-                    
-                    with col_info1:
-                        st.markdown(f"**🏷️ Categoría:** `{programa_info['categoria']}`")
-                        st.markdown(f"**📚 Tipo de Programa:** `{programa_info['tipo_programa']}`")
-                        st.markdown(f"**⏱️ Duración:** `{programa_info['duracion']}`")
-                    
-                    with col_info2:
-                        st.markdown(f"**🎓 Modalidad:** `{programa_info['modalidad']}`")
-                        st.markdown(f"**📄 Documentos requeridos:** `{minimo_requerido}`")
-                    
-                    # Descripción en un recuadro destacado
-                    with st.expander("📝 **DESCRIPCIÓN DETALLADA**", expanded=True):
-                        st.write(programa_info['descripcion'])
-                    
-                    # Requisitos en una lista numerada
-                    with st.expander("✅ **REQUISITOS DE INGRESO**", expanded=True):
-                        for i, req in enumerate(programa_info['requisitos'], 1):
-                            st.markdown(f"{i}. {req}")
-                    
-                    # Mostrar documentos específicos para este tipo de programa
-                    with st.expander(f"📄 **DOCUMENTOS REQUERIDOS ({len(documentos_requeridos)} documentos - TODOS OBLIGATORIOS)**", expanded=False):
-                        st.info(f"**¡IMPORTANTE!** Debes subir **TODOS los {minimo_requerido} documentos** para completar tu pre-inscripción.")
-                        
-                        # Dividir documentos en columnas para mejor visualización
-                        col_doc1, col_doc2 = st.columns(2)
-                        
-                        docs_col1 = documentos_requeridos[:len(documentos_requeridos)//2]
-                        docs_col2 = documentos_requeridos[len(documentos_requeridos)//2:]
-                        
-                        with col_doc1:
-                            for i, doc in enumerate(docs_col1, 1):
-                                st.markdown(f"**{i}. {doc}**")
-                        
-                        with col_doc2:
-                            start_idx = len(docs_col1) + 1
-                            for i, doc in enumerate(docs_col2, start_idx):
-                                st.markdown(f"**{i}. {doc}**")
-                    
-                    st.markdown("---")
-            
-            # Si no hay selección, mostrar instrucciones
-            else:
-                st.info("""
-                **ℹ️ INSTRUCCIONES:**
-                
-                1. **Selecciona un programa** de la lista desplegable arriba
-                2. **Verás aparecer automáticamente** la información completa del programa
-                3. **Revisa requisitos y documentos** requeridos
-                4. **Continúa** con el formulario
-                """)
-                st.markdown("---")
-            
-            # Ahora el formulario principal
-            if st.session_state.programa_info:
-                programa_info = st.session_state.programa_info
+            # Si hay programa seleccionado, mostrar el formulario
+            if st.session_state.formulario_estado['programa_info']:
+                programa_info = st.session_state.formulario_estado['programa_info']
                 
                 with st.form("formulario_completo_interactivo", clear_on_submit=True):
                     # Pasar la información del programa al resto del formulario
@@ -2754,9 +2651,115 @@ class SistemaInscritosCompleto:
         else:
             self._mostrar_resultado_exitoso()
     
+    def _mostrar_seleccion_programa(self):
+        """Mostrar selección de programa SIN st.rerun() problemático"""
+        st.markdown("### 🎓 Selecciona el programa de tu interés")
+        
+        # Obtener todos los programas
+        programas = self.servicio_programas.obtener_programas_completos()
+        
+        # Crear opciones formateadas para mostrar
+        opciones_programas = []
+        programas_dict = {}
+        
+        for programa in programas:
+            # Formato: "Categoría - Nombre del Programa (Tipo - Duración)"
+            opcion_formateada = f"{programa['categoria']} - {programa['nombre']} ({programa['tipo_programa']} - {programa['duracion']})"
+            opciones_programas.append(opcion_formateada)
+            programas_dict[opcion_formateada] = programa
+        
+        # Selectbox SIN callback que cause st.rerun()
+        programa_seleccionado = st.selectbox(
+            "**Programa de Interés ***",
+            opciones_programas,
+            help="Selecciona el programa que deseas cursar",
+            key="programa_seleccionado_select",
+            index=None,
+            placeholder="Selecciona un programa..."
+        )
+        
+        st.markdown("---")
+        
+        # Botón para confirmar selección
+        if programa_seleccionado and st.button("✅ Confirmar Selección de Programa"):
+            if programa_seleccionado in programas_dict:
+                st.session_state.formulario_estado['programa_info'] = programas_dict[programa_seleccionado]
+                st.session_state.formulario_estado['programa_seleccionado'] = programa_seleccionado
+                st.success(f"✅ Programa seleccionado: {programa_seleccionado}")
+                # Usar st.experimental_rerun() en lugar de st.rerun() en este contexto
+                st.experimental_rerun()
+        
+        # Mostrar información del programa seleccionado (si hay)
+        if st.session_state.formulario_estado['programa_info']:
+            programa_info = st.session_state.formulario_estado['programa_info']
+            self._mostrar_info_programa(programa_info)
+    
+    def _mostrar_info_programa(self, programa_info):
+        """Mostrar información del programa seleccionado"""
+        # Obtener documentos requeridos para este programa
+        documentos_requeridos = self.servicio_programas.obtener_documentos_por_tipo(programa_info['tipo_programa'])
+        minimo_requerido = ServicioValidacionCompleto.minimos_consistente.get(programa_info['tipo_programa'], len(documentos_requeridos))
+        
+        # Mostrar detalles del programa seleccionado
+        with st.container():
+            # Encabezado con icono y colores
+            st.markdown(f"""
+            <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; 
+                        border-left: 4px solid #2E86AB; margin-bottom: 15px;">
+                <h3 style="color: #2E86AB; margin: 0;">
+                📋 <strong>INFORMACIÓN DEL PROGRAMA SELECCIONADO</strong>
+                </h3>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Usar columnas para mejor organización
+            col_info1, col_info2 = st.columns(2)
+            
+            with col_info1:
+                st.markdown(f"**🏷️ Categoría:** `{programa_info['categoria']}`")
+                st.markdown(f"**📚 Tipo de Programa:** `{programa_info['tipo_programa']}`")
+                st.markdown(f"**⏱️ Duración:** `{programa_info['duracion']}`")
+            
+            with col_info2:
+                st.markdown(f"**🎓 Modalidad:** `{programa_info['modalidad']}`")
+                st.markdown(f"**📄 Documentos requeridos:** `{minimo_requerido}`")
+            
+            # Descripción en un recuadro destacado
+            with st.expander("📝 **DESCRIPCIÓN DETALLADA**", expanded=True):
+                st.write(programa_info['descripcion'])
+            
+            # Requisitos en una lista numerada
+            with st.expander("✅ **REQUISITOS DE INGRESO**", expanded=True):
+                for i, req in enumerate(programa_info['requisitos'], 1):
+                    st.markdown(f"{i}. {req}")
+            
+            # Mostrar documentos específicos para este tipo de programa
+            with st.expander(f"📄 **DOCUMENTOS REQUERIDOS ({len(documentos_requeridos)} documentos - TODOS OBLIGATORIOS)**", expanded=False):
+                st.info(f"**¡IMPORTANTE!** Debes subir **TODOS los {minimo_requerido} documentos** para completar tu pre-inscripción.")
+                
+                # Dividir documentos en columnas para mejor visualización
+                col_doc1, col_doc2 = st.columns(2)
+                
+                docs_col1 = documentos_requeridos[:len(documentos_requeridos)//2]
+                docs_col2 = documentos_requeridos[len(documentos_requeridos)//2:]
+                
+                with col_doc1:
+                    for i, doc in enumerate(docs_col1, 1):
+                        st.markdown(f"**{i}. {doc}**")
+                
+                with col_doc2:
+                    start_idx = len(docs_col1) + 1
+                    for i, doc in enumerate(docs_col2, start_idx):
+                        st.markdown(f"**{i}. {doc}**")
+            
+            st.markdown("---")
+    
     def _mostrar_paso_datos_personales(self, tipo_programa):
         # Generar matrícula automáticamente
-        matricula_generada = self.generadores.generar_matricula()
+        if not st.session_state.formulario_estado['matricula_generada']:
+            st.session_state.formulario_estado['matricula_generada'] = self.generadores.generar_matricula()
+        
+        matricula_generada = st.session_state.formulario_estado['matricula_generada']
         
         col_datos1, col_datos2 = st.columns(2)
         
@@ -2811,14 +2814,11 @@ class SistemaInscritosCompleto:
         **🌐 Los documentos se subirán DIRECTAMENTE al servidor remoto**
         """)
         
-        archivos_subidos_info = []
+        # Inicializar lista de archivos subidos si no existe
+        if 'archivos_subidos_info' not in st.session_state:
+            st.session_state.archivos_subidos_info = []
         
-        # VERIFICACIÓN DE DIAGNÓSTICO: Crear un contador para monitorear
-        st.session_state['diagnostico_documentos'] = {
-            'total_requeridos': minimo_requerido,
-            'subidos': 0,
-            'archivos_detalles': []
-        }
+        archivos_subidos_info = []
         
         # Dividir documentos en grupos para mejor organización
         documentos_grupo1 = documentos_requeridos[:len(documentos_requeridos)//2]
@@ -2831,7 +2831,6 @@ class SistemaInscritosCompleto:
                 # Usar una clave única basada en matrícula y documento
                 unique_key = f"doc_{matricula}_{doc.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')}_{i}"
                 
-                # PRUEBA: Mostrar el file_uploader FUERA del expander para diagnóstico
                 archivo = st.file_uploader(
                     f"**{i}. {doc}**",
                     type=['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'],
@@ -2854,14 +2853,6 @@ class SistemaInscritosCompleto:
                             'nombre_documento': doc,
                             'archivo': archivo,
                             'indice': i
-                        })
-                        
-                        # Actualizar diagnóstico
-                        st.session_state['diagnostico_documentos']['subidos'] += 1
-                        st.session_state['diagnostico_documentos']['archivos_detalles'].append({
-                            'documento': doc,
-                            'archivo': archivo.name,
-                            'tamaño': archivo.size
                         })
                     else:
                         st.warning(f"⚠️ Este archivo ya fue seleccionado")
@@ -2894,34 +2885,26 @@ class SistemaInscritosCompleto:
                             'archivo': archivo,
                             'indice': i
                         })
-                        
-                        # Actualizar diagnóstico
-                        st.session_state['diagnostico_documentos']['subidos'] += 1
-                        st.session_state['diagnostico_documentos']['archivos_detalles'].append({
-                            'documento': doc,
-                            'archivo': archivo.name,
-                            'tamaño': archivo.size
-                        })
                     else:
                         st.warning(f"⚠️ Este archivo ya fue seleccionado")
         
-        # Mostrar resumen claro CON DIAGNÓSTICO
+        # Actualizar el estado global
+        st.session_state.archivos_subidos_info = archivos_subidos_info
+        
+        # Mostrar resumen claro
         documentos_count = len(archivos_subidos_info)
         
-        # MOSTRAR DIAGNÓSTICO DETALLADO
-        with st.expander("🔍 **DIAGNÓSTICO DE DOCUMENTOS**", expanded=True):
+        # Mostrar diagnóstico detallado
+        with st.expander("🔍 **RESUMEN DE DOCUMENTOS**", expanded=True):
             st.write(f"**Documentos requeridos:** {minimo_requerido}")
-            st.write(f"**Documentos subidos (según contador):** {documentos_count}")
+            st.write(f"**Documentos subidos:** {documentos_count}")
             
             if documentos_count > 0:
                 st.write("**Detalles de archivos subidos:**")
                 for i, info in enumerate(archivos_subidos_info, 1):
                     st.write(f"{i}. **{info['nombre_documento']}:** {info['archivo'].name} ({info['archivo'].size:,} bytes)")
-            
-            # Verificar si hay discrepancias
-            if documentos_count != st.session_state['diagnostico_documentos']['subidos']:
-                st.error(f"⚠️ **DISCREPANCIA DETECTADA:** Contador interno: {documentos_count} vs Diagnóstico: {st.session_state['diagnostico_documentos']['subidos']}")
         
+        # Mostrar estado actual
         if documentos_count > 0:
             if documentos_count == minimo_requerido:
                 st.success(f"✅ **¡PERFECTO!** Has subido {documentos_count} de {minimo_requerido} documentos requeridos")
@@ -3056,7 +3039,7 @@ class SistemaInscritosCompleto:
         errores = []
         
         # Mostrar diagnóstico de documentos antes de validar
-        with st.expander("🔍 **DIAGNÓSTICO ANTES DE ENVIAR**", expanded=True):
+        with st.expander("🔍 **VALIDACIÓN DE DOCUMENTOS**", expanded=True):
             st.write(f"**Tipo de programa:** {programa['tipo_programa']}")
             st.write(f"**Documentos requeridos:** {documentos.get('minimo_requerido', '?')}")
             st.write(f"**Documentos en lista 'archivos_subidos_info':** {len(documentos.get('archivos_subidos_info', []))}")
@@ -3215,7 +3198,20 @@ class SistemaInscritosCompleto:
                         st.session_state.datos_exitosos['correo_enviado'] = correo_enviado
                         st.session_state.datos_exitosos['mensaje_correo'] = mensaje_correo
                         
-                        st.rerun()
+                        # Limpiar estado de archivos
+                        if 'archivos_subidos_info' in st.session_state:
+                            st.session_state.archivos_subidos_info = []
+                        
+                        # Limpiar estado del formulario
+                        st.session_state.formulario_estado = {
+                            'programa_seleccionado': None,
+                            'programa_info': None,
+                            'matricula_generada': None,
+                            'documentos_subidos': [],
+                            'contador_documentos': 0
+                        }
+                        
+                        st.experimental_rerun()
                     else:
                         st.error("❌ Error al sincronizar con el servidor remoto")
                 else:
@@ -3276,15 +3272,19 @@ class SistemaInscritosCompleto:
         if ComponentesUI.crear_boton_accion("📝 Realizar otra pre-inscripción"):
             # Limpiar el estado del formulario
             st.session_state.formulario_enviado = False
-            st.session_state.programa_seleccionado_key = None
-            st.session_state.programa_info = None
             st.session_state.datos_exitosos = None
-            st.rerun()
+            st.session_state.formulario_estado = {
+                'programa_seleccionado': None,
+                'programa_info': None,
+                'matricula_generada': None,
+                'documentos_subidos': [],
+                'contador_documentos': 0
+            }
+            st.experimental_rerun()
 
 # ============================================================================
 # CAPA 13: PÁGINAS/VISTAS PRINCIPALES
 # ============================================================================
-
 
 class PaginaInscripcion:
     """Página para nueva pre-inscripción"""
@@ -3490,7 +3490,7 @@ class PaginaConfiguracion:
                 with st.spinner("Probando conexión..."):
                     if gestor_remoto.verificar_conexion_ssh():
                         st.success("✅ Conexión SSH exitosa")
-                        st.rerun()
+                        st.experimental_rerun()
                     else:
                         st.error("❌ Conexión SSH fallida")
         
@@ -3503,7 +3503,7 @@ class PaginaConfiguracion:
                 with st.spinner("Creando/verificando estructura de directorios..."):
                     if gestor_remoto.crear_estructura_directorios_remota():
                         st.success("✅ Estructura de directorios remota verificada/creada")
-                        st.rerun()
+                        st.experimental_rerun()
                     else:
                         st.error("❌ Error creando estructura de directorios remota")
         
@@ -3516,7 +3516,7 @@ class PaginaConfiguracion:
                         eliminados = db_completa.limpiar_registros_incompletos()
                         if eliminados > 0:
                             st.success(f"✅ Eliminados {eliminados} registros incompletos")
-                            st.rerun()
+                            st.experimental_rerun()
                         else:
                             st.info("ℹ️ No se encontraron registros incompletos para eliminar")
             
@@ -3597,7 +3597,7 @@ class PaginaReportes:
                         )
                         if backup_path:
                             st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
-                            st.rerun()
+                            st.experimental_rerun()
             
             with col_back2:
                 # Botón para descargar backup seleccionado
@@ -3628,7 +3628,7 @@ class PaginaReportes:
                     )
                     if backup_path:
                         st.success(f"✅ Backup creado exitosamente: {os.path.basename(backup_path)}")
-                        st.rerun()
+                        st.experimental_rerun()
 
 # ============================================================================
 # CAPA 14: CONTROLADOR PRINCIPAL
