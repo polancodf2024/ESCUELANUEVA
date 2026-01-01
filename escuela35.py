@@ -920,7 +920,7 @@ class SistemaBaseDatos:
             return None
     
     def verificar_login(self, usuario, password):
-        """Verificar credenciales de login contra base de datos remota"""
+        """Verificar credenciales de login contra base de datos remota CON BCRYPT"""
         try:
             logger.info(f"🔐 Intentando login para usuario: {usuario}")
             
@@ -931,16 +931,47 @@ class SistemaBaseDatos:
                 logger.warning(f"Usuario no encontrado en base de datos remota: {usuario}")
                 return None
             
-            stored_password = usuario_data.get('password', '')
+            # Obtener el hash almacenado (puede estar en 'password' o 'password_hash')
+            stored_hash = usuario_data.get('password_hash', '') or usuario_data.get('password', '')
             
-            # COMPARACIÓN DIRECTA (texto plano)
-            if stored_password == password:
-                logger.info(f"✅ Login exitoso para usuario: {usuario}")
-                return usuario_data
-            else:
-                logger.warning(f"❌ Contraseña incorrecta para usuario: {usuario}")
+            if not stored_hash:
+                logger.error(f"❌ No hay hash de contraseña para usuario: {usuario}")
                 return None
+            
+            logger.debug(f"Hash almacenado para {usuario}: {stored_hash[:20]}...")
+            
+            # VERIFICACIÓN CON BCRYPT
+            try:
+                # bcrypt puede manejar hashes que comienzan con $2b$, $2a$, etc.
+                if stored_hash.startswith('$2'):
+                    # Es un hash bcrypt
+                    if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
+                        logger.info(f"✅ Login exitoso para usuario: {usuario} (bcrypt)")
+                        return usuario_data
+                    else:
+                        logger.warning(f"❌ Contraseña incorrecta para usuario: {usuario} (bcrypt)")
+                        return None
+                else:
+                    # NO es un hash bcrypt, podría ser texto plano (para compatibilidad)
+                    logger.warning(f"⚠️ Hash no parece ser bcrypt para usuario: {usuario}")
+                    if stored_hash == password:
+                        logger.info(f"✅ Login exitoso (texto plano) para usuario: {usuario}")
+                        return usuario_data
+                    else:
+                        logger.warning(f"❌ Contraseña incorrecta para usuario: {usuario}")
+                        return None
+                        
+            except Exception as bcrypt_error:
+                logger.error(f"❌ Error en verificación bcrypt: {bcrypt_error}")
                 
+                # Fallback a comparación directa
+                if stored_hash == password:
+                    logger.info(f"✅ Login exitoso (fallback) para usuario: {usuario}")
+                    return usuario_data
+                else:
+                    logger.warning(f"❌ Contraseña incorrecta para usuario: {usuario}")
+                    return None
+                    
         except Exception as e:
             logger.error(f"❌ Error verificando login: {e}", exc_info=True)
             return None
