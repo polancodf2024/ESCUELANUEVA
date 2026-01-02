@@ -5,6 +5,7 @@ SISTEMA DE GESTIÓN DE ASPIRANTES - VERSIÓN 3.8 (TRABAJO REMOTO COMPLETO)
 Sistema completo que trabaja directamente en el servidor remoto
 VERSIÓN CORREGIDA: Compatibilidad completa con secrets.toml
 VERSIÓN 4.0.0: CONFIGURACIÓN UNIFICADA CON SECRETS.TOML
+VERSIÓN 4.0.1: CORRECCIÓN DE ATRIBUTOS DE RUTAS REMOTAS
 """
 
 # ============================================================================
@@ -69,7 +70,7 @@ except ImportError:
 # Configuración de la aplicación
 APP_CONFIG = {
     'app_name': 'Sistema Escuela Enfermería',
-    'version': '4.0.0',  # Versión actualizada - CONFIGURACIÓN UNIFICADA
+    'version': '4.0.1',  # Versión actualizada - CORRECCIÓN DE ATRIBUTOS
     'page_title': 'Sistema Escuela Enfermería - Pre-Inscripción',
     'page_icon': '🏥',
     'layout': 'wide',
@@ -329,7 +330,7 @@ class UtilidadesSistema:
             socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
             return True
         except Exception as e:
-            logger.warning(f"Sin conectividad de red: {e}")
+            logger.warning(f"Sin conectividad de net: {e}")
             return False
 
 class ValidadorDatos:
@@ -433,11 +434,11 @@ def cargar_configuracion_secrets():
         return {}
 
 # ============================================================================
-# CAPA 5: GESTIÓN DE CONEXIÓN SSH COMPLETA CON SUBIDA DE ARCHIVOS
+# CAPA 5: GESTIÓN DE CONEXIÓN SSH COMPLETA CON SUBIDA DE ARCHIVOS - VERSIÓN CORREGIDA
 # ============================================================================
 
 class GestorConexionRemota:
-    """Gestor de conexión SSH al servidor remoto con gestión completa de archivos - VERSIÓN UNIFICADA"""
+    """Gestor de conexión SSH al servidor remoto con gestión completa de archivos - VERSIÓN CORREGIDA"""
     
     def __init__(self):
         self.ssh = None
@@ -470,16 +471,24 @@ class GestorConexionRemota:
             'db_download': TIME_CONFIG['db_download_timeout']
         }
         
+        # INICIALIZAR ATRIBUTOS DE RUTAS COMO STRINGS VACÍOS - CORRECCIÓN CLAVE
+        self.db_path_remoto = ""
+        self.uploads_path_remoto = ""
+        self.uploads_inscritos_remoto = ""
+        self.uploads_estudiantes_remoto = ""
+        self.uploads_egresados_remoto = ""
+        self.uploads_contratados_remoto = ""
+        self.uploads_aspirantes_remoto = ""
+        self.uploads_documentos_remoto = ""
+        
+        # CARGAR LAS RUTAS DESDE LA CONFIGURACIÓN
+        self._cargar_rutas_desde_config()
+        
         atexit.register(self._limpiar_archivos_temporales)
         
         if not self.config.get('host'):
             logger.warning("⚠️ No hay configuración SSH en secrets.toml")
             return
-        
-        # Usar las rutas de secrets.toml UNIFICADAS
-        self.db_path_remoto = self.config.get('db_principal')
-        self.uploads_path_remoto = self.config.get('uploads_path')
-        self.uploads_inscritos_remoto = self.config.get('uploads_inscritos')
         
         logger.info(f"🔗 Configuración SSH cargada para {self.config.get('host', 'No configurado')}")
         logger.info(f"📁 Ruta base uploads: {self.uploads_path_remoto}")
@@ -558,6 +567,24 @@ class GestorConexionRemota:
         
         return config
     
+    def _cargar_rutas_desde_config(self):
+        """Cargar rutas desde la configuración a atributos de clase - CORRECCIÓN CLAVE"""
+        try:
+            # Cargar todas las rutas desde la configuración
+            self.db_path_remoto = self.config.get('db_principal', '')
+            self.uploads_path_remoto = self.config.get('uploads_path', '')
+            self.uploads_inscritos_remoto = self.config.get('uploads_inscritos', '')
+            self.uploads_estudiantes_remoto = self.config.get('uploads_estudiantes', '')
+            self.uploads_egresados_remoto = self.config.get('uploads_egresados', '')
+            self.uploads_contratados_remoto = self.config.get('uploads_contratados', '')
+            self.uploads_aspirantes_remoto = self.config.get('uploads_aspirantes', '')
+            self.uploads_documentos_remoto = self.config.get('uploads_documentos', '')
+            
+            logger.debug("✅ Rutas cargadas desde configuración a atributos de clase")
+            
+        except Exception as e:
+            logger.error(f"❌ Error cargando rutas desde configuración: {e}")
+    
     def _limpiar_archivos_temporales(self):
         logger.debug("Limpiando archivos temporales...")
         
@@ -591,7 +618,7 @@ class GestorConexionRemota:
                 
             logger.info(f"🔍 Probando conexión SSH a {self.config['host']}...")
             
-            if not UtilidadesSistema.verificar_conectividad_red():
+            if not UtilidadesSistema.verificar_conectividad_net():
                 logger.warning("⚠️ No hay conectividad de red")
                 return False
             
@@ -725,12 +752,12 @@ class GestorConexionRemota:
             return False
     
     def crear_estructura_directorios_remota(self):
-        """Crear estructura completa de directorios en el servidor remoto - VERSIÓN UNIFICADA"""
+        """Crear estructura completa de directorios en el servidor remoto - VERSIÓN CORREGIDA"""
         try:
             if not self.conectar_ssh():
                 return False
             
-            # Directorios a crear según secrets.toml
+            # Directorios a crear según secrets.toml - USAR ATRIBUTOS DE CLASE
             directorios = [
                 self.uploads_path_remoto,
                 self.uploads_inscritos_remoto,
@@ -745,7 +772,7 @@ class GestorConexionRemota:
             ]
             
             for directorio in directorios:
-                if directorio:
+                if directorio and isinstance(directorio, str) and directorio.strip():
                     self._crear_directorio_remoto_recursivo(directorio)
             
             # Crear directorio para la base de datos si no existe
@@ -758,7 +785,7 @@ class GestorConexionRemota:
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error creando estructura de directorios remota: {e}")
+            logger.error(f"❌ Error creando estructura de directorios remota: {e}", exc_info=True)
             return False
         finally:
             if self.ssh:
