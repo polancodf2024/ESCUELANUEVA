@@ -824,15 +824,72 @@ class GestorConexionRemota:
         return self.probar_conexion_inicial()
 
 # =============================================================================
-# 3. SISTEMA DE BASE DE DATOS SQLITE - BASE DE DATOS ÚNICA (CORREGIDO)
+# 3. SISTEMA DE BASE DE DATOS SQLITE - BASE DE DATOS ÚNICA (COMPLETO CON TODOS LOS MÉTODOS)
 # =============================================================================
 
 class SistemaBaseDatos:
-    """Sistema de base de datos SQLite con base de datos única - CORREGIDO"""
+    """Sistema de base de datos SQLite con base de datos única - COMPLETO CON TODOS LOS MÉTODOS"""
     
     def __init__(self):
         self.gestor = gestor_remoto
         self.page_size = 20
+    
+    def inicializar_db_remota(self):
+        """Inicializar base de datos en servidor remoto"""
+        try:
+            with st.spinner("🔄 Inicializando base de datos remota..."):
+                # Verificar si ya existe
+                if self.gestor.verificar_existencia_db():
+                    logger.info("✅ Base de datos ya existe en servidor")
+                    
+                    # Verificar si tiene la tabla usuarios
+                    consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
+                    resultado, error = self.gestor.ejecutar_sql_remoto(consulta)
+                    
+                    if resultado and len(resultado) > 0:
+                        logger.info("✅ Tabla 'usuarios' encontrada")
+                        estado_sistema.marcar_db_inicializada()
+                        return True
+                    else:
+                        logger.warning("⚠️ Tabla 'usuarios' no encontrada")
+                        return False
+                else:
+                    st.error("❌ Base de datos no encontrada en servidor")
+                    return False
+        except Exception as e:
+            logger.error(f"❌ Error inicializando DB remota: {e}")
+            st.error(f"❌ Error: {str(e)}")
+            return False
+    
+    def ejecutar_consulta_remota(self, consulta_sql):
+        """Ejecutar consulta SQL en servidor remoto"""
+        try:
+            resultado, error = self.gestor.ejecutar_sql_remoto(consulta_sql)
+            
+            if error:
+                logger.error(f"❌ Error en consulta remota: {error}")
+                return None
+            
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"❌ Error ejecutando consulta remota: {e}")
+            return None
+    
+    def ejecutar_modificacion_remota(self, consulta_sql):
+        """Ejecutar modificación SQL en servidor remoto"""
+        try:
+            exito, resultado = self.gestor.ejecutar_sql_modificacion(consulta_sql)
+            
+            if not exito:
+                logger.error(f"❌ Error en modificación remota: {resultado}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error ejecutando modificación remota: {e}")
+            return False
     
     def verificar_usuario_bcrypt(self, usuario, password):
         """VERIFICACIÓN DE USUARIO CORREGIDA - Usa la estructura REAL de la tabla"""
@@ -1028,6 +1085,484 @@ class SistemaBaseDatos:
             logger.error(f"❌ Error verificando/creando usuario admin: {e}", exc_info=True)
             return False
     
+    def agregar_inscrito(self, inscrito_data):
+        """Agregar nuevo inscrito - MÉTODO FALTANTE AGREGADO"""
+        try:
+            # Generar matrícula única
+            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+            matricula = f"INS{timestamp[-6:]}"
+            folio_unico = f"FOL{timestamp}"
+            
+            # Construir consulta INSERT para inscrito
+            consulta = f"""
+            INSERT INTO inscritos (
+                matricula, nombre_completo, email, telefono, programa_interes,
+                fecha_nacimiento, documentos_subidos, estatus, fecha_registro, folio_unico
+            ) VALUES (
+                '{matricula}',
+                '{inscrito_data.get('nombre_completo', '').replace("'", "''")}',
+                '{inscrito_data.get('email', '').replace("'", "''")}',
+                '{inscrito_data.get('telefono', '').replace("'", "''")}',
+                '{inscrito_data.get('programa_interes', '').replace("'", "''")}',
+                '{inscrito_data.get('fecha_nacimiento', '')}',
+                {inscrito_data.get('documentos_subidos', 0)},
+                '{inscrito_data.get('estatus', 'Pre-inscrito').replace("'", "''")}',
+                CURRENT_TIMESTAMP,
+                '{folio_unico}'
+            )
+            """
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.info(f"Inscrito agregado: {inscrito_data.get('nombre_completo', '')}")
+                return True
+            else:
+                logger.error(f"Error agregando inscrito: {inscrito_data.get('nombre_completo', '')}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error agregando inscrito: {e}", exc_info=True)
+            return False
+    
+    def registrar_bitacora(self, usuario, tipo_accion, descripcion):
+        """Registrar en bitácora - MÉTODO FALTANTE AGREGADO"""
+        try:
+            consulta = f"""
+            INSERT INTO bitacora (
+                usuario, tipo_accion, descripcion, fecha_accion
+            ) VALUES (
+                '{usuario.replace("'", "''")}',
+                '{tipo_accion.replace("'", "''")}',
+                '{descripcion.replace("'", "''")}',
+                CURRENT_TIMESTAMP
+            )
+            """
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.debug(f"Bitácora registrada: {usuario} - {tipo_accion}")
+                return True
+            else:
+                logger.warning(f"Error registrando en bitácora: {usuario} - {tipo_accion}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error registrando en bitácora: {e}")
+            return False
+    
+    def agregar_estudiante(self, estudiante_data):
+        """Agregar nuevo estudiante - MÉTODO NUEVO AGREGADO"""
+        try:
+            # Generar matrícula única si no viene
+            if not estudiante_data.get('matricula'):
+                timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                matricula = f"EST{timestamp[-6:]}"
+            else:
+                matricula = estudiante_data.get('matricula')
+            
+            consulta = f"""
+            INSERT INTO estudiantes (
+                matricula, nombre_completo, email, telefono, programa,
+                semestre, promedio, fecha_ingreso, estatus
+            ) VALUES (
+                '{matricula}',
+                '{estudiante_data.get('nombre_completo', '').replace("'", "''")}',
+                '{estudiante_data.get('email', '').replace("'", "''")}',
+                '{estudiante_data.get('telefono', '').replace("'", "''")}',
+                '{estudiante_data.get('programa', '').replace("'", "''")}',
+                {estudiante_data.get('semestre', 1)},
+                {estudiante_data.get('promedio', 0.0)},
+                '{estudiante_data.get('fecha_ingreso', datetime.now().strftime('%Y-%m-%d'))}',
+                '{estudiante_data.get('estatus', 'Activo').replace("'", "''")}'
+            )
+            """
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.info(f"Estudiante agregado: {estudiante_data.get('nombre_completo', '')}")
+                return True
+            else:
+                logger.error(f"Error agregando estudiante: {estudiante_data.get('nombre_completo', '')}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error agregando estudiante: {e}", exc_info=True)
+            return False
+    
+    def agregar_egresado(self, egresado_data):
+        """Agregar nuevo egresado - MÉTODO NUEVO AGREGADO"""
+        try:
+            consulta = f"""
+            INSERT INTO egresados (
+                matricula, nombre_completo, email, programa, fecha_graduacion,
+                promedio_final, titulo_obtenido, cedula_profesional, estatus_laboral
+            ) VALUES (
+                '{egresado_data.get('matricula', '').replace("'", "''")}',
+                '{egresado_data.get('nombre_completo', '').replace("'", "''")}',
+                '{egresado_data.get('email', '').replace("'", "''")}',
+                '{egresado_data.get('programa', '').replace("'", "''")}',
+                '{egresado_data.get('fecha_graduacion', datetime.now().strftime('%Y-%m-%d'))}',
+                {egresado_data.get('promedio_final', 0.0)},
+                '{egresado_data.get('titulo_obtenido', '').replace("'", "''")}',
+                '{egresado_data.get('cedula_profesional', '').replace("'", "''")}',
+                '{egresado_data.get('estatus_laboral', 'Desempleado').replace("'", "''")}'
+            )
+            """
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.info(f"Egresado agregado: {egresado_data.get('nombre_completo', '')}")
+                return True
+            else:
+                logger.error(f"Error agregando egresado: {egresado_data.get('nombre_completo', '')}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error agregando egresado: {e}", exc_info=True)
+            return False
+    
+    def agregar_contratado(self, contratado_data):
+        """Agregar nuevo contratado - MÉTODO NUEVO AGREGADO"""
+        try:
+            consulta = f"""
+            INSERT INTO contratados (
+                matricula, nombre_completo, email, empresa, puesto,
+                fecha_contratacion, salario, tipo_contrato, estatus
+            ) VALUES (
+                '{contratado_data.get('matricula', '').replace("'", "''")}',
+                '{contratado_data.get('nombre_completo', '').replace("'", "''")}',
+                '{contratado_data.get('email', '').replace("'", "''")}',
+                '{contratado_data.get('empresa', '').replace("'", "''")}',
+                '{contratado_data.get('puesto', '').replace("'", "''")}',
+                '{contratado_data.get('fecha_contratacion', datetime.now().strftime('%Y-%m-%d'))}',
+                {contratado_data.get('salario', 0.0)},
+                '{contratado_data.get('tipo_contrato', 'Indeterminado').replace("'", "''")}',
+                '{contratado_data.get('estatus', 'Activo').replace("'", "''")}'
+            )
+            """
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.info(f"Contratado agregado: {contratado_data.get('nombre_completo', '')}")
+                return True
+            else:
+                logger.error(f"Error agregando contratado: {contratado_data.get('nombre_completo', '')}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error agregando contratado: {e}", exc_info=True)
+            return False
+    
+    def actualizar_usuario(self, usuario_id, usuario_data):
+        """Actualizar usuario existente - MÉTODO NUEVO AGREGADO"""
+        try:
+            consulta = f"""
+            UPDATE usuarios 
+            SET rol = '{usuario_data.get('rol', '').replace("'", "''")}',
+                nombre_completo = '{usuario_data.get('nombre_completo', '').replace("'", "''")}',
+                email = '{usuario_data.get('email', '').replace("'", "''")}',
+                matricula = '{usuario_data.get('matricula', '').replace("'", "''")}',
+                activo = {1 if usuario_data.get('activo', True) else 0},
+                fecha_actualiza = CURRENT_TIMESTAMP
+            WHERE id = {usuario_id}
+            """
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.info(f"Usuario actualizado: ID {usuario_id}")
+                return True
+            else:
+                logger.error(f"Error actualizando usuario: ID {usuario_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error actualizando usuario: {e}", exc_info=True)
+            return False
+    
+    def eliminar_usuario(self, usuario_id):
+        """Eliminar usuario - MÉTODO NUEVO AGREGADO"""
+        try:
+            consulta = f"DELETE FROM usuarios WHERE id = {usuario_id}"
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.info(f"Usuario eliminado: ID {usuario_id}")
+                return True
+            else:
+                logger.error(f"Error eliminando usuario: ID {usuario_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error eliminando usuario: {e}", exc_info=True)
+            return False
+    
+    def obtener_estadisticas_generales(self):
+        """Obtener estadísticas generales del sistema - MÉTODO NUEVO AGREGADO"""
+        try:
+            estadisticas = {}
+            
+            # Obtener conteo de inscritos
+            consulta_inscritos = "SELECT COUNT(*) as total FROM inscritos"
+            resultado_inscritos = self.ejecutar_consulta_remota(consulta_inscritos)
+            if resultado_inscritos and len(resultado_inscritos) > 0:
+                estadisticas['total_inscritos'] = resultado_inscritos[0].get('total', 0)
+            
+            # Obtener conteo de estudiantes
+            consulta_estudiantes = "SELECT COUNT(*) as total FROM estudiantes"
+            resultado_estudiantes = self.ejecutar_consulta_remota(consulta_estudiantes)
+            if resultado_estudiantes and len(resultado_estudiantes) > 0:
+                estadisticas['total_estudiantes'] = resultado_estudiantes[0].get('total', 0)
+            
+            # Obtener conteo de egresados
+            consulta_egresados = "SELECT COUNT(*) as total FROM egresados"
+            resultado_egresados = self.ejecutar_consulta_remota(consulta_egresados)
+            if resultado_egresados and len(resultado_egresados) > 0:
+                estadisticas['total_egresados'] = resultado_egresados[0].get('total', 0)
+            
+            # Obtener conteo de contratados
+            consulta_contratados = "SELECT COUNT(*) as total FROM contratados"
+            resultado_contratados = self.ejecutar_consulta_remota(consulta_contratados)
+            if resultado_contratados and len(resultado_contratados) > 0:
+                estadisticas['total_contratados'] = resultado_contratados[0].get('total', 0)
+            
+            # Obtener conteo de usuarios
+            consulta_usuarios = "SELECT COUNT(*) as total FROM usuarios"
+            resultado_usuarios = self.ejecutar_consulta_remota(consulta_usuarios)
+            if resultado_usuarios and len(resultado_usuarios) > 0:
+                estadisticas['total_usuarios'] = resultado_usuarios[0].get('total', 0)
+            
+            logger.debug(f"Estadísticas obtenidas: {estadisticas}")
+            return estadisticas
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo estadísticas: {e}")
+            return {}
+    
+    def obtener_inscritos(self, page=1, search_term=""):
+        """Obtener inscritos con paginación y búsqueda"""
+        try:
+            offset = (page - 1) * self.page_size
+            
+            if search_term:
+                consulta = f"""
+                SELECT * FROM inscritos 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%' 
+                   OR folio_unico LIKE '%{search_term}%'
+                ORDER BY fecha_registro DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            else:
+                consulta = f"""
+                SELECT * FROM inscritos 
+                ORDER BY fecha_registro DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if resultado is None:
+                return pd.DataFrame(), 0, 0
+            
+            df = pd.DataFrame(resultado)
+            
+            # Obtener total de registros
+            if search_term:
+                count_consulta = f"""
+                SELECT COUNT(*) as total FROM inscritos 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%' 
+                   OR folio_unico LIKE '%{search_term}%'
+                """
+            else:
+                count_consulta = "SELECT COUNT(*) as total FROM inscritos"
+            
+            count_result = self.ejecutar_consulta_remota(count_consulta)
+            
+            if count_result and len(count_result) > 0:
+                total_records = count_result[0].get('total', 0)
+            else:
+                total_records = 0
+            
+            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
+            
+            logger.debug(f"Obtenidos {len(df)} inscritos (página {page}/{total_pages})")
+            return df, total_pages, total_records
+        except Exception as e:
+            logger.error(f"Error obteniendo inscritos: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
+    
+    def obtener_estudiantes(self, page=1, search_term=""):
+        """Obtener estudiantes con paginación y búsqueda"""
+        try:
+            offset = (page - 1) * self.page_size
+            
+            if search_term:
+                consulta = f"""
+                SELECT * FROM estudiantes 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%'
+                ORDER BY fecha_ingreso DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            else:
+                consulta = f"""
+                SELECT * FROM estudiantes 
+                ORDER BY fecha_ingreso DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if resultado is None:
+                return pd.DataFrame(), 0, 0
+            
+            df = pd.DataFrame(resultado)
+            
+            # Obtener total de registros
+            if search_term:
+                count_consulta = f"""
+                SELECT COUNT(*) as total FROM estudiantes 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%'
+                """
+            else:
+                count_consulta = "SELECT COUNT(*) as total FROM estudiantes"
+            
+            count_result = self.ejecutar_consulta_remota(count_consulta)
+            
+            if count_result and len(count_result) > 0:
+                total_records = count_result[0].get('total', 0)
+            else:
+                total_records = 0
+            
+            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
+            
+            logger.debug(f"Obtenidos {len(df)} estudiantes (página {page}/{total_pages})")
+            return df, total_pages, total_records
+        except Exception as e:
+            logger.error(f"Error obteniendo estudiantes: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
+    
+    def obtener_egresados(self, page=1, search_term=""):
+        """Obtener egresados con paginación y búsqueda"""
+        try:
+            offset = (page - 1) * self.page_size
+            
+            if search_term:
+                consulta = f"""
+                SELECT * FROM egresados 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%'
+                ORDER BY fecha_graduacion DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            else:
+                consulta = f"""
+                SELECT * FROM egresados 
+                ORDER BY fecha_graduacion DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if resultado is None:
+                return pd.DataFrame(), 0, 0
+            
+            df = pd.DataFrame(resultado)
+            
+            # Obtener total de registros
+            if search_term:
+                count_consulta = f"""
+                SELECT COUNT(*) as total FROM egresados 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%'
+                """
+            else:
+                count_consulta = "SELECT COUNT(*) as total FROM egresados"
+            
+            count_result = self.ejecutar_consulta_remota(count_consulta)
+            
+            if count_result and len(count_result) > 0:
+                total_records = count_result[0].get('total', 0)
+            else:
+                total_records = 0
+            
+            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
+            
+            logger.debug(f"Obtenidos {len(df)} egresados (página {page}/{total_pages})")
+            return df, total_pages, total_records
+        except Exception as e:
+            logger.error(f"Error obteniendo egresados: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
+    
+    def obtener_contratados(self, page=1, search_term=""):
+        """Obtener contratados con paginación y búsqueda"""
+        try:
+            offset = (page - 1) * self.page_size
+            
+            if search_term:
+                consulta = f"""
+                SELECT * FROM contratados 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%'
+                ORDER BY fecha_contratacion DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            else:
+                consulta = f"""
+                SELECT * FROM contratados 
+                ORDER BY fecha_contratacion DESC 
+                LIMIT {self.page_size} OFFSET {offset}
+                """
+            
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if resultado is None:
+                return pd.DataFrame(), 0, 0
+            
+            df = pd.DataFrame(resultado)
+            
+            # Obtener total de registros
+            if search_term:
+                count_consulta = f"""
+                SELECT COUNT(*) as total FROM contratados 
+                WHERE matricula LIKE '%{search_term}%' 
+                   OR nombre_completo LIKE '%{search_term}%' 
+                   OR email LIKE '%{search_term}%'
+                """
+            else:
+                count_consulta = "SELECT COUNT(*) as total FROM contratados"
+            
+            count_result = self.ejecutar_consulta_remota(count_consulta)
+            
+            if count_result and len(count_result) > 0:
+                total_records = count_result[0].get('total', 0)
+            else:
+                total_records = 0
+            
+            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
+            
+            logger.debug(f"Obtenidos {len(df)} contratados (página {page}/{total_pages})")
+            return df, total_pages, total_records
+        except Exception as e:
+            logger.error(f"Error obteniendo contratados: {e}", exc_info=True)
+            return pd.DataFrame(), 0, 0
+    
     def obtener_usuarios(self, page=1, search_term=""):
         """Obtener usuarios con paginación y búsqueda - CORREGIDO para estructura REAL"""
         try:
@@ -1103,18 +1638,18 @@ class SistemaBaseDatos:
                 email, matricula, activo, fecha_creacion, fecha_actualiza,
                 categoria, nombre
             ) VALUES (
-                '{usuario_data.get('usuario', '')}',
+                '{usuario_data.get('usuario', '').replace("'", "''")}',
                 '{hashed_password_str}',
                 '{hashed_password_str}',
-                '{usuario_data.get('rol', 'administrador')}',
-                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', ''))}',
-                '{usuario_data.get('email', '')}',
-                '{usuario_data.get('matricula', '')}',
+                '{usuario_data.get('rol', 'administrador').replace("'", "''")}',
+                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', '')).replace("'", "''")}',
+                '{usuario_data.get('email', '').replace("'", "''")}',
+                '{usuario_data.get('matricula', '').replace("'", "''")}',
                 {1 if usuario_data.get('activo', True) else 0},
                 CURRENT_TIMESTAMP,
                 CURRENT_TIMESTAMP,
-                '{usuario_data.get('categoria', usuario_data.get('rol', 'administrador'))}',
-                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', ''))}'
+                '{usuario_data.get('categoria', usuario_data.get('rol', 'administrador')).replace("'", "''")}',
+                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', '')).replace("'", "''")}'
             )
             """
             
@@ -1163,6 +1698,7 @@ class SistemaBaseDatos:
         except Exception as e:
             logger.error(f"DEBUG Error verificando usuarios: {e}")
             return []
+
 # =============================================================================
 # 4. SISTEMA DE BACKUP AUTOMÁTICO
 # =============================================================================
@@ -1545,10 +2081,10 @@ class SistemaPrincipal:
 # 8. INTERFAZ STREAMLIT
 # =============================================================================
 
-# Instancias globales de los servicios
+# Instancias globales de los servicios (¡IMPORTANTE: en el orden correcto!)
 estado_sistema = EstadoPersistente()
 gestor_remoto = GestorConexionRemota()
-db = SistemaBaseDatos()
+db = SistemaBaseDatos()  # ¡Después de gestor_remoto!
 auth = SistemaAutenticacion()
 sistema_principal = None
 
