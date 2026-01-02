@@ -824,107 +824,18 @@ class GestorConexionRemota:
         return self.probar_conexion_inicial()
 
 # =============================================================================
-# 3. SISTEMA DE BASE DE DATOS SQLITE - BASE DE DATOS ÚNICA
+# 3. SISTEMA DE BASE DE DATOS SQLITE - BASE DE DATOS ÚNICA (CORREGIDO)
 # =============================================================================
 
 class SistemaBaseDatos:
-    """Sistema de base de datos SQLite con base de datos única"""
+    """Sistema de base de datos SQLite con base de datos única - CORREGIDO"""
     
     def __init__(self):
         self.gestor = gestor_remoto
         self.page_size = 20
     
-    def inicializar_db_remota(self):
-        """Inicializar base de datos en servidor remoto"""
-        try:
-            with st.spinner("🔄 Inicializando base de datos remota..."):
-                # Verificar si ya existe
-                if self.gestor.verificar_existencia_db():
-                    logger.info("✅ Base de datos ya existe en servidor")
-                    
-                    # Verificar si tiene la tabla usuarios
-                    consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
-                    resultado, error = self.gestor.ejecutar_sql_remoto(consulta)
-                    
-                    if resultado and len(resultado) > 0:
-                        logger.info("✅ Tabla 'usuarios' encontrada")
-                        estado_sistema.marcar_db_inicializada()
-                        return True
-                    else:
-                        logger.warning("⚠️ Tabla 'usuarios' no encontrada")
-                        return False
-                else:
-                    st.error("❌ Base de datos no encontrada en servidor")
-                    return False
-        except Exception as e:
-            logger.error(f"❌ Error inicializando DB remota: {e}")
-            st.error(f"❌ Error: {str(e)}")
-            return False
-    
-    def ejecutar_consulta_remota(self, consulta_sql):
-        """Ejecutar consulta SQL en servidor remoto"""
-        try:
-            resultado, error = self.gestor.ejecutar_sql_remoto(consulta_sql)
-            
-            if error:
-                logger.error(f"❌ Error en consulta remota: {error}")
-                return None
-            
-            return resultado
-            
-        except Exception as e:
-            logger.error(f"❌ Error ejecutando consulta remota: {e}")
-            return None
-    
-    def ejecutar_modificacion_remota(self, consulta_sql):
-        """Ejecutar modificación SQL en servidor remoto"""
-        try:
-            exito, resultado = self.gestor.ejecutar_sql_modificacion(consulta_sql)
-            
-            if not exito:
-                logger.error(f"❌ Error en modificación remota: {resultado}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error ejecutando modificación remota: {e}")
-            return False
-    
-    def debug_verificar_usuarios(self):
-        """Función de debugging para verificar usuarios - ADAPTADA A LA ESTRUCTURA REAL"""
-        try:
-            consulta = """
-            SELECT id, usuario, rol, nombre_completo, email, activo, 
-                   password_hash, salt,
-                   CASE 
-                       WHEN password_hash LIKE '$2%' THEN 'bcrypt'
-                       WHEN LENGTH(password_hash) = 64 AND password_hash GLOB '[0-9a-f]*' THEN 'sha256'
-                       ELSE 'other'
-                   END as hash_type,
-                   LENGTH(password_hash) as hash_length
-            FROM usuarios
-            ORDER BY id
-            """
-            
-            resultado = self.ejecutar_consulta_remota(consulta)
-            
-            if resultado:
-                logger.info("🔍 DEBUG - Usuarios en la base de datos:")
-                for user in resultado:
-                    logger.info(f"  ID: {user['id']}, Usuario: '{user['usuario']}', Rol: {user['rol']}, "
-                              f"Activo: {user['activo']}, Hash: {user['hash_type']} ({user['hash_length']} chars)")
-                return resultado
-            else:
-                logger.warning("DEBUG - No hay usuarios en la base de datos")
-                return []
-                
-        except Exception as e:
-            logger.error(f"DEBUG Error verificando usuarios: {e}")
-            return []
-    
     def verificar_usuario_bcrypt(self, usuario, password):
-        """VERIFICACIÓN DE USUARIO ADAPTADA - Usa bcrypt con password_hash y salt"""
+        """VERIFICACIÓN DE USUARIO CORREGIDA - Usa la estructura REAL de la tabla"""
         try:
             # Consulta usando la estructura REAL de la tabla
             query = f"""
@@ -936,7 +847,7 @@ class SistemaBaseDatos:
             
             resultados = self.ejecutar_consulta_remota(query)
             
-            if not resultados:
+            if not resultados or len(resultados) == 0:
                 logger.warning(f"Usuario no encontrado o no activo: {usuario}")
                 return None
             
@@ -951,9 +862,9 @@ class SistemaBaseDatos:
             logger.debug(f"Hash almacenado para {usuario}: {stored_hash[:30]}...")
             logger.debug(f"Salt almacenado para {usuario}: {salt[:30]}...")
             
-            # 1. PRIMERO: Verificar si es un hash bcrypt válido
+            # 1. PRIMERO: Verificar si es un hash bcrypt válido (estructura actual)
             if stored_hash.startswith(('$2b$', '$2a$', '$2y$')):
-                # Es un hash bcrypt
+                # Es un hash bcrypt (estado actual de la base de datos)
                 try:
                     if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
                         logger.info(f"✅ Login exitoso (bcrypt) para: {usuario}")
@@ -964,7 +875,7 @@ class SistemaBaseDatos:
                 except Exception as bcrypt_error:
                     logger.error(f"❌ Error en verificación bcrypt: {bcrypt_error}")
             
-            # 2. SEGUNDO: Verificar si es un hash SHA256
+            # 2. SEGUNDO: Verificar si es un hash SHA256 (para compatibilidad)
             sha256_hash = hashlib.sha256(password.encode()).hexdigest()
             if stored_hash == sha256_hash:
                 logger.info(f"✅ Login exitoso (SHA256) para: {usuario}")
@@ -972,7 +883,7 @@ class SistemaBaseDatos:
                 self._actualizar_password_a_bcrypt(usuario, password, salt)
                 return usuario_data
             
-            # 3. TERCERO: Verificar como texto plano (solo para compatibilidad)
+            # 3. TERCERO: Verificar como texto plano (solo para migración)
             if stored_hash == password:
                 logger.warning(f"⚠️ Login exitoso (texto plano) para: {usuario}")
                 # Actualizar a bcrypt automáticamente
@@ -995,7 +906,7 @@ class SistemaBaseDatos:
             return None
     
     def _actualizar_password_a_bcrypt(self, usuario, password, current_salt=None):
-        """Actualizar password a hash bcrypt automáticamente"""
+        """Actualizar password a hash bcrypt automáticamente usando estructura REAL"""
         try:
             # Generar nuevo hash bcrypt
             hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
@@ -1030,7 +941,7 @@ class SistemaBaseDatos:
             return False
     
     def verificar_crear_usuario_admin(self):
-        """Verificar y crear usuario admin si no existe - ADAPTADA A LA ESTRUCTURA REAL"""
+        """Verificar y crear usuario admin si no existe - CORREGIDO para estructura REAL"""
         try:
             logger.info("🔍 Verificando si existe usuario admin...")
             
@@ -1049,66 +960,29 @@ class SistemaBaseDatos:
                     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
                     hashed_password_str = hashed_password.decode('utf-8')
                     
-                    # Obtener estructura de la tabla
-                    consulta_campos = "PRAGMA table_info(usuarios)"
-                    campos_result = self.ejecutar_consulta_remota(consulta_campos)
-                    
-                    if not campos_result:
-                        logger.error("❌ No se pudo obtener información de la tabla usuarios")
-                        return False
-                    
-                    campos = [campo['name'] for campo in campos_result]
-                    
-                    logger.info(f"📊 Campos disponibles en tabla usuarios: {campos}")
-                    
-                    # Construir consulta INSERT basada en los campos REALES
-                    campos_insert = []
-                    valores_insert = []
-                    
-                    for campo in campos:
-                        if campo == 'id':
-                            continue  # id es autoincremental
-                        elif campo == 'usuario':
-                            campos_insert.append(campo)
-                            valores_insert.append("'admin'")
-                        elif campo == 'password_hash':
-                            campos_insert.append(campo)
-                            valores_insert.append(f"'{hashed_password_str}'")
-                        elif campo == 'salt':
-                            campos_insert.append(campo)
-                            valores_insert.append(f"'{hashed_password_str}'")  # Usar mismo hash como salt
-                        elif campo == 'rol':
-                            campos_insert.append(campo)
-                            valores_insert.append("'administrador'")
-                        elif campo == 'nombre_completo':
-                            campos_insert.append(campo)
-                            valores_insert.append("'Administrador del Sistema'")
-                        elif campo == 'email':
-                            campos_insert.append(campo)
-                            valores_insert.append("'admin@escuela.edu.mx'")
-                        elif campo == 'activo':
-                            campos_insert.append(campo)
-                            valores_insert.append("1")
-                        elif campo == 'fecha_creacion':
-                            campos_insert.append(campo)
-                            valores_insert.append("CURRENT_TIMESTAMP")
-                        elif campo == 'fecha_actualiza':
-                            campos_insert.append(campo)
-                            valores_insert.append("CURRENT_TIMESTAMP")
-                        elif campo in ['matricula', 'categoria', 'nombre']:
-                            campos_insert.append(campo)
-                            valores_insert.append("NULL")
-                    
-                    if not campos_insert:
-                        logger.error("❌ No se pudieron determinar campos para insertar")
-                        return False
-                    
+                    # Construir consulta INSERT basada en la estructura REAL
                     consulta_insert = f"""
-                    INSERT INTO usuarios ({', '.join(campos_insert)})
-                    VALUES ({', '.join(valores_insert)})
+                    INSERT INTO usuarios (
+                        usuario, password_hash, salt, rol, nombre_completo, 
+                        email, matricula, activo, fecha_creacion, fecha_actualiza,
+                        categoria, nombre
+                    ) VALUES (
+                        'admin',
+                        '{hashed_password_str}',
+                        '{hashed_password_str}',
+                        'administrador',
+                        'Administrador del Sistema',
+                        'admin@escuela.edu.mx',
+                        'ADM-001',
+                        1,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP,
+                        'administrador',
+                        'Administrador'
+                    )
                     """
                     
-                    logger.debug(f"Consulta INSERT: {consulta_insert}")
+                    logger.debug(f"Consulta INSERT para usuario admin: {consulta_insert}")
                     
                     exito = self.ejecutar_modificacion_remota(consulta_insert)
                     
@@ -1117,6 +991,7 @@ class SistemaBaseDatos:
                         logger.info(f"   Usuario: admin")
                         logger.info(f"   Contraseña: Admin123!")
                         logger.info(f"   Rol: administrador")
+                        logger.info(f"   Password hash: bcrypt")
                         return True
                     else:
                         logger.error("❌ Error creando usuario admin")
@@ -1124,7 +999,7 @@ class SistemaBaseDatos:
                 else:
                     logger.info("✅ Usuario 'admin' ya existe en la base de datos")
                     
-                    # Verificar si tiene contraseña válida
+                    # Verificar si tiene contraseña válida usando estructura REAL
                     consulta_hash = """
                     SELECT password_hash, salt, activo 
                     FROM usuarios 
@@ -1145,7 +1020,7 @@ class SistemaBaseDatos:
                         # Verificar si el password está en texto plano o necesita actualización
                         if not password_hash or password_hash in ["Admin123!", "admin", ""] or not password_hash.startswith(('$2b$', '$2a$', '$2y$')):
                             logger.warning(f"⚠️ Usuario 'admin' tiene password no seguro: {password_hash[:30]}...")
-                            # Actualizar a bcrypt
+                            # Actualizar a bcrypt usando estructura REAL
                             self._actualizar_password_a_bcrypt('admin', 'Admin123!', salt)
                     return True
                     
@@ -1153,226 +1028,8 @@ class SistemaBaseDatos:
             logger.error(f"❌ Error verificando/creando usuario admin: {e}", exc_info=True)
             return False
     
-    def obtener_inscritos(self, page=1, search_term=""):
-        """Obtener inscritos con paginación y búsqueda"""
-        try:
-            offset = (page - 1) * self.page_size
-            
-            if search_term:
-                consulta = f"""
-                SELECT * FROM inscritos 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%' 
-                   OR folio_unico LIKE '%{search_term}%'
-                ORDER BY fecha_registro DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            else:
-                consulta = f"""
-                SELECT * FROM inscritos 
-                ORDER BY fecha_registro DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            
-            resultado = self.ejecutar_consulta_remota(consulta)
-            
-            if resultado is None:
-                return pd.DataFrame(), 0, 0
-            
-            df = pd.DataFrame(resultado)
-            
-            # Obtener total de registros
-            if search_term:
-                count_consulta = f"""
-                SELECT COUNT(*) as total FROM inscritos 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%' 
-                   OR folio_unico LIKE '%{search_term}%'
-                """
-            else:
-                count_consulta = "SELECT COUNT(*) as total FROM inscritos"
-            
-            count_result = self.ejecutar_consulta_remota(count_consulta)
-            
-            if count_result and len(count_result) > 0:
-                total_records = count_result[0].get('total', 0)
-            else:
-                total_records = 0
-            
-            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
-            
-            logger.debug(f"Obtenidos {len(df)} inscritos (página {page}/{total_pages})")
-            return df, total_pages, total_records
-        except Exception as e:
-            logger.error(f"Error obteniendo inscritos: {e}", exc_info=True)
-            return pd.DataFrame(), 0, 0
-    
-    def obtener_estudiantes(self, page=1, search_term=""):
-        """Obtener estudiantes con paginación y búsqueda"""
-        try:
-            offset = (page - 1) * self.page_size
-            
-            if search_term:
-                consulta = f"""
-                SELECT * FROM estudiantes 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%'
-                ORDER BY fecha_ingreso DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            else:
-                consulta = f"""
-                SELECT * FROM estudiantes 
-                ORDER BY fecha_ingreso DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            
-            resultado = self.ejecutar_consulta_remota(consulta)
-            
-            if resultado is None:
-                return pd.DataFrame(), 0, 0
-            
-            df = pd.DataFrame(resultado)
-            
-            # Obtener total de registros
-            if search_term:
-                count_consulta = f"""
-                SELECT COUNT(*) as total FROM estudiantes 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%'
-                """
-            else:
-                count_consulta = "SELECT COUNT(*) as total FROM estudiantes"
-            
-            count_result = self.ejecutar_consulta_remota(count_consulta)
-            
-            if count_result and len(count_result) > 0:
-                total_records = count_result[0].get('total', 0)
-            else:
-                total_records = 0
-            
-            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
-            
-            logger.debug(f"Obtenidos {len(df)} estudiantes (página {page}/{total_pages})")
-            return df, total_pages, total_records
-        except Exception as e:
-            logger.error(f"Error obteniendo estudiantes: {e}", exc_info=True)
-            return pd.DataFrame(), 0, 0
-    
-    def obtener_egresados(self, page=1, search_term=""):
-        """Obtener egresados con paginación y búsqueda"""
-        try:
-            offset = (page - 1) * self.page_size
-            
-            if search_term:
-                consulta = f"""
-                SELECT * FROM egresados 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%'
-                ORDER BY fecha_graduacion DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            else:
-                consulta = f"""
-                SELECT * FROM egresados 
-                ORDER BY fecha_graduacion DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            
-            resultado = self.ejecutar_consulta_remota(consulta)
-            
-            if resultado is None:
-                return pd.DataFrame(), 0, 0
-            
-            df = pd.DataFrame(resultado)
-            
-            # Obtener total de registros
-            if search_term:
-                count_consulta = f"""
-                SELECT COUNT(*) as total FROM egresados 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%'
-                """
-            else:
-                count_consulta = "SELECT COUNT(*) as total FROM egresados"
-            
-            count_result = self.ejecutar_consulta_remota(count_consulta)
-            
-            if count_result and len(count_result) > 0:
-                total_records = count_result[0].get('total', 0)
-            else:
-                total_records = 0
-            
-            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
-            
-            logger.debug(f"Obtenidos {len(df)} egresados (página {page}/{total_pages})")
-            return df, total_pages, total_records
-        except Exception as e:
-            logger.error(f"Error obteniendo egresados: {e}", exc_info=True)
-            return pd.DataFrame(), 0, 0
-    
-    def obtener_contratados(self, page=1, search_term=""):
-        """Obtener contratados con paginación y búsqueda"""
-        try:
-            offset = (page - 1) * self.page_size
-            
-            if search_term:
-                consulta = f"""
-                SELECT * FROM contratados 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%'
-                ORDER BY fecha_contratacion DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            else:
-                consulta = f"""
-                SELECT * FROM contratados 
-                ORDER BY fecha_contratacion DESC 
-                LIMIT {self.page_size} OFFSET {offset}
-                """
-            
-            resultado = self.ejecutar_consulta_remota(consulta)
-            
-            if resultado is None:
-                return pd.DataFrame(), 0, 0
-            
-            df = pd.DataFrame(resultado)
-            
-            # Obtener total de registros
-            if search_term:
-                count_consulta = f"""
-                SELECT COUNT(*) as total FROM contratados 
-                WHERE matricula LIKE '%{search_term}%' 
-                   OR nombre_completo LIKE '%{search_term}%' 
-                   OR email LIKE '%{search_term}%'
-                """
-            else:
-                count_consulta = "SELECT COUNT(*) as total FROM contratados"
-            
-            count_result = self.ejecutar_consulta_remota(count_consulta)
-            
-            if count_result and len(count_result) > 0:
-                total_records = count_result[0].get('total', 0)
-            else:
-                total_records = 0
-            
-            total_pages = math.ceil(total_records / self.page_size) if total_records > 0 else 0
-            
-            logger.debug(f"Obtenidos {len(df)} contratados (página {page}/{total_pages})")
-            return df, total_pages, total_records
-        except Exception as e:
-            logger.error(f"Error obteniendo contratados: {e}", exc_info=True)
-            return pd.DataFrame(), 0, 0
-    
     def obtener_usuarios(self, page=1, search_term=""):
-        """Obtener usuarios con paginación y búsqueda - ADAPTADA A LA ESTRUCTURA REAL"""
+        """Obtener usuarios con paginación y búsqueda - CORREGIDO para estructura REAL"""
         try:
             offset = (page - 1) * self.page_size
             
@@ -1431,173 +1088,8 @@ class SistemaBaseDatos:
             logger.error(f"Error obteniendo usuarios: {e}", exc_info=True)
             return pd.DataFrame(), 0, 0
     
-    def obtener_inscrito_por_matricula(self, matricula):
-        """Buscar inscrito por matrícula"""
-        try:
-            consulta = f"SELECT * FROM inscritos WHERE matricula = '{matricula}' LIMIT 1"
-            resultado = self.ejecutar_consulta_remota(consulta)
-            
-            if resultado and len(resultado) > 0:
-                return resultado[0]
-            return None
-        except Exception as e:
-            logger.error(f"Error buscando inscrito {matricula}: {e}", exc_info=True)
-            return None
-    
-    def agregar_inscrito(self, inscrito_data):
-        """Agregar nuevo inscrito"""
-        try:
-            if not inscrito_data.get('matricula'):
-                fecha = datetime.now().strftime('%y%m%d')
-                random_num = ''.join(random.choices(string.digits, k=4))
-                inscrito_data['matricula'] = f"INS{fecha}{random_num}"
-            
-            folio = f"FOL{datetime.now().strftime('%y%m%d')}{random.randint(1000, 9999)}"
-            
-            consulta = f"""
-            INSERT INTO inscritos (
-                matricula, nombre_completo, email, telefono, programa_interes,
-                fecha_registro, estatus, folio_unico, fecha_nacimiento, como_se_entero,
-                documentos_subidos, documentos_guardados
-            ) VALUES (
-                '{inscrito_data.get('matricula', '')}',
-                '{inscrito_data.get('nombre_completo', '')}',
-                '{inscrito_data.get('email', '')}',
-                '{inscrito_data.get('telefono', '')}',
-                '{inscrito_data.get('programa_interes', '')}',
-                '{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}',
-                '{inscrito_data.get('estatus', 'Pre-inscrito')}',
-                '{folio}',
-                '{inscrito_data.get('fecha_nacimiento', '')}',
-                '{inscrito_data.get('como_se_entero', '')}',
-                {inscrito_data.get('documentos_subidos', 0)},
-                '{inscrito_data.get('documentos_guardados', '')}'
-            )
-            """
-            
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Inscrito agregado: {inscrito_data.get('matricula', '')}")
-                return True
-            else:
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error agregando inscrito: {e}", exc_info=True)
-            return False
-    
-    def agregar_estudiante(self, estudiante_data):
-        """Agregar nuevo estudiante"""
-        try:
-            consulta = f"""
-            INSERT INTO estudiantes (
-                matricula, nombre_completo, programa, email, telefono,
-                fecha_nacimiento, genero, fecha_inscripcion, estatus,
-                documentos_subidos, fecha_registro, programa_interes,
-                folio, como_se_entero, fecha_ingreso, usuario
-            ) VALUES (
-                '{estudiante_data.get('matricula', '')}',
-                '{estudiante_data.get('nombre_completo', '')}',
-                '{estudiante_data.get('programa', '')}',
-                '{estudiante_data.get('email', '')}',
-                '{estudiante_data.get('telefono', '')}',
-                '{estudiante_data.get('fecha_nacimiento', '')}',
-                '{estudiante_data.get('genero', '')}',
-                '{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}',
-                '{estudiante_data.get('estatus', 'ACTIVO')}',
-                '{estudiante_data.get('documentos_subidos', '')}',
-                '{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}',
-                '{estudiante_data.get('programa_interes', '')}',
-                '{estudiante_data.get('folio', '')}',
-                '{estudiante_data.get('como_se_entero', '')}',
-                '{datetime.now().strftime('%Y-%m-%d')}',
-                '{estudiante_data.get('matricula', '')}'
-            )
-            """
-            
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Estudiante agregado: {estudiante_data.get('matricula', '')}")
-                return True
-            else:
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error agregando estudiante: {e}", exc_info=True)
-            return False
-    
-    def agregar_egresado(self, egresado_data):
-        """Agregar nuevo egresado"""
-        try:
-            consulta = f"""
-            INSERT INTO egresados (
-                matricula, nombre_completo, programa_original, fecha_graduacion,
-                nivel_academico, email, telefono, estado_laboral,
-                fecha_actualizacion, documentos_subidos
-            ) VALUES (
-                '{egresado_data.get('matricula', '')}',
-                '{egresado_data.get('nombre_completo', '')}',
-                '{egresado_data.get('programa_original', '')}',
-                '{datetime.now().strftime('%Y-%m-%d')}',
-                '{egresado_data.get('nivel_academico', '')}',
-                '{egresado_data.get('email', '')}',
-                '{egresado_data.get('telefono', '')}',
-                '{egresado_data.get('estado_laboral', '')}',
-                '{datetime.now().strftime('%Y-%m-%d')}',
-                '{egresado_data.get('documentos_subidos', '')}'
-            )
-            """
-            
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Egresado agregado: {egresado_data.get('matricula', '')}")
-                return True
-            else:
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error agregando egresado: {e}", exc_info=True)
-            return False
-    
-    def agregar_contratado(self, contratado_data):
-        """Agregar nuevo contratado"""
-        try:
-            consulta = f"""
-            INSERT INTO contratados (
-                matricula, fecha_contratacion, puesto, departamento,
-                estatus, salario, tipo_contrato, fecha_inicio,
-                fecha_fin, documentos_subidos
-            ) VALUES (
-                '{contratado_data.get('matricula', '')}',
-                '{datetime.now().strftime('%Y-%m-%d')}',
-                '{contratado_data.get('puesto', '')}',
-                '{contratado_data.get('departamento', '')}',
-                '{contratado_data.get('estatus', '')}',
-                '{contratado_data.get('salario', '')}',
-                '{contratado_data.get('tipo_contrato', '')}',
-                '{datetime.now().strftime('%Y-%m-%d')}',
-                '{contratado_data.get('fecha_fin', datetime.now().strftime('%Y-%m-%d'))}',
-                '{contratado_data.get('documentos_subidos', '')}'
-            )
-            """
-            
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Contratado agregado: {contratado_data.get('matricula', '')}")
-                return True
-            else:
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error agregando contratado: {e}", exc_info=True)
-            return False
-    
     def agregar_usuario(self, usuario_data):
-        """Agregar nuevo usuario - ADAPTADA A LA ESTRUCTURA REAL"""
+        """Agregar nuevo usuario - CORREGIDO para estructura REAL"""
         try:
             # Generar hash bcrypt para la contraseña
             password = usuario_data.get('password', 'Admin123!')
@@ -1608,7 +1100,8 @@ class SistemaBaseDatos:
             consulta = f"""
             INSERT INTO usuarios (
                 usuario, password_hash, salt, rol, nombre_completo, 
-                email, matricula, activo, fecha_creacion, fecha_actualiza
+                email, matricula, activo, fecha_creacion, fecha_actualiza,
+                categoria, nombre
             ) VALUES (
                 '{usuario_data.get('usuario', '')}',
                 '{hashed_password_str}',
@@ -1619,7 +1112,9 @@ class SistemaBaseDatos:
                 '{usuario_data.get('matricula', '')}',
                 {1 if usuario_data.get('activo', True) else 0},
                 CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP
+                CURRENT_TIMESTAMP,
+                '{usuario_data.get('categoria', usuario_data.get('rol', 'administrador'))}',
+                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', ''))}'
             )
             """
             
@@ -1635,124 +1130,39 @@ class SistemaBaseDatos:
             logger.error(f"Error agregando usuario: {e}", exc_info=True)
             return False
     
-    def eliminar_inscrito(self, matricula):
-        """Eliminar inscrito por matrícula"""
+    def debug_verificar_usuarios(self):
+        """Función de debugging para verificar usuarios - CORREGIDA para estructura REAL"""
         try:
-            consulta = f"DELETE FROM inscritos WHERE matricula = '{matricula}'"
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Inscrito eliminado: {matricula}")
-                estado_sistema.registrar_registro_incompleto_eliminado()
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error eliminando inscrito {matricula}: {e}", exc_info=True)
-            return False
-    
-    def eliminar_estudiante(self, matricula):
-        """Eliminar estudiante por matrícula"""
-        try:
-            consulta = f"DELETE FROM estudiantes WHERE matricula = '{matricula}'"
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Estudiante eliminado: {matricula}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error eliminando estudiante {matricula}: {e}", exc_info=True)
-            return False
-    
-    def eliminar_egresado(self, matricula):
-        """Eliminar egresado por matrícula"""
-        try:
-            consulta = f"DELETE FROM egresados WHERE matricula = '{matricula}'"
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Egresado eliminado: {matricula}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error eliminando egresado {matricula}: {e}", exc_info=True)
-            return False
-    
-    def eliminar_contratado(self, matricula):
-        """Eliminar contratado por matrícula"""
-        try:
-            consulta = f"DELETE FROM contratados WHERE matricula = '{matricula}'"
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Contratado eliminado: {matricula}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error eliminando contratado {matricula}: {e}", exc_info=True)
-            return False
-    
-    def actualizar_inscrito(self, matricula, datos_actualizados):
-        """Actualizar datos de un inscrito"""
-        try:
-            campos = []
-            for campo, valor in datos_actualizados.items():
-                if campo != 'matricula' and valor is not None:
-                    if isinstance(valor, str):
-                        valor = valor.replace("'", "''")
-                    campos.append(f"{campo} = '{valor}'")
-            
-            if campos:
-                campos.append("fecha_actualizacion = CURRENT_TIMESTAMP")
-                consulta = f"UPDATE inscritos SET {', '.join(campos)} WHERE matricula = '{matricula}'"
-                exito = self.ejecutar_modificacion_remota(consulta)
-                
-                if exito:
-                    logger.info(f"Inscrito actualizado: {matricula}")
-                    return True
-            return False
-        except Exception as e:
-            logger.error(f"Error actualizando inscrito {matricula}: {e}", exc_info=True)
-            return False
-    
-    def registrar_bitacora(self, usuario, accion, detalles, ip='localhost'):
-        """Registrar actividad en bitácora"""
-        try:
-            # Primero verificar si la tabla bitacora existe
-            consulta_check = "SELECT name FROM sqlite_master WHERE type='table' AND name='bitacora'"
-            resultado = self.ejecutar_consulta_remota(consulta_check)
-            
-            if not resultado or len(resultado) == 0:
-                logger.warning("⚠️ Tabla 'bitacora' no existe. Creando...")
-                # Crear tabla bitacora si no existe
-                tabla_bitacora = """
-                CREATE TABLE IF NOT EXISTS bitacora (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    usuario TEXT,
-                    accion TEXT,
-                    detalles TEXT,
-                    ip TEXT,
-                    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-                self.ejecutar_modificacion_remota(tabla_bitacora)
-            
-            # Insertar registro
-            consulta = f"""
-            INSERT INTO bitacora (usuario, accion, detalles, ip)
-            VALUES ('{usuario}', '{accion}', '{detalles.replace("'", "''")}', '{ip}')
+            consulta = """
+            SELECT id, usuario, rol, nombre_completo, email, activo, 
+                   password_hash, salt,
+                   CASE 
+                       WHEN password_hash LIKE '$2%' THEN 'bcrypt'
+                       WHEN LENGTH(password_hash) = 64 AND password_hash GLOB '[0-9a-f]*' THEN 'sha256'
+                       ELSE 'other'
+                   END as hash_type,
+                   LENGTH(password_hash) as hash_length
+            FROM usuarios
+            ORDER BY id
             """
             
-            exito = self.ejecutar_modificacion_remota(consulta)
-            return exito
+            resultado = self.ejecutar_consulta_remota(consulta)
+            
+            if resultado:
+                logger.info("🔍 DEBUG - Usuarios en la base de datos (estructura REAL):")
+                for user in resultado:
+                    logger.info(f"  ID: {user['id']}, Usuario: '{user['usuario']}', Rol: {user['rol']}, "
+                              f"Nombre: {user['nombre_completo']}, Activo: {user['activo']}, "
+                              f"Hash: {user['hash_type']} ({user['hash_length']} chars), "
+                              f"Salt: {user['salt'][:20]}...")
+                return resultado
+            else:
+                logger.warning("DEBUG - No hay usuarios en la base de datos")
+                return []
+                
         except Exception as e:
-            logger.error(f"Error registrando en bitácora: {e}", exc_info=True)
-            return False
-    
-    def crear_backup_remoto(self):
-        """Crear backup en servidor remoto"""
-        return self.gestor.crear_backup_remoto()
-
+            logger.error(f"DEBUG Error verificando usuarios: {e}")
+            return []
 # =============================================================================
 # 4. SISTEMA DE BACKUP AUTOMÁTICO
 # =============================================================================
