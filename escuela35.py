@@ -2,7 +2,7 @@
 escuela35.py - Sistema Escuela Enfermería 100% REMOTO
 Versión unificada para trabajar con UNA SOLA base de datos
 Configuración optimizada para secrets.toml unificado
-VERSIÓN COMPLETA CON SISTEMA DE AUTENTICACIÓN CORREGIDO
+VERSIÓN COMPLETA ADAPTADA A LA ESTRUCTURA REAL DE LA BD
 """
 
 # =============================================================================
@@ -833,7 +833,7 @@ class SistemaBaseDatos:
     def __init__(self):
         self.gestor = gestor_remoto
         self.page_size = 20
-        
+    
     def inicializar_db_remota(self):
         """Inicializar base de datos en servidor remoto"""
         try:
@@ -892,17 +892,17 @@ class SistemaBaseDatos:
             return False
     
     def debug_verificar_usuarios(self):
-        """Función de debugging para verificar usuarios"""
+        """Función de debugging para verificar usuarios - ADAPTADA A LA ESTRUCTURA REAL"""
         try:
             consulta = """
             SELECT id, usuario, rol, nombre_completo, email, activo, 
-                   password as password_hash,
+                   password_hash, salt,
                    CASE 
-                       WHEN password LIKE '$2%' THEN 'bcrypt'
-                       WHEN LENGTH(password) = 64 AND password GLOB '[0-9a-f]*' THEN 'sha256'
-                       ELSE 'texto_plano'
+                       WHEN password_hash LIKE '$2%' THEN 'bcrypt'
+                       WHEN LENGTH(password_hash) = 64 AND password_hash GLOB '[0-9a-f]*' THEN 'sha256'
+                       ELSE 'other'
                    END as hash_type,
-                   LENGTH(password) as hash_length
+                   LENGTH(password_hash) as hash_length
             FROM usuarios
             ORDER BY id
             """
@@ -923,42 +923,67 @@ class SistemaBaseDatos:
             logger.error(f"DEBUG Error verificando usuarios: {e}")
             return []
     
-    def verificar_usuario(self, usuario, password):
-        """VERIFICACIÓN DE USUARIO CORREGIDA - Maneja passwords hasheadas y texto plano"""
+    def verificar_usuario_bcrypt(self, usuario, password):
+        """VERIFICACIÓN DE USUARIO ADAPTADA - Usa bcrypt con password_hash y salt"""
         try:
-            query = f"SELECT * FROM usuarios WHERE usuario = '{usuario}'"
+            # Consulta usando la estructura REAL de la tabla
+            query = f"""
+            SELECT id, usuario, password_hash, salt, rol, nombre_completo, email, activo 
+            FROM usuarios 
+            WHERE usuario = '{usuario}' AND activo = 1
+            LIMIT 1
+            """
+            
             resultados = self.ejecutar_consulta_remota(query)
             
             if not resultados:
-                logger.warning(f"Usuario no encontrado: {usuario}")
+                logger.warning(f"Usuario no encontrado o no activo: {usuario}")
                 return None
             
             usuario_data = resultados[0]
-            stored_password = usuario_data.get('password', '')
+            stored_hash = usuario_data.get('password_hash', '')
+            salt = usuario_data.get('salt', '')
             
-            if not stored_password:
-                logger.warning(f"Usuario {usuario} no tiene password almacenado")
+            if not stored_hash:
+                logger.warning(f"Usuario {usuario} no tiene password_hash almacenado")
                 return None
             
-            # PRIMERO: Intentar con hash SHA-256 (la forma segura)
-            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            logger.debug(f"Hash almacenado para {usuario}: {stored_hash[:30]}...")
+            logger.debug(f"Salt almacenado para {usuario}: {salt[:30]}...")
             
-            if stored_password == password_hash:
-                logger.info(f"✅ Login exitoso (hash) para: {usuario}")
+            # 1. PRIMERO: Verificar si es un hash bcrypt válido
+            if stored_hash.startswith(('$2b$', '$2a$', '$2y$')):
+                # Es un hash bcrypt
+                try:
+                    if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
+                        logger.info(f"✅ Login exitoso (bcrypt) para: {usuario}")
+                        return usuario_data
+                    else:
+                        logger.warning(f"❌ Contraseña incorrecta (bcrypt) para usuario: {usuario}")
+                        return None
+                except Exception as bcrypt_error:
+                    logger.error(f"❌ Error en verificación bcrypt: {bcrypt_error}")
+            
+            # 2. SEGUNDO: Verificar si es un hash SHA256
+            sha256_hash = hashlib.sha256(password.encode()).hexdigest()
+            if stored_hash == sha256_hash:
+                logger.info(f"✅ Login exitoso (SHA256) para: {usuario}")
+                # Actualizar a bcrypt automáticamente
+                self._actualizar_password_a_bcrypt(usuario, password, salt)
                 return usuario_data
             
-            # SEGUNDO: Si no funciona con hash, probar texto plano (para compatibilidad)
-            if stored_password == password:
-                logger.info(f"✅ Login exitoso (texto) para: {usuario}")
-                # Si la contraseña estaba en texto, la actualizamos a hash
-                self._actualizar_password_a_hash(usuario, password_hash)
+            # 3. TERCERO: Verificar como texto plano (solo para compatibilidad)
+            if stored_hash == password:
+                logger.warning(f"⚠️ Login exitoso (texto plano) para: {usuario}")
+                # Actualizar a bcrypt automáticamente
+                self._actualizar_password_a_bcrypt(usuario, password, salt)
                 return usuario_data
             
-            # TERCERO: Si no funciona con texto plano, probar password por defecto
-            if password == "Admin123!" and usuario == "admin":
-                logger.info(f"✅ Login exitoso (password por defecto) para: {usuario}")
-                # Actualizar a hash automáticamente
-                self._actualizar_password_a_hash(usuario, password_hash)
+            # 4. CUARTO: Verificar si es el password por defecto "Admin123!"
+            if stored_hash == "Admin123!" or password == "Admin123!":
+                logger.warning(f"⚠️ Login exitoso (password por defecto) para: {usuario}")
+                # Actualizar a bcrypt automáticamente
+                self._actualizar_password_a_bcrypt(usuario, "Admin123!", salt)
                 return usuario_data
             
             # Si llegamos aquí, la contraseña no coincide
@@ -969,33 +994,47 @@ class SistemaBaseDatos:
             logger.error(f"❌ Error verificando usuario: {e}", exc_info=True)
             return None
     
-    def _actualizar_password_a_hash(self, usuario, password_hash):
-        """Actualizar password a hash SHA-256 automáticamente"""
+    def _actualizar_password_a_bcrypt(self, usuario, password, current_salt=None):
+        """Actualizar password a hash bcrypt automáticamente"""
         try:
+            # Generar nuevo hash bcrypt
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            hashed_password_str = hashed_password.decode('utf-8')
+            
+            # Usar el mismo salt o generar uno nuevo
+            if current_salt and current_salt.startswith('$2'):
+                new_salt = current_salt
+            else:
+                new_salt = hashed_password_str
+            
+            # Actualizar en la base de datos usando la estructura REAL
             consulta = f"""
             UPDATE usuarios 
-            SET password = '{password_hash}'
+            SET password_hash = '{hashed_password_str}',
+                salt = '{new_salt}',
+                fecha_actualiza = CURRENT_TIMESTAMP
             WHERE usuario = '{usuario}'
             """
             
             exito = self.ejecutar_modificacion_remota(consulta)
             
             if exito:
-                logger.info(f"✅ Password actualizado a hash SHA-256 para usuario: {usuario}")
+                logger.info(f"✅ Password actualizado a bcrypt para usuario: {usuario}")
                 return True
             else:
-                logger.error(f"❌ Error actualizando password a hash para usuario: {usuario}")
+                logger.error(f"❌ Error actualizando password a bcrypt para usuario: {usuario}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Error en _actualizar_password_a_hash: {e}")
+            logger.error(f"❌ Error en _actualizar_password_a_bcrypt: {e}")
             return False
     
-    def crear_usuario_admin_si_no_existe(self):
-        """Crear usuario admin por defecto si no existe - MEJORADO"""
+    def verificar_crear_usuario_admin(self):
+        """Verificar y crear usuario admin si no existe - ADAPTADA A LA ESTRUCTURA REAL"""
         try:
             logger.info("🔍 Verificando si existe usuario admin...")
             
+            # Consulta usando la estructura REAL
             consulta = "SELECT COUNT(*) as count FROM usuarios WHERE usuario = 'admin'"
             resultado = self.ejecutar_consulta_remota(consulta)
             
@@ -1005,11 +1044,12 @@ class SistemaBaseDatos:
                 if count == 0:
                     logger.info("🔄 Creando usuario admin por defecto...")
                     
-                    # Crear usuario admin con contraseña 'Admin123!' en hash SHA-256
+                    # Crear usuario admin con contraseña 'Admin123!' en bcrypt
                     password = "Admin123!"
-                    password_hash = hashlib.sha256(password.encode()).hexdigest()
+                    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+                    hashed_password_str = hashed_password.decode('utf-8')
                     
-                    # Verificar si la tabla tiene los campos correctos
+                    # Obtener estructura de la tabla
                     consulta_campos = "PRAGMA table_info(usuarios)"
                     campos_result = self.ejecutar_consulta_remota(consulta_campos)
                     
@@ -1017,34 +1057,58 @@ class SistemaBaseDatos:
                         logger.error("❌ No se pudo obtener información de la tabla usuarios")
                         return False
                     
-                    campos = [campo['name'] for campo in campos_result] if campos_result else []
+                    campos = [campo['name'] for campo in campos_result]
                     
-                    # Construir la consulta INSERT basada en los campos disponibles
-                    if 'rol' in campos and 'nombre_completo' in campos and 'email' in campos and 'activo' in campos:
-                        consulta_insert = f"""
-                        INSERT INTO usuarios (
-                            usuario, password, rol, nombre_completo, 
-                            email, activo
-                        ) VALUES (
-                            'admin',
-                            '{password_hash}',
-                            'administrador',
-                            'Administrador del Sistema',
-                            'admin@escuela.edu.mx',
-                            1
-                        )
-                        """
-                    else:
-                        # Versión simplificada si faltan campos
-                        consulta_insert = f"""
-                        INSERT INTO usuarios (
-                            usuario, password, activo
-                        ) VALUES (
-                            'admin',
-                            '{password_hash}',
-                            1
-                        )
-                        """
+                    logger.info(f"📊 Campos disponibles en tabla usuarios: {campos}")
+                    
+                    # Construir consulta INSERT basada en los campos REALES
+                    campos_insert = []
+                    valores_insert = []
+                    
+                    for campo in campos:
+                        if campo == 'id':
+                            continue  # id es autoincremental
+                        elif campo == 'usuario':
+                            campos_insert.append(campo)
+                            valores_insert.append("'admin'")
+                        elif campo == 'password_hash':
+                            campos_insert.append(campo)
+                            valores_insert.append(f"'{hashed_password_str}'")
+                        elif campo == 'salt':
+                            campos_insert.append(campo)
+                            valores_insert.append(f"'{hashed_password_str}'")  # Usar mismo hash como salt
+                        elif campo == 'rol':
+                            campos_insert.append(campo)
+                            valores_insert.append("'administrador'")
+                        elif campo == 'nombre_completo':
+                            campos_insert.append(campo)
+                            valores_insert.append("'Administrador del Sistema'")
+                        elif campo == 'email':
+                            campos_insert.append(campo)
+                            valores_insert.append("'admin@escuela.edu.mx'")
+                        elif campo == 'activo':
+                            campos_insert.append(campo)
+                            valores_insert.append("1")
+                        elif campo == 'fecha_creacion':
+                            campos_insert.append(campo)
+                            valores_insert.append("CURRENT_TIMESTAMP")
+                        elif campo == 'fecha_actualiza':
+                            campos_insert.append(campo)
+                            valores_insert.append("CURRENT_TIMESTAMP")
+                        elif campo in ['matricula', 'categoria', 'nombre']:
+                            campos_insert.append(campo)
+                            valores_insert.append("NULL")
+                    
+                    if not campos_insert:
+                        logger.error("❌ No se pudieron determinar campos para insertar")
+                        return False
+                    
+                    consulta_insert = f"""
+                    INSERT INTO usuarios ({', '.join(campos_insert)})
+                    VALUES ({', '.join(valores_insert)})
+                    """
+                    
+                    logger.debug(f"Consulta INSERT: {consulta_insert}")
                     
                     exito = self.ejecutar_modificacion_remota(consulta_insert)
                     
@@ -1052,6 +1116,7 @@ class SistemaBaseDatos:
                         logger.info("✅ Usuario 'admin' creado exitosamente")
                         logger.info(f"   Usuario: admin")
                         logger.info(f"   Contraseña: Admin123!")
+                        logger.info(f"   Rol: administrador")
                         return True
                     else:
                         logger.error("❌ Error creando usuario admin")
@@ -1060,18 +1125,28 @@ class SistemaBaseDatos:
                     logger.info("✅ Usuario 'admin' ya existe en la base de datos")
                     
                     # Verificar si tiene contraseña válida
-                    consulta_hash = "SELECT password FROM usuarios WHERE usuario = 'admin'"
+                    consulta_hash = """
+                    SELECT password_hash, salt, activo 
+                    FROM usuarios 
+                    WHERE usuario = 'admin'
+                    """
                     resultado_hash = self.ejecutar_consulta_remota(consulta_hash)
                     
                     if resultado_hash and len(resultado_hash) > 0:
-                        password_hash = resultado_hash[0].get('password', '')
+                        password_hash = resultado_hash[0].get('password_hash', '')
+                        salt = resultado_hash[0].get('salt', '')
+                        activo = resultado_hash[0].get('activo', 0)
                         
-                        # Si el password está en texto plano o es el por defecto, actualizar a hash
-                        if password_hash in ["Admin123!", "admin", ""] or len(password_hash) != 64:
+                        if activo != 1:
+                            logger.warning(f"⚠️ Usuario 'admin' no está activo. Activando...")
+                            consulta_activar = "UPDATE usuarios SET activo = 1 WHERE usuario = 'admin'"
+                            self.ejecutar_modificacion_remota(consulta_activar)
+                        
+                        # Verificar si el password está en texto plano o necesita actualización
+                        if not password_hash or password_hash in ["Admin123!", "admin", ""] or not password_hash.startswith(('$2b$', '$2a$', '$2y$')):
                             logger.warning(f"⚠️ Usuario 'admin' tiene password no seguro: {password_hash[:30]}...")
-                            # Actualizar a hash SHA-256
-                            new_hash = hashlib.sha256("Admin123!".encode()).hexdigest()
-                            self._actualizar_password_a_hash('admin', new_hash)
+                            # Actualizar a bcrypt
+                            self._actualizar_password_a_bcrypt('admin', 'Admin123!', salt)
                     return True
                     
         except Exception as e:
@@ -1297,13 +1372,15 @@ class SistemaBaseDatos:
             return pd.DataFrame(), 0, 0
     
     def obtener_usuarios(self, page=1, search_term=""):
-        """Obtener usuarios con paginación y búsqueda"""
+        """Obtener usuarios con paginación y búsqueda - ADAPTADA A LA ESTRUCTURA REAL"""
         try:
             offset = (page - 1) * self.page_size
             
             if search_term:
                 consulta = f"""
-                SELECT * FROM usuarios 
+                SELECT id, usuario, rol, nombre_completo, email, matricula, activo, 
+                       fecha_creacion, fecha_actualiza, categoria, nombre
+                FROM usuarios 
                 WHERE usuario LIKE '%{search_term}%' 
                    OR nombre_completo LIKE '%{search_term}%' 
                    OR email LIKE '%{search_term}%' 
@@ -1313,7 +1390,9 @@ class SistemaBaseDatos:
                 """
             else:
                 consulta = f"""
-                SELECT * FROM usuarios 
+                SELECT id, usuario, rol, nombre_completo, email, matricula, activo, 
+                       fecha_creacion, fecha_actualiza, categoria, nombre
+                FROM usuarios 
                 ORDER BY fecha_creacion DESC 
                 LIMIT {self.page_size} OFFSET {offset}
                 """
@@ -1518,26 +1597,29 @@ class SistemaBaseDatos:
             return False
     
     def agregar_usuario(self, usuario_data):
-        """Agregar nuevo usuario"""
+        """Agregar nuevo usuario - ADAPTADA A LA ESTRUCTURA REAL"""
         try:
-            # Generar hash SHA-256 para la contraseña
-            password = usuario_data.get('password', '')
-            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            # Generar hash bcrypt para la contraseña
+            password = usuario_data.get('password', 'Admin123!')
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            hashed_password_str = hashed_password.decode('utf-8')
             
+            # Construir consulta INSERT basada en la estructura REAL
             consulta = f"""
             INSERT INTO usuarios (
-                usuario, password, rol, nombre_completo, email,
-                matricula, activo, categoria_academica, tipo_programa
+                usuario, password_hash, salt, rol, nombre_completo, 
+                email, matricula, activo, fecha_creacion, fecha_actualiza
             ) VALUES (
                 '{usuario_data.get('usuario', '')}',
-                '{password_hash}',
+                '{hashed_password_str}',
+                '{hashed_password_str}',
                 '{usuario_data.get('rol', 'administrador')}',
-                '{usuario_data.get('nombre_completo', '')}',
+                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', ''))}',
                 '{usuario_data.get('email', '')}',
                 '{usuario_data.get('matricula', '')}',
                 {1 if usuario_data.get('activo', True) else 0},
-                '{usuario_data.get('categoria_academica', '')}',
-                '{usuario_data.get('tipo_programa', '')}'
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
             )
             """
             
@@ -1636,6 +1718,26 @@ class SistemaBaseDatos:
     def registrar_bitacora(self, usuario, accion, detalles, ip='localhost'):
         """Registrar actividad en bitácora"""
         try:
+            # Primero verificar si la tabla bitacora existe
+            consulta_check = "SELECT name FROM sqlite_master WHERE type='table' AND name='bitacora'"
+            resultado = self.ejecutar_consulta_remota(consulta_check)
+            
+            if not resultado or len(resultado) == 0:
+                logger.warning("⚠️ Tabla 'bitacora' no existe. Creando...")
+                # Crear tabla bitacora si no existe
+                tabla_bitacora = """
+                CREATE TABLE IF NOT EXISTS bitacora (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    usuario TEXT,
+                    accion TEXT,
+                    detalles TEXT,
+                    ip TEXT,
+                    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+                self.ejecutar_modificacion_remota(tabla_bitacora)
+            
+            # Insertar registro
             consulta = f"""
             INSERT INTO bitacora (usuario, accion, detalles, ip)
             VALUES ('{usuario}', '{accion}', '{detalles.replace("'", "''")}', '{ip}')
@@ -1847,15 +1949,15 @@ class SistemaAutenticacion:
         self.usuario_actual = None
         
     def verificar_login(self, usuario, password):
-        """Verificar credenciales de usuario contra base de datos remota - CORREGIDO"""
+        """Verificar credenciales de usuario contra base de datos remota - ADAPTADA"""
         try:
             if not usuario or not password:
                 st.error("❌ Usuario y contraseña son obligatorios")
                 return False
             
             with st.spinner("🔐 Verificando credenciales en servidor remoto..."):
-                # Usar el método de verificación de SistemaBaseDatos
-                usuario_data = db.verificar_usuario(usuario, password)
+                # Usar el método de verificación ADAPTADO de SistemaBaseDatos
+                usuario_data = db.verificar_usuario_bcrypt(usuario, password)
                 
                 if usuario_data:
                     nombre_real = usuario_data.get('nombre_completo', usuario_data.get('usuario', 'Usuario'))
@@ -1890,14 +1992,13 @@ class SistemaAutenticacion:
                         - 🔒 **Contraseña:** Admin123!
                         
                         **Sistema de verificación:**
-                        1. Busca el usuario en la tabla 'usuarios'
-                        2. Verifica contraseña en hash SHA-256 o texto plano
-                        3. Si la contraseña estaba en texto plano, se actualiza automáticamente a hash
+                        1. Busca el usuario en la tabla 'usuarios' (columna: usuario)
+                        2. Verifica contraseña en formato bcrypt (columna: password_hash)
+                        3. También acepta SHA256, texto plano o password por defecto
+                        4. Si la contraseña estaba insegura, se actualiza automáticamente a bcrypt
                         
-                        **Verificación de base de datos:**
-                        1. Asegúrate que la tabla 'usuarios' existe
-                        2. Verifica que el usuario 'admin' está activo (activo = 1)
-                        3. El sistema crea automáticamente el usuario admin si no existe
+                        **Estructura REAL de la tabla usuarios:**
+                        - id, usuario, password_hash, salt, rol, nombre_completo, email, etc.
                         """)
                         
                         # Diagnóstico adicional
@@ -2042,7 +2143,7 @@ auth = SistemaAutenticacion()
 sistema_principal = None
 
 def mostrar_login():
-    """Interfaz de login - MEJORADA"""
+    """Interfaz de login - MEJORADA Y ADAPTADA"""
     st.title("🏥 Sistema Escuela Enfermería - Base de Datos Única")
     st.markdown("---")
     
@@ -2093,18 +2194,21 @@ def mostrar_login():
                 - 👤 **Usuario:** `admin`
                 - 🔒 **Contraseña:** `Admin123!`
                 
+                **Estructura REAL de la base de datos:**
+                - Tabla: `usuarios`
+                - Campos: `id`, `usuario`, `password_hash`, `salt`, `rol`, `nombre_completo`, etc.
+                - El password está almacenado en formato **bcrypt** en la columna `password_hash`
+                
                 **El sistema acepta passwords en:**
-                1. ✅ **SHA256 hash** (recomendado)
-                2. ✅ **Texto plano** (se convierte automáticamente a hash)
+                1. ✅ **Bcrypt hash** (recomendado - estructura actual)
+                2. ✅ **SHA256 hash** (compatibilidad)
+                3. ✅ **Texto plano** (se convierte automáticamente a bcrypt)
+                4. ✅ **Password por defecto:** `Admin123!`
                 
-                **Si es la primera vez:**
-                1. El sistema creará automáticamente el usuario admin
-                2. Con contraseña: `Admin123!` en formato SHA-256 hash
-                3. Rol: `administrador`
-                
-                **Sistema de verificación:**
-                - Verifica SHA256 hash → texto plano
-                - Actualiza automáticamente passwords en texto plano a hash
+                **Sistema de verificación inteligente:**
+                - Verifica bcrypt → SHA256 → texto plano
+                - Actualiza automáticamente passwords inseguros a bcrypt
+                - Usa la columna `password_hash` para almacenar el hash
                 """)
             
             # Botón de debug
@@ -2130,15 +2234,27 @@ def mostrar_login():
                     if resultado and len(resultado) > 0:
                         st.success("✅ Tabla 'usuarios' encontrada")
                         
+                        # Verificar estructura de la tabla
+                        consulta_estructura = "PRAGMA table_info(usuarios)"
+                        estructura_result = db.ejecutar_consulta_remota(consulta_estructura)
+                        if estructura_result:
+                            st.write("**🏗️ Estructura de la tabla usuarios:**")
+                            for campo in estructura_result:
+                                nombre = campo.get('name', '')
+                                tipo = campo.get('type', '')
+                                st.write(f"- **{nombre}**: {tipo}")
+                        
                         # Verificar usuarios
-                        consulta_users = "SELECT usuario, rol, activo, password FROM usuarios"
+                        consulta_users = "SELECT usuario, rol, activo, password_hash, salt FROM usuarios"
                         users_result = db.ejecutar_consulta_remota(consulta_users)
                         if users_result:
                             st.write("**👥 Usuarios registrados:**")
                             for user in users_result:
-                                password_hash = user['password']
-                                hash_type = "SHA256" if len(password_hash) == 64 and all(c in '0123456789abcdef' for c in password_hash.lower()) else "texto_plano"
-                                st.write(f"- {user['usuario']} ({user['rol']}) - Activo: {user['activo']} - Hash: {hash_type}")
+                                password_hash = user['password_hash']
+                                salt = user['salt']
+                                hash_type = "bcrypt" if password_hash and password_hash.startswith(('$2b$', '$2a$', '$2y$')) else "SHA256/texto"
+                                st.write(f"- **{user['usuario']}** ({user['rol']}) - Activo: {user['activo']}")
+                                st.write(f"  Hash: {hash_type} | Salt: {salt[:20]}...")
                         else:
                             st.warning("⚠️ No hay usuarios en la tabla")
                     else:
@@ -2526,7 +2642,7 @@ def mostrar_contratados():
         st.info(f"📊 Total de contratados: {sistema_principal.total_contratados}")
 
 def mostrar_usuarios():
-    """Interfaz para gestión de usuarios"""
+    """Interfaz para gestión de usuarios - ADAPTADA"""
     global sistema_principal
     st.header("👥 Gestión de Usuarios")
     
@@ -2778,7 +2894,7 @@ def main():
             """)
             return
 
-        # Inicialización automática del usuario admin
+        # Inicialización automática del sistema
         try:
             if not gestor_remoto.verificar_conexion_ssh():
                 st.error("❌ No se pudo conectar al servidor SSH")
@@ -2791,10 +2907,10 @@ def main():
                 st.info(f"Ruta esperada: {gestor_remoto.db_path_remoto}")
                 return
             
-            # Crear usuario admin si no existe
+            # Verificar y crear usuario admin si es necesario
             if not estado_sistema.esta_inicializada():
                 with st.spinner("🔄 Inicializando sistema..."):
-                    if db.crear_usuario_admin_si_no_existe():
+                    if db.verificar_crear_usuario_admin():
                         estado_sistema.marcar_db_inicializada()
                         logger.info("✅ Sistema inicializado correctamente")
                     
@@ -2829,10 +2945,15 @@ if __name__ == "__main__":
         ✅ **Bitácora de auditoría** de todas las operaciones
         ✅ **Interfaz Streamlit** optimizada
         
-        **Sistema de login mejorado:**
-        ✅ **SHA256 hash** (recomendado)
-        ✅ **Texto plano** (se convierte automáticamente a hash)
+        **Sistema de login ADAPTADO a la estructura REAL:**
+        ✅ **Bcrypt hash** en columna `password_hash`
+        ✅ **Salt** en columna `salt`
+        ✅ **SHA256 hash** (compatibilidad)
+        ✅ **Texto plano** (se convierte automáticamente a bcrypt)
         ✅ **Password por defecto:** Admin123!
+        
+        **Estructura REAL de la tabla usuarios:**
+        - `id`, `usuario`, `password_hash`, `salt`, `rol`, `nombre_completo`, etc.
         
         **Acceso por defecto:**
         👤 Usuario: admin
