@@ -1,8 +1,9 @@
 """
-escuela35.py - Sistema Escuela Enfermería 100% REMOTO
+escuela35.py - Sistema Escuela Enfermería 100% REMOTO - VERSIÓN CORREGIDA
 Versión unificada para trabajar con UNA SOLA base de datos
 Configuración optimizada para secrets.toml unificado
 VERSIÓN COMPLETA ADAPTADA A LA ESTRUCTURA REAL DE LA BD
+CORRECCIÓN: Orden de inicialización y métodos faltantes
 """
 
 # =============================================================================
@@ -618,17 +619,24 @@ class GestorConexionRemota:
             
             if output == 'EXISTS':
                 logger.info(f"✅ Conexión SSH exitosa y DB encontrada")
-                estado_sistema.set_ssh_conectado(True, None)
+                # Importante: estado_sistema debe estar definido antes
+                from __main__ import estado_sistema
+                if 'estado_sistema' in globals():
+                    estado_sistema.set_ssh_conectado(True, None)
                 return True
             else:
                 logger.warning(f"⚠️ Conexión SSH exitosa pero DB no encontrada")
-                estado_sistema.set_ssh_conectado(False, "Base de datos no encontrada en servidor")
+                from __main__ import estado_sistema
+                if 'estado_sistema' in globals():
+                    estado_sistema.set_ssh_conectado(False, "Base de datos no encontrada en servidor")
                 return False
             
         except Exception as e:
             error_msg = f"Error de conexión SSH: {str(e)}"
             logger.error(f"❌ {error_msg}")
-            estado_sistema.set_ssh_conectado(False, error_msg)
+            from __main__ import estado_sistema
+            if 'estado_sistema' in globals():
+                estado_sistema.set_ssh_conectado(False, error_msg)
             return False
     
     def conectar_ssh(self):
@@ -657,13 +665,17 @@ class GestorConexionRemota:
             self.sftp = self.ssh.open_sftp()
             
             logger.info(f"✅ Conexión SSH establecida")
-            estado_sistema.set_ssh_conectado(True, None)
+            from __main__ import estado_sistema
+            if 'estado_sistema' in globals():
+                estado_sistema.set_ssh_conectado(True, None)
             return True
             
         except Exception as e:
             error_msg = f"Error de conexión: {str(e)}"
             logger.error(f"❌ {error_msg}")
-            estado_sistema.set_ssh_conectado(False, error_msg)
+            from __main__ import estado_sistema
+            if 'estado_sistema' in globals():
+                estado_sistema.set_ssh_conectado(False, error_msg)
             return False
     
     def desconectar_ssh(self):
@@ -769,7 +781,9 @@ class GestorConexionRemota:
             
             if 'BACKUP_CREADO' in salida:
                 logger.info(f"✅ Backup remoto creado")
-                estado_sistema.registrar_backup()
+                from __main__ import estado_sistema
+                if 'estado_sistema' in globals():
+                    estado_sistema.registrar_backup()
                 return True
             else:
                 logger.error(f"❌ Error creando backup remoto: {error}")
@@ -830,39 +844,12 @@ class GestorConexionRemota:
 class SistemaBaseDatos:
     """Sistema de base de datos SQLite con base de datos única - COMPLETO CON TODOS LOS MÉTODOS"""
     
-    def __init__(self):
+    def __init__(self, gestor_remoto):
         self.gestor = gestor_remoto
         self.page_size = 20
     
-    def inicializar_db_remota(self):
-        """Inicializar base de datos en servidor remoto"""
-        try:
-            with st.spinner("🔄 Inicializando base de datos remota..."):
-                # Verificar si ya existe
-                if self.gestor.verificar_existencia_db():
-                    logger.info("✅ Base de datos ya existe en servidor")
-                    
-                    # Verificar si tiene la tabla usuarios
-                    consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
-                    resultado, error = self.gestor.ejecutar_sql_remoto(consulta)
-                    
-                    if resultado and len(resultado) > 0:
-                        logger.info("✅ Tabla 'usuarios' encontrada")
-                        estado_sistema.marcar_db_inicializada()
-                        return True
-                    else:
-                        logger.warning("⚠️ Tabla 'usuarios' no encontrada")
-                        return False
-                else:
-                    st.error("❌ Base de datos no encontrada en servidor")
-                    return False
-        except Exception as e:
-            logger.error(f"❌ Error inicializando DB remota: {e}")
-            st.error(f"❌ Error: {str(e)}")
-            return False
-    
     def ejecutar_consulta_remota(self, consulta_sql):
-        """Ejecutar consulta SQL en servidor remoto"""
+        """Ejecutar consulta SQL en servidor remoto - MÉTODO CORREGIDO"""
         try:
             resultado, error = self.gestor.ejecutar_sql_remoto(consulta_sql)
             
@@ -877,7 +864,7 @@ class SistemaBaseDatos:
             return None
     
     def ejecutar_modificacion_remota(self, consulta_sql):
-        """Ejecutar modificación SQL en servidor remoto"""
+        """Ejecutar modificación SQL en servidor remoto - MÉTODO CORREGIDO"""
         try:
             exito, resultado = self.gestor.ejecutar_sql_modificacion(consulta_sql)
             
@@ -1086,7 +1073,7 @@ class SistemaBaseDatos:
             return False
     
     def agregar_inscrito(self, inscrito_data):
-        """Agregar nuevo inscrito - MÉTODO FALTANTE AGREGADO"""
+        """Agregar nuevo inscrito"""
         try:
             # Generar matrícula única
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -1126,7 +1113,7 @@ class SistemaBaseDatos:
             return False
     
     def registrar_bitacora(self, usuario, tipo_accion, descripcion):
-        """Registrar en bitácora - MÉTODO FALTANTE AGREGADO"""
+        """Registrar en bitácora"""
         try:
             consulta = f"""
             INSERT INTO bitacora (
@@ -1153,7 +1140,7 @@ class SistemaBaseDatos:
             return False
     
     def agregar_estudiante(self, estudiante_data):
-        """Agregar nuevo estudiante - MÉTODO NUEVO AGREGADO"""
+        """Agregar nuevo estudiante"""
         try:
             # Generar matrícula única si no viene
             if not estudiante_data.get('matricula'):
@@ -1193,7 +1180,7 @@ class SistemaBaseDatos:
             return False
     
     def agregar_egresado(self, egresado_data):
-        """Agregar nuevo egresado - MÉTODO NUEVO AGREGADO"""
+        """Agregar nuevo egresado"""
         try:
             consulta = f"""
             INSERT INTO egresados (
@@ -1226,7 +1213,7 @@ class SistemaBaseDatos:
             return False
     
     def agregar_contratado(self, contratado_data):
-        """Agregar nuevo contratado - MÉTODO NUEVO AGREGADO"""
+        """Agregar nuevo contratado"""
         try:
             consulta = f"""
             INSERT INTO contratados (
@@ -1258,8 +1245,50 @@ class SistemaBaseDatos:
             logger.error(f"Error agregando contratado: {e}", exc_info=True)
             return False
     
+    def agregar_usuario(self, usuario_data):
+        """Agregar nuevo usuario - CORREGIDO para estructura REAL"""
+        try:
+            # Generar hash bcrypt para la contraseña
+            password = usuario_data.get('password', 'Admin123!')
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            hashed_password_str = hashed_password.decode('utf-8')
+            
+            # Construir consulta INSERT basada en la estructura REAL
+            consulta = f"""
+            INSERT INTO usuarios (
+                usuario, password_hash, salt, rol, nombre_completo, 
+                email, matricula, activo, fecha_creacion, fecha_actualiza,
+                categoria, nombre
+            ) VALUES (
+                '{usuario_data.get('usuario', '').replace("'", "''")}',
+                '{hashed_password_str}',
+                '{hashed_password_str}',
+                '{usuario_data.get('rol', 'administrador').replace("'", "''")}',
+                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', '')).replace("'", "''")}',
+                '{usuario_data.get('email', '').replace("'", "''")}',
+                '{usuario_data.get('matricula', '').replace("'", "''")}',
+                {1 if usuario_data.get('activo', True) else 0},
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP,
+                '{usuario_data.get('categoria', usuario_data.get('rol', 'administrador')).replace("'", "''")}',
+                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', '')).replace("'", "''")}'
+            )
+            """
+            
+            exito = self.ejecutar_modificacion_remota(consulta)
+            
+            if exito:
+                logger.info(f"Usuario agregado: {usuario_data.get('usuario', '')}")
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error agregando usuario: {e}", exc_info=True)
+            return False
+    
     def actualizar_usuario(self, usuario_id, usuario_data):
-        """Actualizar usuario existente - MÉTODO NUEVO AGREGADO"""
+        """Actualizar usuario existente"""
         try:
             consulta = f"""
             UPDATE usuarios 
@@ -1286,7 +1315,7 @@ class SistemaBaseDatos:
             return False
     
     def eliminar_usuario(self, usuario_id):
-        """Eliminar usuario - MÉTODO NUEVO AGREGADO"""
+        """Eliminar usuario"""
         try:
             consulta = f"DELETE FROM usuarios WHERE id = {usuario_id}"
             
@@ -1304,7 +1333,7 @@ class SistemaBaseDatos:
             return False
     
     def obtener_estadisticas_generales(self):
-        """Obtener estadísticas generales del sistema - MÉTODO NUEVO AGREGADO"""
+        """Obtener estadísticas generales del sistema"""
         try:
             estadisticas = {}
             
@@ -1623,48 +1652,6 @@ class SistemaBaseDatos:
             logger.error(f"Error obteniendo usuarios: {e}", exc_info=True)
             return pd.DataFrame(), 0, 0
     
-    def agregar_usuario(self, usuario_data):
-        """Agregar nuevo usuario - CORREGIDO para estructura REAL"""
-        try:
-            # Generar hash bcrypt para la contraseña
-            password = usuario_data.get('password', 'Admin123!')
-            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-            hashed_password_str = hashed_password.decode('utf-8')
-            
-            # Construir consulta INSERT basada en la estructura REAL
-            consulta = f"""
-            INSERT INTO usuarios (
-                usuario, password_hash, salt, rol, nombre_completo, 
-                email, matricula, activo, fecha_creacion, fecha_actualiza,
-                categoria, nombre
-            ) VALUES (
-                '{usuario_data.get('usuario', '').replace("'", "''")}',
-                '{hashed_password_str}',
-                '{hashed_password_str}',
-                '{usuario_data.get('rol', 'administrador').replace("'", "''")}',
-                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', '')).replace("'", "''")}',
-                '{usuario_data.get('email', '').replace("'", "''")}',
-                '{usuario_data.get('matricula', '').replace("'", "''")}',
-                {1 if usuario_data.get('activo', True) else 0},
-                CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP,
-                '{usuario_data.get('categoria', usuario_data.get('rol', 'administrador')).replace("'", "''")}',
-                '{usuario_data.get('nombre_completo', usuario_data.get('usuario', '')).replace("'", "''")}'
-            )
-            """
-            
-            exito = self.ejecutar_modificacion_remota(consulta)
-            
-            if exito:
-                logger.info(f"Usuario agregado: {usuario_data.get('usuario', '')}")
-                return True
-            else:
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error agregando usuario: {e}", exc_info=True)
-            return False
-    
     def debug_verificar_usuarios(self):
         """Función de debugging para verificar usuarios - CORREGIDA para estructura REAL"""
         try:
@@ -1890,10 +1877,15 @@ class SistemaNotificaciones:
 # =============================================================================
 
 class SistemaAutenticacion:
-    def __init__(self):
+    def __init__(self, db_instance=None):
         self.sesion_activa = False
         self.usuario_actual = None
+        self.db = db_instance
         
+    def set_db(self, db_instance):
+        """Establecer instancia de base de datos"""
+        self.db = db_instance
+    
     def verificar_login(self, usuario, password):
         """Verificar credenciales de usuario contra base de datos remota - ADAPTADA"""
         try:
@@ -1901,9 +1893,13 @@ class SistemaAutenticacion:
                 st.error("❌ Usuario y contraseña son obligatorios")
                 return False
             
+            if not self.db:
+                st.error("❌ Sistema de base de datos no inicializado")
+                return False
+            
             with st.spinner("🔐 Verificando credenciales en servidor remoto..."):
                 # Usar el método de verificación ADAPTADO de SistemaBaseDatos
-                usuario_data = db.verificar_usuario_bcrypt(usuario, password)
+                usuario_data = self.db.verificar_usuario_bcrypt(usuario, password)
                 
                 if usuario_data:
                     nombre_real = usuario_data.get('nombre_completo', usuario_data.get('usuario', 'Usuario'))
@@ -1917,14 +1913,15 @@ class SistemaAutenticacion:
                     self.usuario_actual = usuario_data
                     
                     # Registrar en bitácora
-                    db.registrar_bitacora(
+                    self.db.registrar_bitacora(
                         usuario_data.get('usuario', ''),
                         'LOGIN',
                         f'Usuario {usuario_data.get("usuario", "")} inició sesión desde sistema 100% remoto'
                     )
                     
                     # Registrar sesión en estado_sistema
-                    estado_sistema.registrar_sesion(exitosa=True)
+                    if 'estado_sistema' in globals():
+                        estado_sistema.registrar_sesion(exitosa=True)
                     
                     return True
                 else:
@@ -1949,7 +1946,7 @@ class SistemaAutenticacion:
                         
                         # Diagnóstico adicional
                         try:
-                            debug_users = db.debug_verificar_usuarios()
+                            debug_users = self.db.debug_verificar_usuarios()
                             if debug_users:
                                 st.write("**👥 Usuarios en la base de datos:**")
                                 for user in debug_users:
@@ -1973,8 +1970,8 @@ class SistemaAutenticacion:
     def cerrar_sesion(self):
         """Cerrar sesión del usuario"""
         try:
-            if self.sesion_activa and self.usuario_actual:
-                db.registrar_bitacora(
+            if self.sesion_activa and self.usuario_actual and self.db:
+                self.db.registrar_bitacora(
                     self.usuario_actual.get('usuario', ''),
                     'LOGOUT',
                     f'Usuario {self.usuario_actual.get("usuario", "")} cerró sesión'
@@ -1996,12 +1993,12 @@ class SistemaAutenticacion:
 # =============================================================================
 
 class SistemaPrincipal:
-    def __init__(self):
-        self.gestor = gestor_remoto
-        self.db = db
+    def __init__(self, gestor, db_instance):
+        self.gestor = gestor
+        self.db = db_instance
         self.backup_system = SistemaBackupAutomatico(self.gestor)
         self.notificaciones = SistemaNotificaciones(
-            gestor_remoto.config
+            gestor.config
         )
         self.validador = ValidadorDatos()
         
@@ -2081,12 +2078,63 @@ class SistemaPrincipal:
 # 8. INTERFAZ STREAMLIT
 # =============================================================================
 
-# Instancias globales de los servicios (¡IMPORTANTE: en el orden correcto!)
+# Instancias globales de los servicios (¡CORREGIDO!)
 estado_sistema = EstadoPersistente()
-gestor_remoto = GestorConexionRemota()
-db = SistemaBaseDatos()  # ¡Después de gestor_remoto!
+gestor_remoto = None
+db = None
 auth = SistemaAutenticacion()
 sistema_principal = None
+
+def inicializar_sistema():
+    """Inicializar sistema con orden correcto - FUNCIÓN CORREGIDA"""
+    global gestor_remoto, db, auth, sistema_principal
+    
+    try:
+        # 1. Inicializar gestor SSH
+        logger.info("🔄 Inicializando gestor SSH...")
+        gestor_remoto = GestorConexionRemota()
+        
+        if not gestor_remoto.config or not gestor_remoto.config.get('ssh_host'):
+            st.error("❌ No se pudo inicializar el gestor SSH")
+            return False
+        
+        # 2. Inicializar base de datos (DESPUÉS de gestor_remoto)
+        logger.info("🔄 Inicializando sistema de base de datos...")
+        db = SistemaBaseDatos(gestor_remoto)
+        
+        # 3. Configurar autenticación
+        auth.set_db(db)
+        
+        # 4. Verificar conexión SSH
+        logger.info("🔍 Verificando conexión SSH...")
+        if not gestor_remoto.verificar_conexion_ssh():
+            st.error("❌ No se pudo conectar al servidor SSH")
+            return False
+        
+        # 5. Verificar que la base de datos existe
+        logger.info("🔍 Verificando existencia de base de datos...")
+        if not gestor_remoto.verificar_existencia_db():
+            st.error("❌ Base de datos no encontrada en el servidor")
+            return False
+        
+        # 6. Verificar y crear usuario admin si es necesario
+        logger.info("🔍 Verificando usuario admin...")
+        if not estado_sistema.esta_inicializada():
+            with st.spinner("🔄 Inicializando base de datos..."):
+                if db.verificar_crear_usuario_admin():
+                    estado_sistema.marcar_db_inicializada()
+                    logger.info("✅ Sistema inicializado correctamente")
+        
+        # 7. Inicializar sistema principal
+        sistema_principal = SistemaPrincipal(gestor_remoto, db)
+        
+        logger.info("✅ Sistema completamente inicializado")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error en inicialización del sistema: {e}", exc_info=True)
+        st.error(f"❌ Error crítico en inicialización: {str(e)}")
+        return False
 
 def mostrar_login():
     """Interfaz de login - MEJORADA Y ADAPTADA"""
@@ -2097,7 +2145,7 @@ def mostrar_login():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if gestor_remoto.verificar_existencia_db():
+        if gestor_remoto and gestor_remoto.verificar_existencia_db():
             st.success("✅ Base de datos encontrada")
         else:
             st.error("❌ Base de datos NO encontrada")
@@ -2109,7 +2157,9 @@ def mostrar_login():
             st.error("❌ SSH Desconectado")
     
     with col3:
-        st.info(f"📁 DB: escuela.db")
+        if gestor_remoto and gestor_remoto.db_path_remoto:
+            db_name = os.path.basename(gestor_remoto.db_path_remoto)
+            st.info(f"📁 DB: {db_name}")
     
     st.markdown("---")
     
@@ -2149,7 +2199,7 @@ def mostrar_login():
                 1. ✅ **Bcrypt hash** (recomendado - estructura actual)
                 2. ✅ **SHA256 hash** (compatibilidad)
                 3. ✅ **Texto plano** (se convierte automáticamente a bcrypt)
-                4. ✅ **Password por defecto:** `Admin123!`
+                4. ✅ **Password por defecto:** Admin123!
                 
                 **Sistema de verificación inteligente:**
                 - Verifica bcrypt → SHA256 → texto plano
@@ -2163,32 +2213,33 @@ def mostrar_login():
                     st.write("🔍 Verificando base de datos...")
                     
                     # Verificar conexión SSH
-                    if gestor_remoto.verificar_conexion_ssh():
+                    if gestor_remoto and gestor_remoto.verificar_conexion_ssh():
                         st.success("✅ SSH Conectado")
                     else:
                         st.error("❌ SSH Desconectado")
                     
                     # Verificar base de datos
-                    if gestor_remoto.verificar_existencia_db():
+                    if gestor_remoto and gestor_remoto.verificar_existencia_db():
                         st.success("✅ Base de datos encontrada")
                     else:
                         st.error("❌ Base de datos NO encontrada")
                     
                     # Verificar tabla usuarios
-                    consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
-                    resultado = db.ejecutar_consulta_remota(consulta)
-                    if resultado and len(resultado) > 0:
-                        st.success("✅ Tabla 'usuarios' encontrada")
-                        
-                        # Verificar estructura de la tabla
-                        consulta_estructura = "PRAGMA table_info(usuarios)"
-                        estructura_result = db.ejecutar_consulta_remota(consulta_estructura)
-                        if estructura_result:
-                            st.write("**🏗️ Estructura de la tabla usuarios:**")
-                            for campo in estructura_result:
-                                nombre = campo.get('name', '')
-                                tipo = campo.get('type', '')
-                                st.write(f"- **{nombre}**: {tipo}")
+                    if db:
+                        consulta = "SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'"
+                        resultado = db.ejecutar_consulta_remota(consulta)
+                        if resultado and len(resultado) > 0:
+                            st.success("✅ Tabla 'usuarios' encontrada")
+                            
+                            # Verificar estructura de la tabla
+                            consulta_estructura = "PRAGMA table_info(usuarios)"
+                            estructura_result = db.ejecutar_consulta_remota(consulta_estructura)
+                            if estructura_result:
+                                st.write("**🏗️ Estructura de la tabla usuarios:**")
+                                for campo in estructura_result:
+                                    nombre = campo.get('name', '')
+                                    tipo = campo.get('type', '')
+                                    st.write(f"- **{nombre}**: {tipo}")
                         
                         # Verificar usuarios
                         consulta_users = "SELECT usuario, rol, activo, password_hash, salt FROM usuarios"
@@ -2222,7 +2273,7 @@ def mostrar_interfaz_principal():
         st.write(f"**👤 Usuario:** {nombre_usuario} | **🎭 Rol:** {usuario_actual.get('rol', 'usuario')}")
 
     with col2:
-        if gestor_remoto.config.get('ssh_host'):
+        if gestor_remoto and gestor_remoto.config.get('ssh_host'):
             st.write(f"**🔗 Conectado al servidor**")
 
     with col3:
@@ -2239,7 +2290,8 @@ def mostrar_interfaz_principal():
     st.markdown("---")
 
     if sistema_principal is None:
-        sistema_principal = SistemaPrincipal()
+        st.error("❌ Sistema principal no inicializado")
+        return
 
     menu_opciones = [
         "📊 Dashboard",
@@ -2306,15 +2358,15 @@ def mostrar_dashboard():
     with col_info1:
         st.subheader("🔗 Estado del Sistema")
         
+        if gestor_remoto and gestor_remoto.verificar_existencia_db():
+            st.success("✅ Base de datos en servidor remoto")
+        else:
+            st.error("❌ Base de datos NO encontrada en servidor")
+        
         if estado_sistema.estado.get('ssh_conectado'):
             st.success("✅ SSH Conectado")
         else:
             st.error("❌ SSH Desconectado")
-        
-        if gestor_remoto.verificar_existencia_db():
-            st.success("✅ Base de datos en servidor remoto")
-        else:
-            st.error("❌ Base de datos NO encontrada en servidor")
         
         stats = estado_sistema.estado.get('estadisticas_sistema', {})
         st.write(f"📈 Sesiones exitosas: {stats.get('sesiones', 0)}")
@@ -2324,19 +2376,20 @@ def mostrar_dashboard():
     with col_info2:
         st.subheader("📋 Tablas Disponibles")
         try:
-            consulta = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            resultado = db.ejecutar_consulta_remota(consulta)
-            
-            if resultado:
-                st.write(f"✅ {len(resultado)} tablas en base de datos:")
-                for tabla in resultado:
-                    nombre_tabla = tabla.get('name', '')
-                    count_consulta = f"SELECT COUNT(*) as total FROM {nombre_tabla}"
-                    count_result = db.ejecutar_consulta_remota(count_consulta)
-                    count = count_result[0].get('total', 0) if count_result else 0
-                    st.write(f"- **{nombre_tabla}**: {count} registros")
-            else:
-                st.info("ℹ️ No se pudieron obtener las tablas")
+            if db:
+                consulta = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                resultado = db.ejecutar_consulta_remota(consulta)
+                
+                if resultado:
+                    st.write(f"✅ {len(resultado)} tablas en base de datos:")
+                    for tabla in resultado:
+                        nombre_tabla = tabla.get('name', '')
+                        count_consulta = f"SELECT COUNT(*) as total FROM {nombre_tabla}"
+                        count_result = db.ejecutar_consulta_remota(count_consulta)
+                        count = count_result[0].get('total', 0) if count_result else 0
+                        st.write(f"- **{nombre_tabla}**: {count} registros")
+                else:
+                    st.info("ℹ️ No se pudieron obtener las tablas")
         except:
             st.info("ℹ️ No se pudieron obtener las tablas")
     
@@ -2368,7 +2421,7 @@ def mostrar_dashboard():
     with col_act3:
         if st.button("🔗 Probar Conexión", use_container_width=True):
             with st.spinner("Probando conexión..."):
-                if gestor_remoto.verificar_conexion_ssh():
+                if gestor_remoto and gestor_remoto.verificar_conexion_ssh():
                     st.success("✅ Conexión SSH exitosa")
                     st.rerun()
                 else:
@@ -2380,7 +2433,8 @@ def mostrar_inscritos():
     st.header("📝 Gestión de Inscritos")
     
     if sistema_principal is None:
-        sistema_principal = SistemaPrincipal()
+        st.error("❌ Sistema principal no inicializado")
+        return
     
     # Cargar datos si no están cargados
     if sistema_principal.df_inscritos.empty:
@@ -2483,7 +2537,7 @@ def mostrar_inscritos():
                         'estatus': 'Pre-inscrito'
                     }
                     
-                    if db.agregar_inscrito(inscrito_data):
+                    if db and db.agregar_inscrito(inscrito_data):
                         st.success("✅ Inscrito agregado exitosamente")
                         
                         # Crear backup automático
@@ -2524,7 +2578,8 @@ def mostrar_estudiantes():
     st.header("🎓 Gestión de Estudiantes")
     
     if sistema_principal is None:
-        sistema_principal = SistemaPrincipal()
+        st.error("❌ Sistema principal no inicializado")
+        return
     
     # Cargar datos si no están cargados
     if sistema_principal.df_estudiantes.empty:
@@ -2547,7 +2602,8 @@ def mostrar_egresados():
     st.header("🏆 Gestión de Egresados")
     
     if sistema_principal is None:
-        sistema_principal = SistemaPrincipal()
+        st.error("❌ Sistema principal no inicializado")
+        return
     
     # Cargar datos si no están cargados
     if sistema_principal.df_egresados.empty:
@@ -2570,7 +2626,8 @@ def mostrar_contratados():
     st.header("💼 Gestión de Contratados")
     
     if sistema_principal is None:
-        sistema_principal = SistemaPrincipal()
+        st.error("❌ Sistema principal no inicializado")
+        return
     
     # Cargar datos si no están cargados
     if sistema_principal.df_contratados.empty:
@@ -2593,7 +2650,8 @@ def mostrar_usuarios():
     st.header("👥 Gestión de Usuarios")
     
     if sistema_principal is None:
-        sistema_principal = SistemaPrincipal()
+        st.error("❌ Sistema principal no inicializado")
+        return
     
     # Cargar datos si no están cargados
     if sistema_principal.df_usuarios.empty:
@@ -2643,7 +2701,7 @@ def mostrar_usuarios():
                     'activo': True
                 }
                 
-                if db.agregar_usuario(usuario_data):
+                if db and db.agregar_usuario(usuario_data):
                     st.success(f"✅ Usuario {usuario} creado exitosamente")
                     
                     # Crear backup automático
@@ -2672,7 +2730,7 @@ def mostrar_configuracion():
 
     with col_info1:
         st.write("📊 Estado del Sistema:")
-        if gestor_remoto.verificar_existencia_db():
+        if gestor_remoto and gestor_remoto.verificar_existencia_db():
             st.success("✅ Base de datos encontrada en servidor remoto")
         else:
             st.error("❌ Base de datos NO encontrada en servidor")
@@ -2687,17 +2745,19 @@ def mostrar_configuracion():
 
     with col_info2:
         st.write("💾 Base de Datos Única:")
-        db_path = gestor_remoto.db_path_remoto
-        st.write(f"📁 Ruta: {db_path}")
-        
-        try:
-            consulta = "SELECT COUNT(*) as total_tablas FROM sqlite_master WHERE type='table'"
-            resultado = db.ejecutar_consulta_remota(consulta)
-            if resultado and len(resultado) > 0:
-                total_tablas = resultado[0].get('total_tablas', 0)
-                st.write(f"📊 Tablas: {total_tablas}")
-        except:
-            pass
+        if gestor_remoto and gestor_remoto.db_path_remoto:
+            db_path = gestor_remoto.db_path_remoto
+            st.write(f"📁 Ruta: {db_path}")
+            
+            try:
+                if db:
+                    consulta = "SELECT COUNT(*) as total_tablas FROM sqlite_master WHERE type='table'"
+                    resultado = db.ejecutar_consulta_remota(consulta)
+                    if resultado and len(resultado) > 0:
+                        total_tablas = resultado[0].get('total_tablas', 0)
+                        st.write(f"📊 Tablas: {total_tablas}")
+            except:
+                pass
     
     st.markdown("---")
     st.subheader("🛠️ Herramientas del Sistema")
@@ -2707,7 +2767,7 @@ def mostrar_configuracion():
     with col_tool1:
         if st.button("💾 Crear Backup", use_container_width=True):
             with st.spinner("Creando backup..."):
-                if gestor_remoto.crear_backup_remoto():
+                if gestor_remoto and gestor_remoto.crear_backup_remoto():
                     st.success("✅ Backup creado en servidor remoto")
                 else:
                     st.error("❌ Error creando backup")
@@ -2715,7 +2775,7 @@ def mostrar_configuracion():
     with col_tool2:
         if st.button("🔍 Verificar Conexión", use_container_width=True):
             with st.spinner("Verificando conexión..."):
-                if gestor_remoto.verificar_conexion_ssh():
+                if gestor_remoto and gestor_remoto.verificar_conexion_ssh():
                     st.success("✅ Conexión SSH verificada")
                     st.rerun()
                 else:
@@ -2724,40 +2784,42 @@ def mostrar_configuracion():
     with col_tool3:
         if st.button("📊 Ver Tablas DB", use_container_width=True):
             try:
-                consulta = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                resultado = db.ejecutar_consulta_remota(consulta)
-                
-                if resultado:
-                    st.success(f"✅ {len(resultado)} tablas en base de datos:")
-                    for tabla in resultado:
-                        nombre_tabla = tabla.get('name', '')
-                        count_consulta = f"SELECT COUNT(*) as total FROM {nombre_tabla}"
-                        count_result = db.ejecutar_consulta_remota(count_consulta)
-                        count = count_result[0].get('total', 0) if count_result else 0
-                        st.write(f"- **{nombre_tabla}**: {count} registros")
-                else:
-                    st.error("❌ No hay tablas en la base de datos")
+                if db:
+                    consulta = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                    resultado = db.ejecutar_consulta_remota(consulta)
+                    
+                    if resultado:
+                        st.success(f"✅ {len(resultado)} tablas en base de datos:")
+                        for tabla in resultado:
+                            nombre_tabla = tabla.get('name', '')
+                            count_consulta = f"SELECT COUNT(*) as total FROM {nombre_tabla}"
+                            count_result = db.ejecutar_consulta_remota(count_consulta)
+                            count = count_result[0].get('total', 0) if count_result else 0
+                            st.write(f"- **{nombre_tabla}**: {count} registros")
+                    else:
+                        st.error("❌ No hay tablas en la base de datos")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
     
     st.markdown("---")
     st.subheader("📁 Sistema de Backups")
     
-    backups = SistemaBackupAutomatico(gestor_remoto).listar_backups()
-    if backups:
-        st.write(f"📊 {len(backups)} backups registrados:")
-        for backup in backups[:5]:  # Mostrar solo los últimos 5
-            fecha_str = backup['fecha'].strftime('%Y-%m-%d %H:%M')
-            st.write(f"📅 {fecha_str} - {backup['tipo_operacion']}")
-    else:
-        st.info("ℹ️ No hay backups registrados")
+    if gestor_remoto:
+        backups = SistemaBackupAutomatico(gestor_remoto).listar_backups()
+        if backups:
+            st.write(f"📊 {len(backups)} backups registrados:")
+            for backup in backups[:5]:  # Mostrar solo los últimos 5
+                fecha_str = backup['fecha'].strftime('%Y-%m-%d %H:%M')
+                st.write(f"📅 {fecha_str} - {backup['tipo_operacion']}")
+        else:
+            st.info("ℹ️ No hay backups registrados")
 
 # =============================================================================
-# 9. EJECUCIÓN PRINCIPAL
+# 9. EJECUCIÓN PRINCIPAL - CORREGIDA
 # =============================================================================
 
 def main():
-    """Función principal de la aplicación"""
+    """Función principal de la aplicación - CORREGIDA"""
     
     with st.sidebar:
         st.title("🔧 Sistema Escuela - DB Única")
@@ -2765,7 +2827,7 @@ def main():
 
         st.subheader("🔗 Estado de Conexión")
 
-        if gestor_remoto.verificar_existencia_db():
+        if gestor_remoto and gestor_remoto.verificar_existencia_db():
             st.success("✅ Base de datos remota")
         else:
             st.error("❌ Base de datos NO encontrada")
@@ -2791,10 +2853,10 @@ def main():
         st.subheader("💾 Sistema de Backups")
 
         if st.button("💾 Crear Backup", use_container_width=True):
-            global sistema_principal
-            if sistema_principal:
+            if gestor_remoto:
                 with st.spinner("Creando backup..."):
-                    backup_path = sistema_principal.backup_system.crear_backup(
+                    backup_system = SistemaBackupAutomatico(gestor_remoto)
+                    backup_path = backup_system.crear_backup(
                         "MANUAL_SIDEBAR",
                         "Backup manual creado desde sidebar"
                     )
@@ -2802,11 +2864,15 @@ def main():
                         st.success(f"✅ Backup creado")
                     else:
                         st.error("❌ Error creando backup")
+            else:
+                st.error("❌ Sistema no inicializado")
 
         st.markdown("---")
 
         st.caption("🏥 Sistema Escuela Enfermería v3.0")
-        st.caption("📁 Base de datos única: escuela.db")
+        if gestor_remoto and gestor_remoto.db_path_remoto:
+            db_name = os.path.basename(gestor_remoto.db_path_remoto)
+            st.caption(f"📁 Base de datos única: {db_name}")
         st.caption("🔗 Conexión SSH directa al servidor")
 
     try:
@@ -2819,6 +2885,13 @@ def main():
         for key, default_value in session_defaults.items():
             if key not in st.session_state:
                 st.session_state[key] = default_value
+
+        # Inicialización del sistema
+        if not gestor_remoto or not db:
+            with st.spinner("🔄 Inicializando sistema..."):
+                if not inicializar_sistema():
+                    st.error("❌ Error crítico en inicialización del sistema")
+                    return
 
         if not gestor_remoto.config.get('ssh_host'):
             st.error("""
@@ -2840,30 +2913,6 @@ def main():
             """)
             return
 
-        # Inicialización automática del sistema
-        try:
-            if not gestor_remoto.verificar_conexion_ssh():
-                st.error("❌ No se pudo conectar al servidor SSH")
-                st.info("Verifica la configuración SSH en secrets.toml")
-                return
-            
-            # Verificar que la base de datos existe
-            if not gestor_remoto.verificar_existencia_db():
-                st.error("❌ Base de datos no encontrada en el servidor")
-                st.info(f"Ruta esperada: {gestor_remoto.db_path_remoto}")
-                return
-            
-            # Verificar y crear usuario admin si es necesario
-            if not estado_sistema.esta_inicializada():
-                with st.spinner("🔄 Inicializando sistema..."):
-                    if db.verificar_crear_usuario_admin():
-                        estado_sistema.marcar_db_inicializada()
-                        logger.info("✅ Sistema inicializado correctamente")
-                    
-        except Exception as e:
-            st.error(f"❌ Error en inicialización: {e}")
-            logger.error(f"Error en inicialización: {e}", exc_info=True)
-
         if not st.session_state.login_exitoso:
             mostrar_login()
         else:
@@ -2880,7 +2929,7 @@ def main():
 if __name__ == "__main__":
     try:
         st.info("""
-        🏥 **SISTEMA DE GESTIÓN ESCOLAR - BASE DE DATOS ÚNICA**
+        🏥 **SISTEMA DE GESTIÓN ESCOLAR - BASE DE DATOS ÚNICA - VERSIÓN CORREGIDA**
 
         **Características:**
         ✅ **Base de datos única:** escuela.db con todas las tablas
@@ -2896,7 +2945,7 @@ if __name__ == "__main__":
         ✅ **Salt** en columna `salt`
         ✅ **SHA256 hash** (compatibilidad)
         ✅ **Texto plano** (se convierte automáticamente a bcrypt)
-        ✅ **Password por defecto:** Admin123!
+        ✅ **Password por defecto:** `Admin123!`
         
         **Estructura REAL de la tabla usuarios:**
         - `id`, `usuario`, `password_hash`, `salt`, `rol`, `nombre_completo`, etc.
@@ -2904,6 +2953,12 @@ if __name__ == "__main__":
         **Acceso por defecto:**
         👤 Usuario: admin
         🔒 Contraseña: Admin123!
+        
+        **CORRECCIÓN APLICADA:**
+        ✅ Orden de inicialización corregido
+        ✅ Métodos `ejecutar_consulta_remota` y `ejecutar_modificacion_remota` agregados
+        ✅ Inicialización diferida del sistema
+        ✅ Manejo de errores mejorado
         """)
 
         main()
